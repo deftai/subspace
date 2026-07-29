@@ -1,0 +1,16 @@
+{
+  "name": "@deft/acp-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "acp-probe": "./bin/acp-probe.ts"
+  },
+  "dependencies": {
+    "@deft/acp-client": "workspace:*",
+    "@deft/acp-wire": "workspace:*"
+  }
+}

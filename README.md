@@ -14,6 +14,7 @@ Strategy docs: [deftai/section-31/strategy/subspace](https://github.com/deftai/s
 | `@deft/acp-wire` | ACP transport + NDJSON; Option C; composes foundation |
 | `@deft/acp-client` | Host façade + **phase 2** session product |
 | `@deft/acp-agent` | Agent façade + reverse RPC + session-echo helpers |
+| `@deft/acp-probe` | **Phase 3** thin CLI over client product (stdio smoke) |
 
 **Option C:** structured messages in-process by default; NDJSON only on byte edges; optional `encodeRoundTrip` for parity tests.
 
@@ -37,11 +38,20 @@ pnpm test
 |-------|--------|
 | `option_c_dual_transport_echo` | Phase 1/1.5 wire A/B/C |
 | `phase2_session_product` | Session façade linked + stdio, cancel, permissions |
+| `phase3_acp_probe` | CLI smoke vs session-echo-agent; fail exits |
+
+```bash
+# Probe screwdriver (example)
+pnpm exec node --experimental-strip-types packages/acp-probe/bin/acp-probe.ts \
+  --command node --arg --experimental-strip-types \
+  --arg packages/acp-agent/bin/session-echo-agent.ts \
+  --prompt hello --permission deny
+```
 
 ### Out of scope (still)
 
 - Middleware stack / foundation RpcSession / TCP bags / StreamMux / AuthPipeline
-- Bridge / A2A / harness tool loop / probe product / testkit / React subpath
+- Bridge / A2A / harness tool loop / testkit / React subpath
 
 ## License
 

@@ -12,6 +12,15 @@ importers:
 
   packages/acp-client: {}
 
+  packages/acp-probe:
+    dependencies:
+      '@deft/acp-client':
+        specifier: workspace:*
+        version: link:../acp-client
+      '@deft/acp-wire':
+        specifier: workspace:*
+        version: link:../acp-wire
+
   packages/acp-wire:
     dependencies:
       '@deft/subspace-foundation':

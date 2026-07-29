@@ -4,8 +4,8 @@
   "type": "module",
   "description": "Deft Subspace — multi-protocol agent infrastructure (ACP-first)",
   "scripts": {
-    "test": "node --experimental-strip-types --test --test-force-exit tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts",
-    "typecheck": "node --experimental-strip-types --check packages/subspace-foundation/src/index.ts packages/acp-wire/src/index.ts packages/acp-client/src/index.ts packages/acp-agent/src/index.ts tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts"
+    "test": "node --experimental-strip-types --test --test-force-exit tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts",
+    "typecheck": "node --experimental-strip-types --check packages/subspace-foundation/src/index.ts packages/acp-wire/src/index.ts packages/acp-client/src/index.ts packages/acp-agent/src/index.ts packages/acp-probe/src/index.ts tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts"
   },
   "engines": {
     "node": ">=22"
