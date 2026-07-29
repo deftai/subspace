@@ -2,7 +2,7 @@
   "name": "subspace",
   "private": true,
   "type": "module",
-  "description": "Deft Subspace — multi-protocol agent infrastructure (ACP-first)",
+  "description": "Deft Subspace \u2014 multi-protocol agent infrastructure (ACP-first)",
   "scripts": {
     "test": "node --experimental-strip-types --test --test-force-exit tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts tests/phase4_acp_testkit.test.ts",
     "typecheck": "node --experimental-strip-types --check packages/subspace-foundation/src/index.ts packages/acp-wire/src/index.ts packages/acp-client/src/index.ts packages/acp-agent/src/index.ts packages/acp-probe/src/index.ts packages/acp-testkit/src/index.ts packages/acp-testkit/src/assert.ts packages/acp-testkit/src/harness.ts packages/acp-testkit/src/scenarios.ts tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts tests/phase4_acp_testkit.test.ts"
@@ -10,5 +10,9 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git"
+  }
 }

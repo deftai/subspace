@@ -1,16 +1,40 @@
 {
   "name": "@deft/acp-probe",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Thin CLI over @deft/acp-client for stdio ACP smoke (session/new → prompt)",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "bin": {
     "acp-probe": "./bin/acp-probe.ts"
   },
+  "files": [
+    "src",
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
   "dependencies": {
     "@deft/acp-client": "workspace:*",
     "@deft/acp-wire": "workspace:*"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git",
+    "directory": "packages/acp-probe"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "acp",
+    "probe",
+    "cli",
+    "subspace"
+  ]
 }

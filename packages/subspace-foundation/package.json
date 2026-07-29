@@ -1,9 +1,32 @@
 {
   "name": "@deft/subspace-foundation",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Protocol-agnostic kernel: transport, framer, and codec primitives for Subspace",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.ts"
-  }
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git",
+    "directory": "packages/subspace-foundation"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "subspace",
+    "agent",
+    "transport",
+    "protocol"
+  ]
 }
