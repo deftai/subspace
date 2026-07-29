@@ -12,6 +12,8 @@ importers:
 
   packages/acp-client: {}
 
+  packages/acp-harness: {}
+
   packages/acp-probe:
     dependencies:
       '@deft/acp-client':
