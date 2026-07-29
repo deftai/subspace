@@ -1,7 +1,18 @@
 /**
  * ACP wire — only package that moves AcpMessage values.
  * Option C: structured in-process; NDJSON on byte edges; optional encodeRoundTrip.
+ *
+ * Phase 1.5: composes @deft/subspace-foundation for duplex + NDJSON framing underlays.
  */
+
+import { spawn, type ChildProcess } from "node:child_process";
+import { Readable, Writable } from "node:stream";
+import {
+  defineMessagePair,
+  defineNdjsonFramer,
+  type MessageTransport,
+  type CloseReason,
+} from "@deft/subspace-foundation";
 
 export type AcpMessage =
   | {
@@ -116,55 +127,78 @@ export const NdjsonCodec = {
   },
 } as const;
 
-type QueueItem =
-  | { ok: true; value: AcpMessage }
-  | { ok: false; done: true }
-  | { ok: false; error: unknown };
+/**
+ * Adapt foundation MessageTransport → AcpTransport.
+ * Close tags: self → Normal; peer/underlay → ChannelClosed (or mapped reason).
+ */
+function adaptMessageTransport(
+  transport: MessageTransport<AcpMessage>,
+  options?: {
+    mapInbound?: (message: AcpMessage) => AcpMessage;
+    mapOutbound?: (message: AcpMessage) => AcpMessage;
+    peerCloseReason?: TransportCloseReason;
+  },
+): AcpTransport {
+  const mapIn = options?.mapInbound ?? ((m: AcpMessage) => m);
+  const mapOut = options?.mapOutbound ?? ((m: AcpMessage) => m);
+  const peerCloseReason =
+    options?.peerCloseReason ??
+    ({ _tag: "ChannelClosed", side: "recv" } as const);
 
-function createQueuePair() {
-  const ab: QueueItem[] = [];
-  const ba: QueueItem[] = [];
-  const abWait: { current?: (i: QueueItem) => void } = {};
-  const baWait: { current?: (i: QueueItem) => void } = {};
+  let selfClosed = false;
+  let closedReason: TransportCloseReason | undefined;
+  let resolveClosed!: (r: TransportCloseReason) => void;
+  const closedP = new Promise<TransportCloseReason>((r) => {
+    resolveClosed = r;
+  });
 
-  function push(
-    q: QueueItem[],
-    w: { current?: (i: QueueItem) => void },
-    item: QueueItem,
-  ) {
-    if (w.current) {
-      const fn = w.current;
-      w.current = undefined;
-      fn(item);
+  void transport.closed.then((reason: CloseReason | undefined) => {
+    if (closedReason) return;
+    if (selfClosed) {
+      closedReason = { _tag: "Normal" };
+    } else if (reason?.error !== undefined) {
+      closedReason = {
+        _tag: "Error",
+        error:
+          reason.error instanceof Error
+            ? reason.error
+            : new Error(String(reason.error)),
+      };
     } else {
-      q.push(item);
+      closedReason = peerCloseReason;
     }
-  }
+    resolveClosed(closedReason);
+  });
 
-  async function* read(
-    q: QueueItem[],
-    w: { current?: (i: QueueItem) => void },
-  ): AsyncGenerator<AcpMessage> {
-    for (;;) {
-      const item =
-        q.shift() ??
-        (await new Promise<QueueItem>((resolve) => {
-          w.current = resolve;
-        }));
-      if (!item.ok) {
-        if ("error" in item) throw item.error;
-        return;
-      }
-      yield item.value;
-    }
-  }
-
-  return { ab, ba, abWait, baWait, push, read };
+  return {
+    async send(message: AcpMessage) {
+      if (closedReason) throw new Error("AcpTransport closed");
+      await transport.send(mapOut(message));
+    },
+    get messages() {
+      return (async function* () {
+        for await (const message of transport.readable) {
+          yield mapIn(message);
+        }
+      })();
+    },
+    async close() {
+      if (closedReason) return;
+      selfClosed = true;
+      closedReason = { _tag: "Normal" };
+      await transport.close({});
+      resolveClosed(closedReason);
+    },
+    get closed() {
+      return closedP;
+    },
+  };
 }
 
 /**
  * Option C default: structured messages, no JSON.
  * encodeRoundTrip: true → encode→decode before deliver (parity CI).
+ * Underlay: foundation defineMessagePair (single duplex implementation).
  */
 export function defineLinkedChannels(options?: {
   encodeRoundTrip?: boolean;
@@ -176,119 +210,36 @@ export function defineLinkedChannels(options?: {
     _tag: "LinkedChannels" as const,
     encodeRoundTrip,
     connect() {
-      const { ab, ba, abWait, baWait, push, read } = createQueuePair();
-      let clientClosed: TransportCloseReason | undefined;
-      let agentClosed: TransportCloseReason | undefined;
-      let resolveClientClosed!: (r: TransportCloseReason) => void;
-      let resolveAgentClosed!: (r: TransportCloseReason) => void;
-      const clientClosedP = new Promise<TransportCloseReason>((r) => {
-        resolveClientClosed = r;
-      });
-      const agentClosedP = new Promise<TransportCloseReason>((r) => {
-        resolveAgentClosed = r;
-      });
+      const { a, b } = defineMessagePair<AcpMessage>();
 
       function maybeCodec(message: AcpMessage): AcpMessage {
         if (!encodeRoundTrip) return message;
         const bytes = NdjsonCodec.encode(message);
-        // strip trailing newline for decodeLine contract
         const line =
           bytes[bytes.length - 1] === 10 ? bytes.subarray(0, -1) : bytes;
         return NdjsonCodec.decodeLine(line);
       }
 
-      function make(
-        sendQ: QueueItem[],
-        sendW: { current?: (i: QueueItem) => void },
-        recvQ: QueueItem[],
-        recvW: { current?: (i: QueueItem) => void },
-        getClosed: () => TransportCloseReason | undefined,
-        setClosed: (r: TransportCloseReason) => void,
-        resolveClosed: (r: TransportCloseReason) => void,
-        closedP: Promise<TransportCloseReason>,
-        peerDone: () => void,
-      ): AcpTransport {
-        return {
-          async send(message: AcpMessage) {
-            if (getClosed()) throw new Error("AcpTransport closed");
-            push(sendQ, sendW, { ok: true, value: maybeCodec(message) });
-          },
-          get messages() {
-            return read(recvQ, recvW);
-          },
-          async close() {
-            if (getClosed()) return;
-            const reason: TransportCloseReason = { _tag: "Normal" };
-            setClosed(reason);
-            push(recvQ, recvW, { ok: false, done: true });
-            peerDone();
-            resolveClosed(reason);
-          },
-          get closed() {
-            return closedP;
-          },
-        };
-      }
-
-      const client = make(
-        ab,
-        abWait,
-        ba,
-        baWait,
-        () => clientClosed,
-        (r) => {
-          clientClosed = r;
-        },
-        resolveClientClosed,
-        clientClosedP,
-        () => {
-          if (!agentClosed) {
-            agentClosed = { _tag: "ChannelClosed", side: "recv" };
-            push(ab, abWait, { ok: false, done: true });
-            resolveAgentClosed(agentClosed);
-          }
-        },
-      );
-
-      const agent = make(
-        ba,
-        baWait,
-        ab,
-        abWait,
-        () => agentClosed,
-        (r) => {
-          agentClosed = r;
-        },
-        resolveAgentClosed,
-        agentClosedP,
-        () => {
-          if (!clientClosed) {
-            clientClosed = { _tag: "ChannelClosed", side: "recv" };
-            push(ba, baWait, { ok: false, done: true });
-            resolveClientClosed(clientClosed);
-          }
-        },
-      );
+      const client = adaptMessageTransport(a, {
+        mapOutbound: maybeCodec,
+      });
+      const agent = adaptMessageTransport(b, {
+        mapOutbound: maybeCodec,
+      });
 
       return { client, agent };
     },
   };
 }
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
-import { Readable, Writable } from "node:stream";
-
 function transportFromStdioStreams(
   stdin: Writable,
   stdout: Readable,
   onClose: () => Promise<TransportCloseReason>,
 ): AcpTransport {
-  const pending = new Map<
-    string | number,
-    { resolve: (m: AcpMessage) => void; reject: (e: unknown) => void }
-  >();
-  // fan-out queue for all messages
+  // Foundation NDJSON framer on the byte hot path (cumulating partial chunks).
+  const framer = defineNdjsonFramer();
+
   type Q =
     | { ok: true; value: AcpMessage }
     | { ok: false; done: true }
@@ -311,22 +262,43 @@ function transportFromStdioStreams(
     }
   }
 
-  const rl = createInterface({ input: stdout, crlfDelay: Infinity });
-  rl.on("line", (line) => {
+  const onData = (chunk: Buffer | Uint8Array) => {
     try {
-      if (!line.trim()) return;
-      const msg = NdjsonCodec.decodeLine(te.encode(line));
-      enqueue({ ok: true, value: msg });
+      const bytes =
+        chunk instanceof Uint8Array
+          ? chunk
+          : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      const frames = framer.push(bytes);
+      for (const frame of frames) {
+        try {
+          const msg = NdjsonCodec.decodeLine(frame);
+          enqueue({ ok: true, value: msg });
+        } catch (error) {
+          enqueue({ ok: false, error });
+        }
+      }
     } catch (error) {
       enqueue({ ok: false, error });
     }
+  };
+
+  stdout.on("data", onData);
+  stdout.on("error", (error) => {
+    enqueue({ ok: false, error });
   });
-  rl.on("close", async () => {
+  stdout.on("end", async () => {
     enqueue({ ok: false, done: true });
     if (!closedReason) {
       closedReason = await onClose();
       resolveClosed(closedReason);
     }
+  });
+  stdout.on("close", async () => {
+    // Some streams fire close without end; avoid double-resolve.
+    if (closedReason) return;
+    enqueue({ ok: false, done: true });
+    closedReason = await onClose();
+    resolveClosed(closedReason);
   });
 
   return {
@@ -357,7 +329,8 @@ function transportFromStdioStreams(
       if (closedReason) return;
       closedReason = { _tag: "Normal" };
       stdin.end();
-      rl.close();
+      stdout.off("data", onData);
+      framer.reset?.();
       enqueue({ ok: false, done: true });
       resolveClosed(closedReason);
     },
@@ -371,6 +344,7 @@ function transportFromStdioStreams(
  * Byte-edge transport over stdio NDJSON.
  * - spawn: host spawns agent child
  * - inherit: this process is the agent (stdin/stdout)
+ * Framing underlay: foundation defineNdjsonFramer.
  */
 export function defineStdioTransport(
   options:

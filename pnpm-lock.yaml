@@ -1,0 +1,21 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/acp-agent: {}
+
+  packages/acp-client: {}
+
+  packages/acp-wire:
+    dependencies:
+      '@deft/subspace-foundation':
+        specifier: workspace:*
+        version: link:../subspace-foundation
+
+  packages/subspace-foundation: {}
