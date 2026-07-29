@@ -13,6 +13,10 @@ import {
   runProbe,
   HELP_TEXT,
 } from "../packages/acp-probe/src/index.ts";
+import {
+  buildSessionNewParams,
+  formatWireError,
+} from "../packages/acp-client/src/index.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const probeBin = path.join(root, "packages/acp-probe/bin/acp-probe.ts");
@@ -188,5 +192,31 @@ describe("phase3_acp_probe", () => {
     ]);
     assert.ok(!deps.includes("@deft/acp-agent"));
     assert.ok(!deps.includes("@deft/subspace-foundation"));
+  });
+
+  it("buildSessionNewParams always includes cwd + mcpServers", () => {
+    const def = buildSessionNewParams();
+    assert.equal(typeof def.cwd, "string");
+    assert.ok(def.cwd.length > 0);
+    assert.deepEqual(def.mcpServers, []);
+
+    const custom = buildSessionNewParams({
+      cwd: "/tmp/smoke",
+      mcpServers: [{ name: "x" }],
+    });
+    assert.equal(custom.cwd, "/tmp/smoke");
+    assert.deepEqual(custom.mcpServers, [{ name: "x" }]);
+  });
+
+  it("formatWireError never returns [object Object] for RPC errors", () => {
+    const s = formatWireError({
+      code: -32602,
+      message: "Invalid params",
+      data: { cwd: { _errors: ["required"] } },
+    });
+    assert.ok(s.includes("Invalid params"));
+    assert.ok(s.includes("32602"));
+    assert.ok(!s.includes("[object Object]"));
+    assert.equal(formatWireError(new Error("boom")), "boom");
   });
 });
