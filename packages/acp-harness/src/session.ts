@@ -1,5 +1,8 @@
 /**
  * In-process session bookkeeping for the early harness.
+ *
+ * Owns: SessionRec shape, empty session factory, and per-instance Maps for
+ * sessions + cooperative cancel flags. Does not own ACP protocol or model I/O.
  */
 import type { ModelMessage } from "./model.ts";
 
@@ -10,6 +13,7 @@ export type SessionRec = {
 
 /**
  * Create empty session state, optionally seeding a system instruction message.
+ * System message is prepended once at create/load — not re-injected each turn.
  */
 export function createSessionRec(instructions?: string): SessionRec {
   const messages: ModelMessage[] = [];
@@ -21,6 +25,7 @@ export function createSessionRec(instructions?: string): SessionRec {
 
 /**
  * Mutable session + cancel maps for one harness instance.
+ * Fresh Maps so concurrent harnesses (tests) do not share cancel state.
  */
 export function createSessionStore(): {
   sessions: Map<string, SessionRec>;

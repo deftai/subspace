@@ -1,9 +1,15 @@
 /**
  * ACP host client — thin wire façade + phase-2 session product.
  *
+ * Owns: host→agent JSON-RPC over `AcpTransport`, reverse-method handlers
+ * (agent→host), a single prompt FIFO per connection, host-side session
+ * bookkeeping, and progressive one-shot turn helpers.
+ *
  * Phase 2 (locked cut): sessions create/load/ensure, prompt → AsyncIterable,
  * one prompt queue owner, reverse permission map, host session store only.
- * No middleware stack, no foundation RpcSession, no multi-store collapse.
+ *
+ * Does not own: middleware stacks, foundation `RpcSession`, multi-store
+ * collapse, agent-side server logic, or byte framing (see `@deft/acp-wire`).
  */
 import {
   defineStdioTransport,
@@ -13,6 +19,7 @@ import {
 
 // ─── thin wire client (phase 1) ─────────────────────────────────────────────
 
+/** Minimal host wire surface over an already-open `AcpTransport`. */
 export interface AcpClient {
   request(method: string, params?: unknown): Promise<unknown>;
   notify(method: string, params?: unknown): Promise<void>;
@@ -27,11 +34,13 @@ export interface AcpClient {
 export function formatWireError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object") {
+    // Prefer structured RPC error fields when present (message/code/data).
     const e = error as { message?: unknown; code?: unknown; data?: unknown };
     if (typeof e.message === "string") {
       const code = e.code !== undefined ? `code=${String(e.code)} ` : "";
       let data = "";
       if (e.data !== undefined) {
+        // Keep data inline so logs stay one-line and greppable.
         data =
           typeof e.data === "string"
             ? ` data=${e.data}`
@@ -42,6 +51,7 @@ export function formatWireError(error: unknown): string {
     try {
       return JSON.stringify(error);
     } catch {
+      // Circular / non-serializable objects fall back to String().
       return String(error);
     }
   }
@@ -56,6 +66,10 @@ export type SessionNewParams = {
   providerId?: string;
 };
 
+/**
+ * Normalize `session/new` params: real agents require `cwd` + `mcpServers`.
+ * Defaults are process cwd and an empty MCP list (never omit the fields).
+ */
 export function buildSessionNewParams(params?: {
   cwd?: string;
   mcpServers?: unknown[];
@@ -66,6 +80,11 @@ export function buildSessionNewParams(params?: {
   };
 }
 
+/**
+ * Wire-level ACP client factory: outbound request/notify, reverse handlers for
+ * inbound agent requests, and a single notification async-iterable.
+ * Does not manage sessions — use `defineAcpClientProduct` for the host product.
+ */
 export function defineAcpClient(options?: {
   handlers?: Record<string, (params: unknown) => Promise<unknown> | unknown>;
 }): {
@@ -73,8 +92,13 @@ export function defineAcpClient(options?: {
 } {
   const handlers = options?.handlers ?? {};
   return {
+    /**
+     * Attach to a live transport: start the demux pump and return the client.
+     * One pump owns inbound messages for the lifetime of this connection.
+     */
     async connect(transport: AcpTransport): Promise<AcpClient> {
       let nextId = 1;
+      // Correlate JSON-RPC response ids → pending host promises.
       const pending = new Map<
         string | number,
         {
@@ -83,14 +107,17 @@ export function defineAcpClient(options?: {
         }
       >();
 
+      // Single-waiter notification handoff: buffer if no consumer, else push.
       type NQ =
         | { ok: true; value: AcpMessage }
         | { ok: false; done: true };
       const notifQ: NQ[] = [];
       let notifWait: ((i: NQ) => void) | undefined;
 
+      /** Deliver one notification item without dropping or double-delivering. */
       function pushNotif(item: NQ) {
         if (notifWait) {
+          // Wake the blocked notifications consumer immediately.
           const w = notifWait;
           notifWait = undefined;
           w(item);
@@ -99,10 +126,13 @@ export function defineAcpClient(options?: {
         }
       }
 
+      // Inbound demux: responses → pending; requests → reverse handlers;
+      // notifications → notif stream. Ends when transport messages complete.
       const pump = (async () => {
         try {
           for await (const msg of transport.messages) {
             if (msg.kind === "response") {
+              // Unknown ids are ignored (late/duplicate responses after cancel).
               const p = pending.get(msg.id);
               if (!p) continue;
               pending.delete(msg.id);
@@ -112,6 +142,7 @@ export function defineAcpClient(options?: {
               continue;
             }
             if (msg.kind === "request") {
+              // Agent→host reverse RPC (e.g. session/request_permission).
               const handler = handlers[msg.method];
               try {
                 const result = handler
@@ -123,6 +154,7 @@ export function defineAcpClient(options?: {
                   result: result ?? null,
                 });
               } catch (error) {
+                // Always answer the agent — leave no hanging reverse request.
                 await transport.send({
                   kind: "response",
                   id: msg.id,
@@ -140,6 +172,7 @@ export function defineAcpClient(options?: {
             }
           }
         } finally {
+          // Unblock consumers and fail in-flight requests on transport death.
           pushNotif({ ok: false, done: true });
           for (const [, p] of pending) {
             p.reject(new Error("transport closed"));
@@ -149,6 +182,7 @@ export function defineAcpClient(options?: {
       })();
 
       return {
+        /** Outbound JSON-RPC request; id is allocated here, not by the agent. */
         request(method: string, params?: unknown): Promise<unknown> {
           const id = nextId++;
           return new Promise((resolve, reject) => {
@@ -158,9 +192,14 @@ export function defineAcpClient(options?: {
               .catch(reject);
           });
         },
+        /** Fire-and-forget outbound notification (no response correlation). */
         notify(method: string, params?: unknown): Promise<void> {
           return transport.send({ kind: "notification", method, params });
         },
+        /**
+         * AsyncIterable of inbound notifications only (not responses/requests).
+         * Each get starts a fresh consumer over the shared queue/waiter.
+         */
         get notifications() {
           return (async function* () {
             for (;;) {
@@ -174,6 +213,7 @@ export function defineAcpClient(options?: {
             }
           })();
         },
+        /** Close transport then await pump settlement (errors swallowed). */
         async close() {
           await transport.close();
           await pump.catch(() => undefined);
@@ -188,6 +228,7 @@ export function defineAcpClient(options?: {
 /** CI-safe defaults only — never "approve-all". */
 export type PermissionPolicy = "deny" | "approve-reads";
 
+/** Events surfaced on a host `prompt()` stream (updates + terminal + permission). */
 export type AgentEvent =
   | {
       type: "update";
@@ -211,6 +252,7 @@ export type AgentEvent =
       outcome: "allowed" | "denied";
     };
 
+/** Host bookkeeping row — local id, agent id, soft-close, optional ensure key. */
 export interface HostSessionRecord {
   readonly localId: string;
   readonly acpSessionId: string;
@@ -219,6 +261,7 @@ export interface HostSessionRecord {
   ensureKey?: string;
 }
 
+/** Product session handle: prompt stream, cancel, soft-close (no hard destroy). */
 export interface AcpSession {
   readonly localId: string;
   readonly acpSessionId: string;
@@ -228,6 +271,10 @@ export interface AcpSession {
   softClose(): Promise<void>;
 }
 
+/**
+ * Host product over wire: session create/load/ensure + host-only store.
+ * One product owns one connection's prompt queue and reverse permission path.
+ */
 export interface AcpClientProduct {
   readonly wire: AcpClient;
   sessions: {
@@ -248,11 +295,13 @@ export interface AcpClientProduct {
   close(): Promise<void>;
 }
 
+/** Producer side of a prompt event stream (push events, then end once). */
 type EventSink = {
   push: (e: AgentEvent) => void;
   end: () => void;
 };
 
+/** Queued prompt work unit: session id, input, sink, and cancel flag. */
 type PromptJob = {
   acpSessionId: string;
   input: unknown;
@@ -260,6 +309,10 @@ type PromptJob = {
   cancelFlag: { cancelled: boolean };
 };
 
+/**
+ * Reverse handler for `session/request_permission`.
+ * Policy is CI-safe: deny-all, or approve only common read/search/list kinds.
+ */
 function makePermissionHandler(
   policy: PermissionPolicy,
   onDecision?: (info: {
@@ -275,6 +328,7 @@ function makePermissionHandler(
     const kind = (p.toolCall?.kind ?? "").toLowerCase();
     let allowed = false;
     if (policy === "approve-reads") {
+      // Explicit allowlist — anything else stays denied under this policy.
       allowed =
         kind === "read" ||
         kind === "read_file" ||
@@ -285,6 +339,7 @@ function makePermissionHandler(
     const outcome = allowed ? "allowed" : "denied";
     onDecision?.({ params, outcome });
     if (allowed) {
+      // ACP selected option shape expected by agents for allow-once.
       return {
         outcome: { outcome: "selected", optionId: "allow-once" },
       };
@@ -300,11 +355,16 @@ class PromptQueue {
   private readonly q: Array<() => Promise<void>> = [];
   private running = false;
 
+  /** Enqueue work and kick drain if idle (fire-and-forget). */
   enqueue(job: () => Promise<void>): void {
     this.q.push(job);
     void this.drain();
   }
 
+  /**
+   * Run jobs serially. Re-entrant: if more work arrives after a drain finishes,
+   * a follow-up drain starts so nothing sits stranded behind `running`.
+   */
   private async drain(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -315,11 +375,16 @@ class PromptQueue {
       }
     } finally {
       this.running = false;
+      // Race: jobs may have been pushed after the while exited but before clear.
       if (this.q.length > 0) void this.drain();
     }
   }
 }
 
+/**
+ * Linked sink + AsyncIterable for one prompt's event stream.
+ * Invariant: after `end()`, further pushes are no-ops (no late events).
+ */
 function createEventStream(): {
   iterable: AsyncIterable<AgentEvent>;
   sink: EventSink;
@@ -331,6 +396,7 @@ function createEventStream(): {
   let wait: ((i: Q) => void) | undefined;
   let ended = false;
 
+  /** Hand off to a waiting consumer or buffer — same pattern as wire notifs. */
   function enqueue(item: Q) {
     if (wait) {
       const w = wait;
@@ -347,6 +413,7 @@ function createEventStream(): {
       enqueue({ ok: true, value: e });
     },
     end() {
+      // Idempotent terminal signal so multiple finally paths stay safe.
       if (ended) return;
       ended = true;
       enqueue({ ok: false, done: true });
@@ -372,6 +439,10 @@ function createEventStream(): {
   return { iterable, sink };
 }
 
+/**
+ * Host product factory: wire client + session APIs + host store + prompt queue.
+ * Default permission policy is `"deny"` (never approve-all).
+ */
 export function defineAcpClientProduct(options?: {
   /** Default: "deny". Never defaults to approve-all. */
   permissionPolicy?: PermissionPolicy;
@@ -382,9 +453,15 @@ export function defineAcpClientProduct(options?: {
   const policy = options?.permissionPolicy ?? "deny";
 
   return {
+    /**
+     * Connect product to transport: initialize agent, install reverse handlers,
+     * start session/update demux, own the connection-wide prompt FIFO.
+     */
     async connect(transport: AcpTransport): Promise<AcpClientProduct> {
+      // Permission decisions buffer until a prompt stream can own them.
       const permissionEvents: AgentEvent[] = [];
 
+      // Default permission reverse method; caller handlers may override after.
       const reverseHandlers: Record<
         string,
         (params: unknown) => Promise<unknown> | unknown
@@ -418,18 +495,19 @@ export function defineAcpClientProduct(options?: {
         clientInfo: { name: "@deft/acp-client", version: "0.0.0" },
       });
 
-      // Host session store — bookkeeping only
+      // Host session store — bookkeeping only (not run/test product stores).
       const byLocal = new Map<string, HostSessionRecord>();
       const byAcp = new Map<string, HostSessionRecord>();
       const byEnsure = new Map<string, HostSessionRecord>();
 
-      // Active prompt sinks by acp session id (for demux of session/update)
+      // Fan-out session/update notifications to sinks attached for that session.
       const activeSinks = new Map<string, Set<EventSink>>();
       const cancelFlags = new Map<string, { cancelled: boolean }>();
 
+      // One FIFO owner for all session prompts on this connection.
       const queue = new PromptQueue();
 
-      // Notification demux pump
+      // Background demux: only session/update is product-relevant today.
       void (async () => {
         for await (const n of wire.notifications) {
           if (n.method !== "session/update") continue;
@@ -449,6 +527,10 @@ export function defineAcpClientProduct(options?: {
         }
       })();
 
+      /**
+       * Register a prompt sink for demux fan-out; return detach that drops the
+       * session entry when the last sink leaves (no empty sets retained).
+       */
       function attachSink(acpSessionId: string, sink: EventSink) {
         let set = activeSinks.get(acpSessionId);
         if (!set) {
@@ -462,22 +544,27 @@ export function defineAcpClientProduct(options?: {
         };
       }
 
+      /** Build the public `AcpSession` handle bound to a store record. */
       function wrapSession(rec: HostSessionRecord): AcpSession {
         return {
           localId: rec.localId,
           acpSessionId: rec.acpSessionId,
           providerId: rec.providerId,
 
+          /**
+           * Enqueue one prompt; return AsyncIterable of updates + terminal event.
+           * Soft-closed sessions reopen on the next prompt (host-only flag).
+           */
           prompt(input: unknown): AsyncIterable<AgentEvent> {
             if (rec.softClosed) {
-              // Resume soft-closed session on next prompt
+              // Resume soft-closed session on next prompt (no agent round-trip).
               rec.softClosed = false;
             }
             const { iterable, sink } = createEventStream();
             const flag = { cancelled: false };
             cancelFlags.set(rec.acpSessionId, flag);
 
-            // Drain any permission events that fire during this prompt into stream
+            // Flush permission events that belong to this session into the stream.
             const drainPerms = () => {
               while (permissionEvents.length > 0) {
                 const pe = permissionEvents.shift()!;
@@ -491,6 +578,7 @@ export function defineAcpClientProduct(options?: {
               }
             };
 
+            // Serialized with other prompts — one session/prompt at a time on wire.
             queue.enqueue(async () => {
               const detach = attachSink(rec.acpSessionId, sink);
               try {
@@ -500,6 +588,7 @@ export function defineAcpClientProduct(options?: {
                 });
                 drainPerms();
                 if (flag.cancelled) {
+                  // Preserve agent result but mark host cancel intent for consumers.
                   sink.push({
                     type: "prompt_done",
                     sessionId: rec.acpSessionId,
@@ -520,6 +609,7 @@ export function defineAcpClientProduct(options?: {
                   error,
                 });
               } finally {
+                // Always detach demux + end stream so consumers cannot hang.
                 detach();
                 sink.end();
               }
@@ -528,6 +618,7 @@ export function defineAcpClientProduct(options?: {
             return iterable;
           },
 
+          /** Best-effort cancel: set local flag and ask agent via session/cancel. */
           async cancel() {
             const flag = cancelFlags.get(rec.acpSessionId);
             if (flag) flag.cancelled = true;
@@ -536,12 +627,17 @@ export function defineAcpClientProduct(options?: {
             });
           },
 
+          /** Host-only soft close — does not destroy the agent session. */
           async softClose() {
             rec.softClosed = true;
           },
         };
       }
 
+      /**
+       * Insert a new host record under local/acp/(optional ensure) indexes.
+       * Local id is host-generated; acp id comes from the agent.
+       */
       function register(
         acpSessionId: string,
         opts?: { providerId?: string; ensureKey?: string },
@@ -569,6 +665,7 @@ export function defineAcpClientProduct(options?: {
           list: () => [...byLocal.values()],
         },
         sessions: {
+          /** Always `session/new` then register under a fresh local id. */
           async create(params) {
             const result = (await wire.request(
               "session/new",
@@ -579,6 +676,10 @@ export function defineAcpClientProduct(options?: {
             });
           },
 
+          /**
+           * Reuse host record if known; otherwise `session/load` then register.
+           * Clears softClosed when returning an existing record.
+           */
           async load(acpSessionId, params) {
             const existing = byAcp.get(acpSessionId);
             if (existing) {
@@ -593,6 +694,10 @@ export function defineAcpClientProduct(options?: {
             });
           },
 
+          /**
+           * Idempotent by host ensure key: reuse or `session/new` + index by key.
+           * Key is host-local — not sent to the agent.
+           */
           async ensure(key, params) {
             const existing = byEnsure.get(key);
             if (existing) {
@@ -609,6 +714,7 @@ export function defineAcpClientProduct(options?: {
             });
           },
         },
+        /** Tear down wire (and transport) for this product connection. */
         async close() {
           await wire.close();
         },
@@ -648,6 +754,7 @@ export type DemuxAgentEventHandlers = {
   ) => void | Promise<void>;
 };
 
+/** Collected events plus last terminal result/error from a demux pass. */
 export type DemuxAgentEventsResult = {
   events: AgentEvent[];
   result?: unknown;
@@ -668,6 +775,7 @@ export async function demuxAgentEvents(
   let error: unknown;
   for await (const event of iterable) {
     events.push(event);
+    // Route by discriminant; last prompt_done/error wins on result/error fields.
     switch (event.type) {
       case "update":
         await handlers?.onUpdate?.(event);
@@ -753,6 +861,7 @@ export async function runAcpTurn(
   }
 }
 
+/** Spawn descriptor for an agent child process (stdio transport). */
 export type RunAcpStdioSpawn = {
   command: string;
   args?: readonly string[];

@@ -1,6 +1,10 @@
 /**
  * Minimum phase-4 scenarios — importable, product-only (no second client).
  *
+ * Owns: multi-turn, cancel-mid-prompt, permission-reverse runners and
+ * linked/stdio wrappers that allocate harnesses.
+ * Does not own: asserts (./assert) or harness construction details (./harness).
+ *
  * 1. multi-turn create → prompt → updates → second turn
  * 2. cancel mid-prompt; session survives
  * 3. permission reverse: deny + approve-reads (never approve-all)
@@ -24,18 +28,23 @@ import {
   type TestkitPermissionPolicy,
 } from "./harness.ts";
 
+/** Known minimum scenario identifiers (stable for reporting). */
 export type ScenarioName =
   | "multi-turn"
   | "cancel-mid-prompt"
   | "permission-reverse";
 
+/** Successful scenario run record (failures throw rather than ok:false). */
 export type ScenarioResult = {
   name: ScenarioName;
   mode: "linked" | "stdio";
   ok: true;
 };
 
-/** Multi-turn: create, two prompts with demuxed updates, load same session. */
+/**
+ * Multi-turn: create, two prompts with demuxed updates, load same session.
+ * Invariant: localId ≠ acpSessionId; load preserves both ids.
+ */
 export async function runMultiTurn(
   product: AcpClientProduct,
 ): Promise<void> {
@@ -46,6 +55,7 @@ export async function runMultiTurn(
   if (!session.localId || !session.acpSessionId) {
     throw new Error("session missing ids");
   }
+  // Client must allocate a host-local id distinct from the agent session id
   if (session.localId === session.acpSessionId) {
     throw new Error("localId must differ from acpSessionId");
   }
@@ -60,6 +70,7 @@ export async function runMultiTurn(
   assertPromptDone(turn2);
   assertTextIncludes(turn2, "turn:2:again");
 
+  // Load must reattach the same dual-id mapping, not mint a new localId
   const loaded = await product.sessions.load(session.acpSessionId);
   if (loaded.acpSessionId !== session.acpSessionId) {
     throw new Error("load returned different acpSessionId");
@@ -69,17 +80,22 @@ export async function runMultiTurn(
   }
 }
 
-/** Cancel mid-prompt; session remains usable for a follow-up turn. */
+/**
+ * Cancel mid-prompt; session remains usable for a follow-up turn.
+ * Relies on session-echo "slow" prompt + cancel flag polling.
+ */
 export async function runCancelMidPrompt(
   product: AcpClientProduct,
 ): Promise<void> {
   const session = await product.sessions.create();
+  // Start slow turn before cancel so the agent is mid-loop
   const eventsPromise = collectEvents(session.prompt("slow"));
   await new Promise((r) => setTimeout(r, 50));
   await session.cancel();
   const events = await eventsPromise;
   assertCancelled(events);
 
+  // Session must still accept a normal turn after cancel
   const next = await collectEvents(session.prompt("alive"));
   assertTextIncludes(next, "alive");
   assertPromptDone(next);
@@ -88,12 +104,14 @@ export async function runCancelMidPrompt(
 /**
  * Permission reverse map: deny policy denies reads; approve-reads allows
  * reads and still denies writes. Never approve-all.
+ * withPolicy supplies a fresh harness per policy so product policy is fixed at connect.
  */
 export async function runPermissionReverse(options: {
   withPolicy: (
     policy: TestkitPermissionPolicy,
   ) => Promise<ProductHarness>;
 }): Promise<void> {
+  // deny: read reverse-RPC should surface denied + fixture perm feedback
   {
     const h = await options.withPolicy("deny");
     try {
@@ -101,6 +119,7 @@ export async function runPermissionReverse(options: {
       const events = await collectEvents(session.prompt("need-perm"));
       assertPermissionOutcome(events, "denied");
       const chunks = textChunks(events).join("\n");
+      // Agent may echo cancelled or perm: payload depending on host mapping
       if (!chunks.includes("cancelled") && !chunks.includes("perm:")) {
         throw new Error(
           `deny policy: expected perm feedback in chunks, got ${JSON.stringify(chunks)}`,
@@ -110,6 +129,7 @@ export async function runPermissionReverse(options: {
       await h.dispose();
     }
   }
+  // approve-reads: read allowed, write/edit still denied (no approve-all)
   {
     const h = await options.withPolicy("approve-reads");
     try {
@@ -127,7 +147,7 @@ export async function runPermissionReverse(options: {
   }
 }
 
-/** Run multi-turn under linked transport. */
+/** Run multi-turn under linked transport; always dispose harness. */
 export async function scenarioMultiTurnLinked(): Promise<ScenarioResult> {
   const h = await withLinkedProduct({ permissionPolicy: "deny" });
   try {
@@ -138,7 +158,7 @@ export async function scenarioMultiTurnLinked(): Promise<ScenarioResult> {
   }
 }
 
-/** Run multi-turn under stdio spawn of session-echo-agent. */
+/** Run multi-turn under stdio spawn of session-echo-agent; always dispose. */
 export async function scenarioMultiTurnStdio(): Promise<ScenarioResult> {
   const h = await withStdioProduct({ permissionPolicy: "deny" });
   try {
@@ -149,6 +169,7 @@ export async function scenarioMultiTurnStdio(): Promise<ScenarioResult> {
   }
 }
 
+/** Cancel-mid-prompt on linked transport. */
 export async function scenarioCancelMidPromptLinked(): Promise<ScenarioResult> {
   const h = await withLinkedProduct({ permissionPolicy: "deny" });
   try {
@@ -159,6 +180,7 @@ export async function scenarioCancelMidPromptLinked(): Promise<ScenarioResult> {
   }
 }
 
+/** Cancel-mid-prompt on stdio session-echo spawn. */
 export async function scenarioCancelMidPromptStdio(): Promise<ScenarioResult> {
   const h = await withStdioProduct({ permissionPolicy: "deny" });
   try {
@@ -169,6 +191,7 @@ export async function scenarioCancelMidPromptStdio(): Promise<ScenarioResult> {
   }
 }
 
+/** Permission reverse on linked transport only (policy matrix is product-side). */
 export async function scenarioPermissionReverseLinked(): Promise<ScenarioResult> {
   await runPermissionReverse({
     withPolicy: (policy) => withLinkedProduct({ permissionPolicy: policy }),
@@ -176,7 +199,10 @@ export async function scenarioPermissionReverseLinked(): Promise<ScenarioResult>
   return { name: "permission-reverse", mode: "linked", ok: true };
 }
 
-/** All minimum scenarios (linked ×3 + stdio multi-turn at least). */
+/**
+ * All minimum scenarios (linked ×3 + stdio multi-turn at least).
+ * Order is stable for logs; each scenario allocates its own harness.
+ */
 export async function runMinimumScenarios(): Promise<ScenarioResult[]> {
   const results: ScenarioResult[] = [];
   results.push(await scenarioMultiTurnLinked());

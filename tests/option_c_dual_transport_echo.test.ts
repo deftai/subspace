@@ -1,6 +1,8 @@
 /**
  * option_c_dual_transport_echo — smallest dual-transport proof for Option C.
- * Paths: A linked structured · B linked encodeRoundTrip · C stdio spawn
+ *
+ * Paths: A linked structured · B linked encodeRoundTrip · C stdio spawn.
+ * Invariant: same _echo RPC works on all three; codecStats distinguishes A vs B/C.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -15,6 +17,7 @@ import {
 import { defineAcpClient } from "../packages/acp-client/src/index.ts";
 import { defineAcpServer } from "../packages/acp-agent/src/index.ts";
 
+/** Minimal handler set — proves request routing without session product. */
 const echoHandlers = {
   _echo(params: unknown) {
     const p = params as { n?: number };
@@ -24,10 +27,12 @@ const echoHandlers = {
 
 describe("option_c_dual_transport_echo", () => {
   beforeEach(() => {
+    // Isolation: codec call counts must not accumulate across cases
     codecStats.reset();
   });
 
   it("Path A — linked structured (no JSON hop)", async () => {
+    // Structured path must never touch encode/decode counters
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     const server = await defineAcpServer({ handlers: echoHandlers }).listen(aT);
     const client = await defineAcpClient().connect(cT);
@@ -42,6 +47,7 @@ describe("option_c_dual_transport_echo", () => {
   });
 
   it("Path B — linked encodeRoundTrip parity", async () => {
+    // Same linked channels but force codec so A/B diverge only on stats
     const { client: cT, agent: aT } = defineLinkedChannels({
       encodeRoundTrip: true,
     }).connect();
@@ -63,6 +69,7 @@ describe("option_c_dual_transport_echo", () => {
   });
 
   it("Path C — stdio spawn NDJSON", async () => {
+    // Real process boundary using wire package echo-agent fixture
     const root = path.dirname(fileURLToPath(import.meta.url));
     const agentScript = path.resolve(
       root,

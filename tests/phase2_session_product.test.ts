@@ -1,6 +1,8 @@
 /**
  * Phase 2 done-when: session product on linked + stdio.
+ *
  * Gates: create/load, multi-turn stream, cancel mid-prompt, permissions, soft-close.
+ * Uses listenSessionEcho fixture — product path only; not the Path A harness.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +20,7 @@ import {
 } from "../packages/acp-client/src/index.ts";
 import { listenSessionEcho } from "../packages/acp-agent/src/index.ts";
 
+/** Collect streamed update texts for substring asserts on echo fixture. */
 function textChunks(events: AgentEvent[]): string[] {
   return events
     .filter((e) => e.type === "update")
@@ -29,6 +32,10 @@ function textChunks(events: AgentEvent[]): string[] {
     });
 }
 
+/**
+ * Linked client product + session-echo server with a fixed permission policy.
+ * Shared setup so each case only varies the scenario under test.
+ */
 async function runLinkedScenario(permissionPolicy: "deny" | "approve-reads") {
   const { client: cT, agent: aT } = defineLinkedChannels().connect();
   const server = await listenSessionEcho(aT);
@@ -40,6 +47,7 @@ async function runLinkedScenario(permissionPolicy: "deny" | "approve-reads") {
 
 describe("phase2_session_product", () => {
   it("linked — create/load multi-turn prompt stream", async () => {
+    // localId vs acpSessionId identity + store round-trip + turn counter in stream
     const { product, server } = await runLinkedScenario("deny");
 
     const session = await product.sessions.create({
@@ -73,6 +81,7 @@ describe("phase2_session_product", () => {
   });
 
   it("linked — ensure + soft-close resume", async () => {
+    // ensure is idempotent by key; softClose must not drop acpSessionId on resume
     const { product, server } = await runLinkedScenario("deny");
 
     const a = await product.sessions.ensure("workspace-a", { cwd: "/a" });
@@ -95,6 +104,7 @@ describe("phase2_session_product", () => {
   });
 
   it("linked — cancel mid-prompt does not kill session", async () => {
+    // cancel returns stopReason cancelled; next prompt must still work
     const { product, server } = await runLinkedScenario("deny");
     const session = await product.sessions.create();
 
@@ -119,6 +129,7 @@ describe("phase2_session_product", () => {
   });
 
   it("linked — permission reverse map deny / approve-reads (never approve-all)", async () => {
+    // Two policies in one case: deny all, then approve-reads (write still denied)
     {
       const { product, server } = await runLinkedScenario("deny");
       const session = await product.sessions.create();
@@ -157,6 +168,7 @@ describe("phase2_session_product", () => {
   });
 
   it("stdio — multi-turn + cancel without process death", async () => {
+    // Process boundary: cancel must not exit the child; permissions still reverse
     const root = path.dirname(fileURLToPath(import.meta.url));
     const agentScript = path.resolve(
       root,
