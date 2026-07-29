@@ -1,6 +1,9 @@
 /**
  * Host progressive helpers: demuxAgentEvents, runAcpTurn, runAcpStdioTurn.
- * Additive surface — does not replace product path.
+ *
+ * Proves additive host helpers on top of product path — does not replace product
+ * APIs. Covers demux callbacks, stdio one-shot, close policies, and init failure
+ * cleanup on linked transport.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -26,6 +29,7 @@ const echoAgent = path.resolve(
   "../packages/acp-agent/bin/session-echo-agent.ts",
 );
 
+/** Pull plain text from an agent_message_chunk-style update event, if present. */
 function textFromUpdate(event: AgentEvent): string | undefined {
   if (event.type !== "update") return undefined;
   const u = event.update as { content?: { text?: string } };
@@ -34,6 +38,7 @@ function textFromUpdate(event: AgentEvent): string | undefined {
 
 describe("host_progressive_helper", () => {
   it("demuxAgentEvents alone on raw product path", async () => {
+    // demux works without runAcpTurn — same stream product.prompt yields
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     const server = await listenSessionEcho(aT);
     const product = await defineAcpClientProduct({
@@ -62,6 +67,7 @@ describe("host_progressive_helper", () => {
   });
 
   it("runAcpStdioTurn — one prompt completes with update/done", async () => {
+    // Full spawn→prompt→close convenience for hosts that only need one turn
     const out = await runAcpStdioTurn({
       spawn: {
         command: process.execPath,
@@ -85,6 +91,7 @@ describe("host_progressive_helper", () => {
   });
 
   it("runAcpStdioTurn — callbacks fire with real payloads", async () => {
+    // onUpdate / onPromptDone must see live event payloads, not empty stubs
     const seenUpdates: unknown[] = [];
     let doneResult: unknown;
     const out = await runAcpStdioTurn({
@@ -110,6 +117,7 @@ describe("host_progressive_helper", () => {
   });
 
   it('close: "always" (default) — two independent stdio turns ok', async () => {
+    // Default close tears down product so a second call is a fresh spawn
     const a = await runAcpStdioTurn({
       spawn: {
         command: process.execPath,
@@ -139,6 +147,7 @@ describe("host_progressive_helper", () => {
   });
 
   it('close: "never" — second prompt works; caller closes product', async () => {
+    // Multi-turn on one transport requires close: never + explicit product.close
     const transport = await defineStdioTransport({
       mode: "spawn",
       command: process.execPath,
@@ -165,6 +174,7 @@ describe("host_progressive_helper", () => {
   });
 
   it("runAcpTurn on linked transport", async () => {
+    // Same helper works without stdio — transport is injectable
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     const server = await listenSessionEcho(aT);
     const out = await runAcpTurn({
@@ -186,6 +196,7 @@ describe("host_progressive_helper", () => {
     // Agent rejects initialize but does not close — helper must close transport.
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     void (async () => {
+      // Minimal agent: only answer initialize with an error; leave stream open
       for await (const msg of aT.messages) {
         if (msg.kind === "request" && msg.method === "initialize") {
           await aT.send({
@@ -208,6 +219,7 @@ describe("host_progressive_helper", () => {
       /initialize refused/,
     );
 
+    // close: always on failure must still resolve transport.closed (no leak)
     const reason = await Promise.race([
       cT.closed,
       new Promise<never>((_, rej) =>
@@ -219,6 +231,7 @@ describe("host_progressive_helper", () => {
   });
 
   it("demuxAgentEvents awaits async handlers in stream order", async () => {
+    // Slow async onUpdate must still complete before onPromptDone observes order
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     const server = await listenSessionEcho(aT);
     const product = await defineAcpClientProduct({

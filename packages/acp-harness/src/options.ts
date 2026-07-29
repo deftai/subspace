@@ -1,5 +1,8 @@
 /**
  * Intelligent defaults for harness config — one resolve site, not a variant engine.
+ *
+ * Owns: HarnessOptions shape and resolveHarnessOptions (StubModelAdapter + package
+ * identity). Does not own session store or ACP handler wiring.
  */
 import { StubModelAdapter, type ModelAdapter } from "./model.ts";
 
@@ -26,6 +29,8 @@ const DEFAULT_AGENT_VERSION = "0.1.0";
  * - model → `StubModelAdapter`
  * - agentName / agentVersion → package identity
  * - instructions → undefined (no system prompt)
+ *
+ * Single resolve site so listen/handlers/factory cannot drift on defaults.
  */
 export function resolveHarnessOptions(
   partial?: HarnessOptions,

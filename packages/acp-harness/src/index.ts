@@ -1,5 +1,8 @@
 /**
- * @deft/acp-harness — early Path A coding-agent harness.
+ * @deft/acp-harness — early Path A coding-agent harness (public barrel).
+ *
+ * Owns: re-exports of model, session, options, handlers, and listen APIs.
+ * Does not own: wire codecs, client product, or real provider SDKs.
  *
  * Serves ACP via defineAcpServer: initialize, session/new|load|prompt|cancel.
  * Brain = ModelAdapter (StubModelAdapter by default). Not a production agent.

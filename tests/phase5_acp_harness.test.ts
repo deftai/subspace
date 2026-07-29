@@ -1,6 +1,9 @@
 /**
  * Phase 5 early harness done-when:
  * linked turn + stream, stdio turn, cancel, stub model (no network).
+ *
+ * Exercises @deft/acp-harness (StubModelAdapter + listenHarness / defineHarness)
+ * via client product — not session-echo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +25,7 @@ import {
   StubModelAdapter,
 } from "../packages/acp-harness/src/index.ts";
 
+/** Collect streamed update texts for stub: prefix asserts. */
 function textChunks(events: AgentEvent[]): string[] {
   return events
     .filter((e) => e.type === "update")
@@ -33,6 +37,10 @@ function textChunks(events: AgentEvent[]): string[] {
     });
 }
 
+/**
+ * Linked product against listenHarness with optional model override.
+ * Default stub + system instructions prove options plumbing.
+ */
 async function runLinked(model?: StubModelAdapter) {
   const { client: cT, agent: aT } = defineLinkedChannels().connect();
   const server = await listenHarness(aT, {
@@ -47,6 +55,7 @@ async function runLinked(model?: StubModelAdapter) {
 
 describe("phase5_acp_harness", () => {
   it("linked — initialize + prompt streams stub model chunk", async () => {
+    // Deterministic stub:hello and multi-turn stub:again without network
     const { product, server } = await runLinked();
     const session = await product.sessions.create({
       cwd: "/tmp",
@@ -79,6 +88,7 @@ describe("phase5_acp_harness", () => {
   });
 
   it("linked — cancel mid-stream stopReason cancelled; session still usable", async () => {
+    // "slow" stub stream is the cancel proof path for the harness
     const { product, server } = await runLinked();
     const session = await product.sessions.create();
 
@@ -103,6 +113,7 @@ describe("phase5_acp_harness", () => {
   });
 
   it("linked — defineHarness factory wires the same path", async () => {
+    // Factory prefix override proves options flow through defineHarness.listen
     const { client: cT, agent: aT } = defineLinkedChannels().connect();
     const server = await defineHarness({
       model: new StubModelAdapter({ prefix: "hx" }),
@@ -120,6 +131,7 @@ describe("phase5_acp_harness", () => {
   });
 
   it("stdio — prompt + cancel without process death", async () => {
+    // stub-harness-agent.bin is the stdio peer for Path A early cut
     const root = path.dirname(fileURLToPath(import.meta.url));
     const agentScript = path.resolve(
       root,
