@@ -631,16 +631,21 @@ export async function collectEvents(
 /**
  * Optional callbacks while demuxing an `AgentEvent` stream.
  * Does not replace `for await` — demux always drives the iterable.
+ * Handlers may be sync or async; demux `await`s each before the next event.
  */
 export type DemuxAgentEventHandlers = {
-  onUpdate?: (event: Extract<AgentEvent, { type: "update" }>) => void;
-  onPromptDone?: (event: Extract<AgentEvent, { type: "prompt_done" }>) => void;
+  onUpdate?: (
+    event: Extract<AgentEvent, { type: "update" }>,
+  ) => void | Promise<void>;
+  onPromptDone?: (
+    event: Extract<AgentEvent, { type: "prompt_done" }>,
+  ) => void | Promise<void>;
   onPromptError?: (
     event: Extract<AgentEvent, { type: "prompt_error" }>,
-  ) => void;
+  ) => void | Promise<void>;
   onPermission?: (
     event: Extract<AgentEvent, { type: "permission" }>,
-  ) => void;
+  ) => void | Promise<void>;
 };
 
 export type DemuxAgentEventsResult = {
@@ -652,6 +657,7 @@ export type DemuxAgentEventsResult = {
 /**
  * Demux an agent event stream into callbacks + collected events.
  * Always `for await` under the hood (one stream path).
+ * Awaits handlers so async callback rejections surface on this path.
  */
 export async function demuxAgentEvents(
   iterable: AsyncIterable<AgentEvent>,
@@ -664,18 +670,18 @@ export async function demuxAgentEvents(
     events.push(event);
     switch (event.type) {
       case "update":
-        handlers?.onUpdate?.(event);
+        await handlers?.onUpdate?.(event);
         break;
       case "prompt_done":
         result = event.result;
-        handlers?.onPromptDone?.(event);
+        await handlers?.onPromptDone?.(event);
         break;
       case "prompt_error":
         error = event.error;
-        handlers?.onPromptError?.(event);
+        await handlers?.onPromptError?.(event);
         break;
       case "permission":
-        handlers?.onPermission?.(event);
+        await handlers?.onPermission?.(event);
         break;
     }
   }
@@ -694,6 +700,11 @@ export type RunAcpTurnOptions = {
    */
   session: { key: string } & SessionNewParams;
   prompt: unknown;
+  /**
+   * Lifecycle after this call. Default `"always"`: product (or transport if
+   * product never connected) is closed even when ensure/prompt/connect fails.
+   * `"never"` leaves lifecycle to the caller (`product.close()`).
+   */
   close?: RunAcpTurnClose;
 } & DemuxAgentEventHandlers;
 
@@ -704,18 +715,19 @@ export type RunAcpTurnResult = DemuxAgentEventsResult & {
 
 /**
  * One-shot host turn on an open transport: product → ensure → demux prompt.
- * Default `close: "always"` closes the product after the turn.
+ * Default `close: "always"` closes the product after the turn (and closes the
+ * transport on connect/initialize failure before product owns it).
  * Use `close: "never"` for multi-turn; caller must `product.close()`.
  */
 export async function runAcpTurn(
   opts: RunAcpTurnOptions,
 ): Promise<RunAcpTurnResult> {
   const closeMode: RunAcpTurnClose = opts.close ?? "always";
-  const product = await defineAcpClientProduct({
-    permissionPolicy: opts.permissionPolicy ?? "deny",
-  }).connect(opts.transport);
-
+  let product: AcpClientProduct | undefined;
   try {
+    product = await defineAcpClientProduct({
+      permissionPolicy: opts.permissionPolicy ?? "deny",
+    }).connect(opts.transport);
     const { key, ...sessionParams } = opts.session;
     const session = await product.sessions.ensure(key, sessionParams);
     const demuxed = await demuxAgentEvents(session.prompt(opts.prompt), {
@@ -727,7 +739,16 @@ export async function runAcpTurn(
     return { ...demuxed, product, session };
   } finally {
     if (closeMode === "always") {
-      await product.close();
+      if (product) {
+        await product.close();
+      } else {
+        // Connect/initialize failed before product owned the transport.
+        try {
+          await opts.transport.close();
+        } catch {
+          // best-effort cleanup
+        }
+      }
     }
   }
 }

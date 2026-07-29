@@ -181,4 +181,64 @@ describe("host_progressive_helper", () => {
     );
     await server.close();
   });
+
+  it("runAcpTurn — initialize failure closes transport when close always", async () => {
+    // Agent rejects initialize but does not close — helper must close transport.
+    const { client: cT, agent: aT } = defineLinkedChannels().connect();
+    void (async () => {
+      for await (const msg of aT.messages) {
+        if (msg.kind === "request" && msg.method === "initialize") {
+          await aT.send({
+            kind: "response",
+            id: msg.id,
+            error: { code: -32000, message: "initialize refused" },
+          });
+        }
+      }
+    })();
+
+    await assert.rejects(
+      () =>
+        runAcpTurn({
+          transport: cT,
+          session: { key: "fail-init", cwd: process.cwd() },
+          prompt: "nope",
+          close: "always",
+        }),
+      /initialize refused/,
+    );
+
+    const reason = await Promise.race([
+      cT.closed,
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error("transport not closed")), 2000),
+      ),
+    ]);
+    assert.ok(reason);
+    await aT.close().catch(() => undefined);
+  });
+
+  it("demuxAgentEvents awaits async handlers in stream order", async () => {
+    const { client: cT, agent: aT } = defineLinkedChannels().connect();
+    const server = await listenSessionEcho(aT);
+    const product = await defineAcpClientProduct({
+      permissionPolicy: "deny",
+    }).connect(cT);
+    const session = await product.sessions.create();
+    const order: string[] = [];
+    await demuxAgentEvents(session.prompt("async-handlers"), {
+      onUpdate: async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push("update");
+      },
+      onPromptDone: async () => {
+        order.push("done");
+      },
+    });
+    assert.ok(order.includes("update"));
+    assert.ok(order.includes("done"));
+    assert.ok(order.indexOf("update") < order.indexOf("done"));
+    await product.close();
+    await server.close();
+  });
 });
