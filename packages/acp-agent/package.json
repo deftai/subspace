@@ -1,7 +1,7 @@
 {
   "name": "@deft/acp-agent",
   "version": "0.1.0",
-  "description": "ACP agent façade + reverse RPC + session-echo fixture helpers",
+  "description": "ACP agent façade + reverse RPC + session-echo + shared product helpers",
   "type": "module",
   "license": "MIT",
   "engines": {

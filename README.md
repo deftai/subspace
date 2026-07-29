@@ -4,7 +4,7 @@ Multi-protocol **agent infrastructure**: great DX for clients and servers on any
 
 **Ship order:** ACP wire + client + agent → probe/testkit → harness → A2A → Bridge (consumer) → MCP.
 
-**Kernel status:** phases 1–4 + schema-fix on `main`; **phase 5 early harness** (`@deft/acp-harness`, stub model only) in flight. See [`RESEARCH/SUBSPACE_PHASE0_CLOSE.md`](./RESEARCH/SUBSPACE_PHASE0_CLOSE.md).
+**Kernel status:** phases 1–5 on `main` (early harness landed). DX first pass: shared agent helpers + multi-file harness. See [`RESEARCH/SUBSPACE_PHASE0_CLOSE.md`](./RESEARCH/SUBSPACE_PHASE0_CLOSE.md).
 
 Strategy docs: [deftai/section-31/strategy/subspace](https://github.com/deftai/section-31/tree/main/strategy/subspace)
 
@@ -15,12 +15,14 @@ Strategy docs: [deftai/section-31/strategy/subspace](https://github.com/deftai/s
 | `@deft/subspace-foundation` | 0.1.0 | Protocol-agnostic kernel (transport/framer/codec) |
 | `@deft/acp-wire` | 0.1.0 | ACP transport + NDJSON; Option C; composes foundation |
 | `@deft/acp-client` | 0.1.0 | Host façade + **phase 2** session product |
-| `@deft/acp-agent` | 0.1.0 | Agent façade + reverse RPC + session-echo helpers |
+| `@deft/acp-agent` | 0.1.0 | Agent façade + reverse RPC + session-echo + **shared helpers** |
 | `@deft/acp-probe` | 0.1.0 | **Phase 3** thin CLI over client product (stdio smoke) |
 | `@deft/acp-testkit` | 0.1.0 | **Phase 4** importable scenarios + asserts (no `acp-tester` package) |
 | `@deft/acp-harness` | 0.1.0 | **Phase 5 early** agent harness + **stub** model (linked + stdio) |
 
 **Option C:** structured messages in-process by default; NDJSON only on byte edges; optional `encodeRoundTrip` for parity tests.
+
+**DX helpers (first pass — not a framework):** `promptToText`, `notifyAgentMessageChunk` / `agentMessageChunkUpdate`, `defaultInitializeResult`, `createDeferredBridge` on `@deft/acp-agent`; harness `resolveHarnessOptions` + multi-file layout. Rich `on*` / wildcards / hooks bag remains **provisional** (not shipped).
 
 ### Phase 2 product (`defineAcpClientProduct`)
 
