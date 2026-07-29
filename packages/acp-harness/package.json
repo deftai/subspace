@@ -1,0 +1,36 @@
+{
+  "name": "@deft/acp-harness",
+  "version": "0.1.0",
+  "description": "Early ACP coding-agent harness: defineAcpServer handlers + stub model adapter (linked + stdio)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "acp-stub-harness-agent": "./bin/stub-harness-agent.ts"
+  },
+  "files": [
+    "src",
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git",
+    "directory": "packages/acp-harness"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "harness",
+    "subspace"
+  ]
+}
