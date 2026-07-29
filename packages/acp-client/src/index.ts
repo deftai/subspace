@@ -16,6 +16,52 @@ export interface AcpClient {
   close(): Promise<void>;
 }
 
+/**
+ * Turn JSON-RPC / unknown failures into a readable string.
+ * Never returns "[object Object]" for plain error objects.
+ */
+export function formatWireError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const e = error as { message?: unknown; code?: unknown; data?: unknown };
+    if (typeof e.message === "string") {
+      const code = e.code !== undefined ? `code=${String(e.code)} ` : "";
+      let data = "";
+      if (e.data !== undefined) {
+        data =
+          typeof e.data === "string"
+            ? ` data=${e.data}`
+            : ` data=${JSON.stringify(e.data)}`;
+      }
+      return `${code}${e.message}${data}`;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+}
+
+/** Params required by real ACP agents for session/new (cwd + mcpServers). */
+export type SessionNewParams = {
+  cwd?: string;
+  /** Default [] when omitted — required by Grok Build / claude-code-acp. */
+  mcpServers?: unknown[];
+  providerId?: string;
+};
+
+export function buildSessionNewParams(params?: {
+  cwd?: string;
+  mcpServers?: unknown[];
+}): { cwd: string; mcpServers: unknown[] } {
+  return {
+    cwd: params?.cwd ?? process.cwd(),
+    mcpServers: params?.mcpServers ?? [],
+  };
+}
+
 export function defineAcpClient(options?: {
   handlers?: Record<string, (params: unknown) => Promise<unknown> | unknown>;
 }): {
@@ -56,8 +102,9 @@ export function defineAcpClient(options?: {
               const p = pending.get(msg.id);
               if (!p) continue;
               pending.delete(msg.id);
-              if (msg.error !== undefined) p.reject(msg.error);
-              else p.resolve(msg.result);
+              if (msg.error !== undefined) {
+                p.reject(new Error(formatWireError(msg.error)));
+              } else p.resolve(msg.result);
               continue;
             }
             if (msg.kind === "request") {
@@ -180,18 +227,12 @@ export interface AcpSession {
 export interface AcpClientProduct {
   readonly wire: AcpClient;
   sessions: {
-    create(params?: {
-      cwd?: string;
-      providerId?: string;
-    }): Promise<AcpSession>;
+    create(params?: SessionNewParams): Promise<AcpSession>;
     load(
       acpSessionId: string,
       params?: { providerId?: string },
     ): Promise<AcpSession>;
-    ensure(
-      key: string,
-      params?: { cwd?: string; providerId?: string },
-    ): Promise<AcpSession>;
+    ensure(key: string, params?: SessionNewParams): Promise<AcpSession>;
   };
   /** Host bookkeeping only — not run/test stores. */
   readonly store: {
@@ -363,6 +404,16 @@ export function defineAcpClientProduct(options?: {
         handlers: reverseHandlers,
       }).connect(transport);
 
+      // Real agents (e.g. Grok Build) reject session/new until initialize completes.
+      // Fixture agents that ignore unknown methods still accept this.
+      await wire.request("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+        },
+        clientInfo: { name: "@deft/acp-client", version: "0.0.0" },
+      });
+
       // Host session store — bookkeeping only
       const byLocal = new Map<string, HostSessionRecord>();
       const byAcp = new Map<string, HostSessionRecord>();
@@ -515,9 +566,10 @@ export function defineAcpClientProduct(options?: {
         },
         sessions: {
           async create(params) {
-            const result = (await wire.request("session/new", {
-              cwd: params?.cwd,
-            })) as { sessionId: string };
+            const result = (await wire.request(
+              "session/new",
+              buildSessionNewParams(params),
+            )) as { sessionId: string };
             return register(result.sessionId, {
               providerId: params?.providerId,
             });
@@ -543,9 +595,10 @@ export function defineAcpClientProduct(options?: {
               existing.softClosed = false;
               return wrapSession(existing);
             }
-            const result = (await wire.request("session/new", {
-              cwd: params?.cwd,
-            })) as { sessionId: string };
+            const result = (await wire.request(
+              "session/new",
+              buildSessionNewParams(params),
+            )) as { sessionId: string };
             return register(result.sessionId, {
               providerId: params?.providerId,
               ensureKey: key,
