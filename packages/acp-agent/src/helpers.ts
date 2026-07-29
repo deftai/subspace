@@ -1,22 +1,28 @@
 /**
  * Shared agent product helpers — pure builders + one-liner notify.
- * Used by session-echo and @deft/acp-harness (no free-standing DX package).
+ *
+ * Owns: prompt normalization, session/update chunk shapes, initialize defaults,
+ * and deferred bridge bind for linked listen.
+ * Does not own: transport, server pump, or session state (those stay in index /
+ * the bin agent). Used by session-echo and @deft/acp-harness (no free-standing DX package).
  */
 
-/** Minimal outbound face for notify / reverse request. */
+/** Minimal outbound face for notify / reverse request (server handle or stdio bridge). */
 export type AgentBridge = {
   notify(method: string, params?: unknown): Promise<void>;
   request(method: string, params?: unknown): Promise<unknown>;
 };
 
 /**
- * Normalize ACP prompt payloads to a single string.
+ * Normalize ACP prompt payloads to a single string for fixture matching.
  * Accepts string, content-part arrays (`{ type, text }`), null/undefined, or JSON fallback.
+ * Invariant: never throws; unknown shapes stringify rather than fail the turn.
  */
 export function promptToText(prompt: unknown): string {
   if (typeof prompt === "string") return prompt;
   if (prompt === undefined || prompt === null) return "";
   if (Array.isArray(prompt)) {
+    // Flatten ContentBlock[] (and string parts) the way hosts often send prompts
     return prompt
       .map((part) => {
         if (typeof part === "string") return part;
@@ -33,6 +39,7 @@ export function promptToText(prompt: unknown): string {
 
 /**
  * Build the repeated `session/update` params for an agent text chunk.
+ * Shape is fixed so hosts demux agent_message_chunk consistently.
  */
 export function agentMessageChunkUpdate(
   sessionId: string,
@@ -54,7 +61,8 @@ export function agentMessageChunkUpdate(
 }
 
 /**
- * One-liner: notify `session/update` with an agent message chunk.
+ * Notify `session/update` with an agent message chunk via the bridge.
+ * Keeps call sites one line so fixtures stay readable.
  */
 export async function notifyAgentMessageChunk(
   bridge: AgentBridge,
@@ -64,6 +72,7 @@ export async function notifyAgentMessageChunk(
   await bridge.notify("session/update", agentMessageChunkUpdate(sessionId, text));
 }
 
+/** Fields for intelligent `initialize` result defaults (agent identity + caps). */
 export type InitializeAgentInfo = {
   /** Agent product name (e.g. `@deft/acp-harness`). */
   name: string;
@@ -77,6 +86,7 @@ export type InitializeAgentInfo = {
 
 /**
  * Intelligent defaults for ACP `initialize` result.
+ * Prefer explicit protocolVersion/loadSession when set; otherwise phase-2 defaults.
  */
 export function defaultInitializeResult(info: InitializeAgentInfo): {
   protocolVersion: number;
@@ -95,6 +105,7 @@ export function defaultInitializeResult(info: InitializeAgentInfo): {
   };
 }
 
+/** Handle shape required to back a deferred AgentBridge after listen. */
 type BindableHandle = {
   notify(method: string, params?: unknown): Promise<void>;
   request(method: string, params?: unknown): Promise<unknown>;
@@ -104,6 +115,7 @@ type BindableHandle = {
  * Deferred bridge bind for linked listen: handlers close over `bridge`,
  * then `bind(server)` after `defineAcpServer().listen()`.
  * One documented pattern — not a second server abstraction.
+ * Invariant: notify/request throw until bind; after bind they forward only.
  */
 export function createDeferredBridge(): {
   bridge: AgentBridge;
@@ -121,6 +133,7 @@ export function createDeferredBridge(): {
         return current.request(method, params);
       },
     },
+    /** Wire the live server handle so closed-over handlers can go outbound. */
     bind(handle) {
       current = handle;
     },

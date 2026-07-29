@@ -1,8 +1,14 @@
 /**
- * ACP wire — only package that moves AcpMessage values.
- * Option C: structured in-process; NDJSON on byte edges; optional encodeRoundTrip.
+ * ACP wire — only package that moves AcpMessage values on the wire path.
  *
- * Phase 1.5: composes @deft/subspace-foundation for duplex + NDJSON framing underlays.
+ * Owns: AcpMessage / AcpTransport shapes, JSON-RPC↔ACP mapping, NDJSON codec
+ * stats, in-process linked channels (Option C), and stdio spawn/inherit transports.
+ * Does not own: foundation duplex/framer implementations (composed from
+ * @deft/subspace-foundation), session policy, or agent method handlers.
+ *
+ * Option C: structured in-process by default; NDJSON on byte edges;
+ * optional encodeRoundTrip for parity CI.
+ * Phase 1.5: foundation underlays for duplex + NDJSON framing.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -14,6 +20,7 @@ import {
   type CloseReason,
 } from "@deft/subspace-foundation";
 
+/** Discriminated ACP message: request, response, or notification (no JSON-RPC envelope). */
 export type AcpMessage =
   | {
       kind: "request";
@@ -33,12 +40,20 @@ export type AcpMessage =
       params?: unknown;
     };
 
+/**
+ * Why an AcpTransport settled closed — tagged for host/agent policy.
+ * ChildExit is stdio-spawn only; ChannelClosed is peer/underlay half-close.
+ */
 export type TransportCloseReason =
   | { readonly _tag: "Normal" }
   | { readonly _tag: "ChildExit"; code: number | null }
   | { readonly _tag: "ChannelClosed"; side: "send" | "recv" }
   | { readonly _tag: "Error"; error: Error };
 
+/**
+ * ACP-facing duplex: send messages, async-iterate inbound, await closed reason.
+ * Higher layers should not see foundation MessageTransport or raw bytes.
+ */
 export interface AcpTransport {
   send(message: AcpMessage): Promise<void>;
   readonly messages: AsyncIterable<AcpMessage>;
@@ -46,16 +61,24 @@ export interface AcpTransport {
   readonly closed: Promise<TransportCloseReason>;
 }
 
-/** Test hook: counts codec use for Option C assertions. */
+/**
+ * Test hook: counts NdjsonCodec use for Option C encodeRoundTrip assertions.
+ * Not for production metrics — mutable module state on purpose.
+ */
 export const codecStats = {
   encodeCalls: 0,
   decodeCalls: 0,
+  /** Zero counters between cases so CI assertions stay independent. */
   reset() {
     this.encodeCalls = 0;
     this.decodeCalls = 0;
   },
 };
 
+/**
+ * Map AcpMessage → JSON-RPC 2.0 object for wire encoding.
+ * Notifications omit id; responses prefer error when both error and result exist.
+ */
 function toJsonRpc(message: AcpMessage): unknown {
   if (message.kind === "request") {
     return {
@@ -66,11 +89,13 @@ function toJsonRpc(message: AcpMessage): unknown {
     };
   }
   if (message.kind === "response") {
+    // JSON-RPC allows either error or result, not both — error wins.
     if (message.error !== undefined) {
       return { jsonrpc: "2.0", id: message.id, error: message.error };
     }
     return { jsonrpc: "2.0", id: message.id, result: message.result ?? null };
   }
+  // Notification: method present, id absent.
   return {
     jsonrpc: "2.0",
     method: message.method,
@@ -78,6 +103,10 @@ function toJsonRpc(message: AcpMessage): unknown {
   };
 }
 
+/**
+ * Map JSON-RPC 2.0 object → AcpMessage.
+ * Classification: method+no id → notification; method+id → request; id only → response.
+ */
 function fromJsonRpc(raw: unknown): AcpMessage {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Invalid JSON-RPC message");
@@ -112,11 +141,18 @@ function fromJsonRpc(raw: unknown): AcpMessage {
 const te = new TextEncoder();
 const td = new TextDecoder();
 
+/**
+ * NDJSON line codec for AcpMessage on byte edges.
+ * encode always appends newline; decodeLine strips trailing CR/LF and rejects empty.
+ * Increments codecStats for Option C parity tests.
+ */
 export const NdjsonCodec = {
+  /** Serialize message as one JSON-RPC line + \\n. */
   encode(message: AcpMessage): Uint8Array {
     codecStats.encodeCalls += 1;
     return te.encode(JSON.stringify(toJsonRpc(message)) + "\n");
   },
+  /** Parse one line (with or without trailing newline) into AcpMessage. */
   decodeLine(line: Uint8Array): AcpMessage {
     codecStats.decodeCalls += 1;
     const text = td.decode(line).replace(/\r?\n$/, "");
@@ -129,7 +165,10 @@ export const NdjsonCodec = {
 
 /**
  * Adapt foundation MessageTransport → AcpTransport.
- * Close tags: self → Normal; peer/underlay → ChannelClosed (or mapped reason).
+ *
+ * Close tags: self close → Normal; peer/underlay → peerCloseReason (default
+ * ChannelClosed recv) or Error when underlay CloseReason carries error.
+ * Optional mapInbound/mapOutbound sit on the message path only (e.g. encodeRoundTrip).
  */
 function adaptMessageTransport(
   transport: MessageTransport<AcpMessage>,
@@ -145,6 +184,7 @@ function adaptMessageTransport(
     options?.peerCloseReason ??
     ({ _tag: "ChannelClosed", side: "recv" } as const);
 
+  // closedReason is the single settlement; selfClosed disambiguates Normal vs peer.
   let selfClosed = false;
   let closedReason: TransportCloseReason | undefined;
   let resolveClosed!: (r: TransportCloseReason) => void;
@@ -152,6 +192,7 @@ function adaptMessageTransport(
     resolveClosed = r;
   });
 
+  // Bridge foundation close → ACP tagged reason; first settlement wins.
   void transport.closed.then((reason: CloseReason | undefined) => {
     if (closedReason) return;
     if (selfClosed) {
@@ -171,17 +212,23 @@ function adaptMessageTransport(
   });
 
   return {
+    /** Fail fast after close so callers do not write into a dead underlay. */
     async send(message: AcpMessage) {
       if (closedReason) throw new Error("AcpTransport closed");
       await transport.send(mapOut(message));
     },
     get messages() {
+      // Fresh generator each get — consumers must not share one iterator accidentally.
       return (async function* () {
         for await (const message of transport.readable) {
           yield mapIn(message);
         }
       })();
     },
+    /**
+     * Local close: mark Normal, close underlay, settle closed if not already.
+     * Underlay may also settle via transport.closed; selfClosed keeps tag Normal.
+     */
     async close() {
       if (closedReason) return;
       selfClosed = true;
@@ -196,9 +243,9 @@ function adaptMessageTransport(
 }
 
 /**
- * Option C default: structured messages, no JSON.
- * encodeRoundTrip: true → encode→decode before deliver (parity CI).
- * Underlay: foundation defineMessagePair (single duplex implementation).
+ * Option C default: structured messages across a foundation message pair (no JSON).
+ * encodeRoundTrip: true → encode→decode on outbound before deliver (parity CI).
+ * Underlay: defineMessagePair — single duplex implementation for both ends.
  */
 export function defineLinkedChannels(options?: {
   encodeRoundTrip?: boolean;
@@ -209,12 +256,21 @@ export function defineLinkedChannels(options?: {
   return {
     _tag: "LinkedChannels" as const,
     encodeRoundTrip,
+    /**
+     * Create a fresh pair of adapted transports sharing one in-memory duplex.
+     * Client is side a, agent is side b — both optional outbound codec pass.
+     */
     connect() {
       const { a, b } = defineMessagePair<AcpMessage>();
 
+      /**
+       * When encodeRoundTrip is on, force NDJSON encode/decode so codec path
+       * matches byte edges without leaving process memory.
+       */
       function maybeCodec(message: AcpMessage): AcpMessage {
         if (!encodeRoundTrip) return message;
         const bytes = NdjsonCodec.encode(message);
+        // encode appends \\n; decodeLine accepts with or without — strip for stability.
         const line =
           bytes[bytes.length - 1] === 10 ? bytes.subarray(0, -1) : bytes;
         return NdjsonCodec.decodeLine(line);
@@ -232,6 +288,11 @@ export function defineLinkedChannels(options?: {
   };
 }
 
+/**
+ * Build AcpTransport over Writable stdin + Readable stdout NDJSON streams.
+ * onClose supplies the tagged reason when the read side ends (peer death, inherit EOF, etc.).
+ * Owns: framer, message queue, stream listeners; does not spawn processes.
+ */
 function transportFromStdioStreams(
   stdin: Writable,
   stdout: Readable,
@@ -252,6 +313,7 @@ function transportFromStdioStreams(
     resolveClosed = r;
   });
 
+  /** Hand item to parked reader or buffer — same pattern as foundation pair. */
   function enqueue(item: Q) {
     if (wait) {
       const w = wait;
@@ -262,8 +324,13 @@ function transportFromStdioStreams(
     }
   }
 
+  /**
+   * Decode complete NDJSON frames from a chunk; per-frame errors enqueue as errors
+   * so one bad line does not drop the whole stream buffer.
+   */
   const onData = (chunk: Buffer | Uint8Array) => {
     try {
+      // Normalize Buffer → Uint8Array view without copying when already typed.
       const bytes =
         chunk instanceof Uint8Array
           ? chunk
@@ -287,6 +354,7 @@ function transportFromStdioStreams(
     enqueue({ ok: false, error });
   });
   stdout.on("end", async () => {
+    // Peer finished writing — end iterator and settle closed from onClose policy.
     enqueue({ ok: false, done: true });
     if (!closedReason) {
       closedReason = await onClose();
@@ -302,6 +370,7 @@ function transportFromStdioStreams(
   });
 
   return {
+    /** Write one NDJSON line; reject if already closed. */
     async send(message: AcpMessage) {
       if (closedReason) throw new Error("AcpTransport closed");
       const bytes = NdjsonCodec.encode(message);
@@ -310,6 +379,7 @@ function transportFromStdioStreams(
       });
     },
     get messages() {
+      // Pull from queue or park until enqueue — mirrors foundation readable.
       return (async function* () {
         for (;;) {
           const item =
@@ -325,6 +395,10 @@ function transportFromStdioStreams(
         }
       })();
     },
+    /**
+     * Local teardown: Normal reason, end stdin, detach data, reset framer, wake readers.
+     * Does not kill a child process — spawn mode's onClose may kill when streams end.
+     */
     async close() {
       if (closedReason) return;
       closedReason = { _tag: "Normal" };
@@ -342,8 +416,8 @@ function transportFromStdioStreams(
 
 /**
  * Byte-edge transport over stdio NDJSON.
- * - spawn: host spawns agent child
- * - inherit: this process is the agent (stdin/stdout)
+ * - spawn: host spawns agent child (default when mode omitted)
+ * - inherit: this process is the agent (stdin/stdout swapped for host-facing pipes)
  * Framing underlay: foundation defineNdjsonFramer.
  */
 export function defineStdioTransport(
@@ -359,8 +433,13 @@ export function defineStdioTransport(
 ): { connect(): Promise<AcpTransport> } {
   return {
     _tag: "StdioTransport" as const,
+    /**
+     * Open the channel: inherit uses process stdio; spawn waits for child ready.
+     * Spawn failures (ENOENT etc.) reject connect() rather than uncaught errors.
+     */
     async connect(): Promise<AcpTransport> {
       if (options.mode === "inherit") {
+        // Agent role: host writes our stdin; we write responses on stdout.
         return transportFromStdioStreams(
           process.stdout as unknown as Writable,
           process.stdin as unknown as Readable,
@@ -394,6 +473,7 @@ export function defineStdioTransport(
       if (!child.stdin || !child.stdout) {
         throw new Error("spawn did not provide stdio pipes");
       }
+      // Host role: write child.stdin, read child.stdout; onClose kills and tags ChildExit.
       return transportFromStdioStreams(child.stdin, child.stdout, async () => {
         const code = await new Promise<number | null>((resolve) => {
           child.once("exit", (c) => resolve(c));

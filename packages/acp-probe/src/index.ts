@@ -1,6 +1,9 @@
 /**
- * @deft/acp-probe — thin host CLI over phase-2 acp-client product.
- * No private NDJSON codec, no second session store — wire + product only.
+ * @deft/acp-probe — thin host CLI library over phase-2 acp-client product.
+ *
+ * Owns: one-shot stdio spawn probe (create → prompt → collect), argv parsing,
+ * and human-readable event lines / help text for the bin entry.
+ * Does not own: session store, NDJSON codec, or a second client — wire + product only.
  */
 import {
   defineAcpClientProduct,
@@ -10,6 +13,7 @@ import {
 } from "@deft/acp-client";
 import { defineStdioTransport } from "@deft/acp-wire";
 
+/** Inputs for a single probe run (spawn + one prompt). */
 export type ProbeOptions = {
   command: string;
   args?: readonly string[];
@@ -23,6 +27,7 @@ export type ProbeOptions = {
   onEvent?: (event: AgentEvent) => void;
 };
 
+/** Successful probe: session ids plus full demuxed event list. */
 export type ProbeResult = {
   ok: true;
   acpSessionId: string;
@@ -30,6 +35,7 @@ export type ProbeResult = {
   events: AgentEvent[];
 };
 
+/** Soft failure: transport/agent/timeout — not programmer misuse. */
 export type ProbeFailure = {
   ok: false;
   error: string;
@@ -39,6 +45,7 @@ export type ProbeFailure = {
 /**
  * Spawn an agent over stdio, create a session, prompt once, collect events.
  * Throws only for programmer misuse; transport/agent failures return ok:false.
+ * Timeout races the whole run and sets a flag so the prompt loop can exit early.
  */
 export async function runProbe(
   options: ProbeOptions,
@@ -51,6 +58,7 @@ export async function runProbe(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutMs = options.timeoutMs;
 
+  /** Core path without outer race: connect, prompt, close product. */
   const run = async (): Promise<ProbeResult | ProbeFailure> => {
     try {
       const transport = await defineStdioTransport({
@@ -72,6 +80,7 @@ export async function runProbe(
         // ACP session/prompt expects ContentBlock[]; plain string is fixture-only.
         const promptBlocks = [{ type: "text" as const, text: options.prompt }];
         for await (const event of session.prompt(promptBlocks)) {
+          // Cooperative exit when wall-clock race already lost
           if (timedOut) break;
           events.push(event);
           onEvent(event);
@@ -88,6 +97,7 @@ export async function runProbe(
           return { ok: false, error: `timeout after ${timeoutMs}ms`, events };
         }
 
+        // Host contract: a finished prompt stream should end with prompt_done
         const done = events.find((e) => e.type === "prompt_done");
         if (!done) {
           return {
@@ -104,6 +114,7 @@ export async function runProbe(
           events,
         };
       } finally {
+        // Always tear down product even when returning early on error/timeout
         await product.close().catch(() => undefined);
       }
     } catch (error) {
@@ -115,6 +126,7 @@ export async function runProbe(
     }
   };
 
+  // Optional wall-clock race: timeout side sets timedOut so run() can stop the loop
   if (timeoutMs !== undefined && timeoutMs > 0) {
     const raced = await Promise.race([
       run(),
@@ -136,10 +148,12 @@ export async function runProbe(
   return run();
 }
 
+/** Single-line JSON for CLI stdout streaming of demuxed events. */
 export function formatEventLine(event: AgentEvent): string {
   return JSON.stringify(event);
 }
 
+/** Parsed CLI flags for the acp-probe bin (or help-only mode). */
 export type ParsedCli = {
   command: string;
   args: string[];
@@ -159,6 +173,7 @@ export type ParsedCli = {
  *   --timeout <ms>
  *   --cwd <path>
  *   --help / -h
+ * Returns `{ error }` for bad flags/values; help short-circuits required fields.
  */
 export function parseArgv(argv: string[]): ParsedCli | { error: string } {
   let command: string | undefined;
@@ -171,6 +186,7 @@ export function parseArgv(argv: string[]): ParsedCli | { error: string } {
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    /** Consume the next argv token or throw for missing value. */
     const next = () => {
       const v = argv[++i];
       if (v === undefined) throw new Error(`missing value after ${a}`);
@@ -217,12 +233,14 @@ export function parseArgv(argv: string[]): ParsedCli | { error: string } {
       }
       return { error: `unknown flag: ${a}` };
     } catch (e) {
+      // next() throws when a flag lacks its value
       return {
         error: e instanceof Error ? e.message : String(e),
       };
     }
   }
 
+  // Help may omit required flags; bin prints HELP_TEXT and exits 0
   if (help) {
     return {
       command: command ?? "",
@@ -248,6 +266,7 @@ export function parseArgv(argv: string[]): ParsedCli | { error: string } {
   };
 }
 
+/** Usage blurb for --help and parse errors (kept next to parseArgv). */
 export const HELP_TEXT = `acp-probe — thin ACP host smoke CLI (phase 3)
 
 Usage:
