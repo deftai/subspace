@@ -160,7 +160,60 @@ It does not prove that an external agent is installed or authenticated.
 **Outcome:** You can spawn an agent over stdio, create a session, stream a
 prompt, cancel it, and close the connection.
 
+### Progressive helper (happy path)
+
+For a one-shot script or tutorial, use `runAcpStdioTurn`. It composes
+`defineStdioTransport` + `defineAcpClientProduct` + `sessions.ensure` + demux
+and closes the product by default (`close: "always"`).
+
 Create `.scratch/host-session.ts` in the repository:
+
+```ts
+import { runAcpStdioTurn } from "@deft/acp-client";
+
+const { events, result } = await runAcpStdioTurn({
+  spawn: {
+    command: process.execPath,
+    args: [
+      "--experimental-strip-types",
+      "packages/acp-agent/bin/session-echo-agent.ts",
+    ],
+    cwd: process.cwd(),
+  },
+  session: {
+    key: "tutorial",
+    cwd: process.cwd(),
+    providerId: "session-echo",
+  },
+  prompt: "hello from my host",
+  onUpdate: (e) => console.log("update", e.update),
+  onPromptDone: (e) => console.log("done", e.result),
+});
+
+console.log("events", events.length, "result", result);
+```
+
+Run it:
+
+```bash
+node --experimental-strip-types .scratch/host-session.ts
+```
+
+Related helpers (same package, additive):
+
+| Helper | Use |
+|--------|-----|
+| `runAcpStdioTurn` | Spawn + one turn (script path) |
+| `runAcpTurn` | Same on an already-open `transport` |
+| `demuxAgentEvents` | Callbacks + collect over any `session.prompt` stream |
+
+Use `close: "never"` when you need multi-turn on one product; then call
+`product.close()` yourself. Default remains `"always"`.
+
+### Raw product path (multi-session hosts)
+
+When you need multiple sessions, long-lived connections, or full control, keep
+using the product API directly:
 
 ```ts
 import { defineStdioTransport } from "@deft/acp-wire";
@@ -201,12 +254,6 @@ try {
 } finally {
   await product.close();
 }
-```
-
-Run it:
-
-```bash
-node --experimental-strip-types .scratch/host-session.ts
 ```
 
 The product sends `initialize` when it connects. It sends `cwd` and
