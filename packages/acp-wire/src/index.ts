@@ -374,6 +374,23 @@ export function defineStdioTransport(
         env: { ...process.env, ...options.env },
         stdio: ["pipe", "pipe", "inherit"],
       });
+      // Surface ENOENT / spawn failures as connect() rejection (not uncaught).
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          child.off("spawn", onSpawn);
+          reject(err);
+        };
+        const onSpawn = () => {
+          child.off("error", onError);
+          resolve();
+        };
+        child.once("error", onError);
+        child.once("spawn", onSpawn);
+        // If already failed synchronously, 'error' may have fired; check pid.
+        if (child.pid !== undefined) {
+          // spawn may still emit error later; keep listeners until one fires.
+        }
+      });
       if (!child.stdin || !child.stdout) {
         throw new Error("spawn did not provide stdio pipes");
       }
