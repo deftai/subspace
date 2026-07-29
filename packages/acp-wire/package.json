@@ -8,5 +8,8 @@
   },
   "bin": {
     "acp-echo-agent": "./bin/echo-agent.ts"
+  },
+  "dependencies": {
+    "@deft/subspace-foundation": "workspace:*"
   }
 }
