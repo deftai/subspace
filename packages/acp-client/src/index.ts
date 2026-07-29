@@ -5,7 +5,11 @@
  * one prompt queue owner, reverse permission map, host session store only.
  * No middleware stack, no foundation RpcSession, no multi-store collapse.
  */
-import type { AcpMessage, AcpTransport } from "../../acp-wire/src/index.ts";
+import {
+  defineStdioTransport,
+  type AcpMessage,
+  type AcpTransport,
+} from "../../acp-wire/src/index.ts";
 
 // ─── thin wire client (phase 1) ─────────────────────────────────────────────
 
@@ -620,4 +624,170 @@ export async function collectEvents(
   const out: AgentEvent[] = [];
   for await (const e of iterable) out.push(e);
   return out;
+}
+
+// ─── progressive host helpers (additive — do not replace product path) ──────
+
+/**
+ * Optional callbacks while demuxing an `AgentEvent` stream.
+ * Does not replace `for await` — demux always drives the iterable.
+ * Handlers may be sync or async; demux `await`s each before the next event.
+ */
+export type DemuxAgentEventHandlers = {
+  onUpdate?: (
+    event: Extract<AgentEvent, { type: "update" }>,
+  ) => void | Promise<void>;
+  onPromptDone?: (
+    event: Extract<AgentEvent, { type: "prompt_done" }>,
+  ) => void | Promise<void>;
+  onPromptError?: (
+    event: Extract<AgentEvent, { type: "prompt_error" }>,
+  ) => void | Promise<void>;
+  onPermission?: (
+    event: Extract<AgentEvent, { type: "permission" }>,
+  ) => void | Promise<void>;
+};
+
+export type DemuxAgentEventsResult = {
+  events: AgentEvent[];
+  result?: unknown;
+  error?: unknown;
+};
+
+/**
+ * Demux an agent event stream into callbacks + collected events.
+ * Always `for await` under the hood (one stream path).
+ * Awaits handlers so async callback rejections surface on this path.
+ */
+export async function demuxAgentEvents(
+  iterable: AsyncIterable<AgentEvent>,
+  handlers?: DemuxAgentEventHandlers,
+): Promise<DemuxAgentEventsResult> {
+  const events: AgentEvent[] = [];
+  let result: unknown;
+  let error: unknown;
+  for await (const event of iterable) {
+    events.push(event);
+    switch (event.type) {
+      case "update":
+        await handlers?.onUpdate?.(event);
+        break;
+      case "prompt_done":
+        result = event.result;
+        await handlers?.onPromptDone?.(event);
+        break;
+      case "prompt_error":
+        error = event.error;
+        await handlers?.onPromptError?.(event);
+        break;
+      case "permission":
+        await handlers?.onPermission?.(event);
+        break;
+    }
+  }
+  return { events, result, error };
+}
+
+export type RunAcpTurnClose = "always" | "never";
+
+export type RunAcpTurnOptions = {
+  /** Already-connected transport. */
+  transport: AcpTransport;
+  permissionPolicy?: PermissionPolicy;
+  /**
+   * Host ensure key + session/new params (`cwd` / `mcpServers` defaulted by
+   * `buildSessionNewParams`).
+   */
+  session: { key: string } & SessionNewParams;
+  prompt: unknown;
+  /**
+   * Lifecycle after this call. Default `"always"`: product (or transport if
+   * product never connected) is closed even when ensure/prompt/connect fails.
+   * `"never"` leaves lifecycle to the caller (`product.close()`).
+   */
+  close?: RunAcpTurnClose;
+} & DemuxAgentEventHandlers;
+
+export type RunAcpTurnResult = DemuxAgentEventsResult & {
+  product: AcpClientProduct;
+  session: AcpSession;
+};
+
+/**
+ * One-shot host turn on an open transport: product → ensure → demux prompt.
+ * Default `close: "always"` closes the product after the turn (and closes the
+ * transport on connect/initialize failure before product owns it).
+ * Use `close: "never"` for multi-turn; caller must `product.close()`.
+ */
+export async function runAcpTurn(
+  opts: RunAcpTurnOptions,
+): Promise<RunAcpTurnResult> {
+  const closeMode: RunAcpTurnClose = opts.close ?? "always";
+  let product: AcpClientProduct | undefined;
+  try {
+    product = await defineAcpClientProduct({
+      permissionPolicy: opts.permissionPolicy ?? "deny",
+    }).connect(opts.transport);
+    const { key, ...sessionParams } = opts.session;
+    const session = await product.sessions.ensure(key, sessionParams);
+    const demuxed = await demuxAgentEvents(session.prompt(opts.prompt), {
+      onUpdate: opts.onUpdate,
+      onPromptDone: opts.onPromptDone,
+      onPromptError: opts.onPromptError,
+      onPermission: opts.onPermission,
+    });
+    return { ...demuxed, product, session };
+  } finally {
+    if (closeMode === "always") {
+      if (product) {
+        await product.close();
+      } else {
+        // Connect/initialize failed before product owned the transport.
+        try {
+          await opts.transport.close();
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  }
+}
+
+export type RunAcpStdioSpawn = {
+  command: string;
+  args?: readonly string[];
+  cwd?: string;
+  env?: Record<string, string>;
+};
+
+export type RunAcpStdioTurnOptions = Omit<RunAcpTurnOptions, "transport"> & {
+  /** Agent child process (passed to `defineStdioTransport` spawn mode). */
+  spawn: RunAcpStdioSpawn;
+};
+
+/**
+ * Script/tutorial happy path: spawn stdio agent → `runAcpTurn`.
+ * No second product implementation — composes wire + turn helper only.
+ */
+export async function runAcpStdioTurn(
+  opts: RunAcpStdioTurnOptions,
+): Promise<RunAcpTurnResult> {
+  const transport = await defineStdioTransport({
+    mode: "spawn",
+    command: opts.spawn.command,
+    args: opts.spawn.args,
+    cwd: opts.spawn.cwd,
+    env: opts.spawn.env,
+  }).connect();
+  return runAcpTurn({
+    transport,
+    permissionPolicy: opts.permissionPolicy,
+    session: opts.session,
+    prompt: opts.prompt,
+    close: opts.close,
+    onUpdate: opts.onUpdate,
+    onPromptDone: opts.onPromptDone,
+    onPromptError: opts.onPromptError,
+    onPermission: opts.onPermission,
+  });
 }

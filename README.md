@@ -18,7 +18,7 @@ Start with the progressive [Subspace developer guide](./docs/DEVELOPER_GUIDE.md)
 |---------|---------|------|
 | `@deft/subspace-foundation` | 0.1.0 | Protocol-agnostic kernel (transport/framer/codec) |
 | `@deft/acp-wire` | 0.1.0 | ACP transport + NDJSON; Option C; composes foundation |
-| `@deft/acp-client` | 0.1.0 | Host façade + **phase 2** session product |
+| `@deft/acp-client` | 0.1.0 | Host façade + session product + **progressive turn helpers** |
 | `@deft/acp-agent` | 0.1.0 | Agent façade + reverse RPC + session-echo + **shared helpers** |
 | `@deft/acp-probe` | 0.1.0 | **Phase 3** thin CLI over client product (stdio smoke) |
 | `@deft/acp-testkit` | 0.1.0 | **Phase 4** importable scenarios + asserts (no `acp-tester` package) |
@@ -26,7 +26,7 @@ Start with the progressive [Subspace developer guide](./docs/DEVELOPER_GUIDE.md)
 
 **Option C:** structured messages in-process by default; NDJSON only on byte edges; optional `encodeRoundTrip` for parity tests.
 
-**DX helpers (first pass — not a framework):** `promptToText`, `notifyAgentMessageChunk` / `agentMessageChunkUpdate`, `defaultInitializeResult`, `createDeferredBridge` on `@deft/acp-agent`; harness `resolveHarnessOptions` + multi-file layout. Rich `on*` / wildcards / hooks bag remains **provisional** (not shipped).
+**DX helpers (first pass — not a framework):** `promptToText`, `notifyAgentMessageChunk` / `agentMessageChunkUpdate`, `defaultInitializeResult`, `createDeferredBridge` on `@deft/acp-agent`; harness `resolveHarnessOptions` + multi-file layout. Host progressive: `runAcpStdioTurn` / `runAcpTurn` / `demuxAgentEvents` on `@deft/acp-client` (additive; product path remains). Rich `on*` / wildcards / hooks bag remains **provisional** (not shipped).
 
 ### Phase 2 product (`defineAcpClientProduct`)
 

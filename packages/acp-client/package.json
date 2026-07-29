@@ -1,7 +1,7 @@
 {
   "name": "@deft/acp-client",
   "version": "0.1.0",
-  "description": "ACP host client: thin wire façade + session product (create/load/prompt/cancel/permissions)",
+  "description": "ACP host client: thin wire façade + session product + progressive turn helpers",
   "type": "module",
   "license": "MIT",
   "engines": {
