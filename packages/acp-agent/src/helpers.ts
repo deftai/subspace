@@ -16,7 +16,7 @@ export type AgentBridge = {
 /**
  * Normalize ACP prompt payloads to a single string for fixture matching.
  * Accepts string, content-part arrays (`{ type, text }`), null/undefined, or JSON fallback.
- * Invariant: never throws; unknown shapes stringify rather than fail the turn.
+ * Unknown shapes fall back to JSON.stringify (which can throw on non-JSON values like BigInt/circular — not possible for wire-decoded params).
  */
 export function promptToText(prompt: unknown): string {
   if (typeof prompt === "string") return prompt;

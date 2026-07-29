@@ -434,7 +434,7 @@ export function defineStdioTransport(
   return {
     _tag: "StdioTransport" as const,
     /**
-     * Open the channel: inherit uses process stdio; spawn waits for child ready.
+     * Open the channel: inherit uses process stdio; spawn waits for successful process creation (not agent-level readiness).
      * Spawn failures (ENOENT etc.) reject connect() rather than uncaught errors.
      */
     async connect(): Promise<AcpTransport> {
