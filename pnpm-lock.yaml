@@ -21,6 +21,18 @@ importers:
         specifier: workspace:*
         version: link:../acp-wire
 
+  packages/acp-testkit:
+    dependencies:
+      '@deft/acp-agent':
+        specifier: workspace:*
+        version: link:../acp-agent
+      '@deft/acp-client':
+        specifier: workspace:*
+        version: link:../acp-client
+      '@deft/acp-wire':
+        specifier: workspace:*
+        version: link:../acp-wire
+
   packages/acp-wire:
     dependencies:
       '@deft/subspace-foundation':
