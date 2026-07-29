@@ -4,6 +4,7 @@
  */
 import {
   defineAcpClientProduct,
+  formatWireError,
   type AgentEvent,
   type PermissionPolicy,
 } from "@deft/acp-client";
@@ -65,18 +66,19 @@ export async function runProbe(
       }).connect(transport);
 
       try {
-        const session = await product.sessions.create();
-        for await (const event of session.prompt(options.prompt)) {
+        // Align spawn cwd with session/new cwd (real agents require both fields).
+        const sessionCwd = options.cwd ?? process.cwd();
+        const session = await product.sessions.create({ cwd: sessionCwd });
+        // ACP session/prompt expects ContentBlock[]; plain string is fixture-only.
+        const promptBlocks = [{ type: "text" as const, text: options.prompt }];
+        for await (const event of session.prompt(promptBlocks)) {
           if (timedOut) break;
           events.push(event);
           onEvent(event);
           if (event.type === "prompt_error") {
             return {
               ok: false,
-              error:
-                event.error instanceof Error
-                  ? event.error.message
-                  : String(event.error),
+              error: formatWireError(event.error),
               events,
             };
           }
@@ -107,7 +109,7 @@ export async function runProbe(
     } catch (error) {
       return {
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: formatWireError(error),
         events,
       };
     }
@@ -257,7 +259,7 @@ Options:
   -p, --prompt <text>       Prompt to send (required)
       --permission <mode>   deny | approve-reads (default: deny)
       --timeout <ms>        Wall-clock timeout for the run
-      --cwd <path>          Working directory for the agent
+      --cwd <path>          Working directory (spawn + session/new; default process.cwd())
   -h, --help                Show help
 
 Exit codes:
