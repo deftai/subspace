@@ -8,6 +8,10 @@ Multi-protocol **agent infrastructure**: great DX for clients and servers on any
 
 Strategy docs: [deftai/section-31/strategy/subspace](https://github.com/deftai/section-31/tree/main/strategy/subspace)
 
+## Developer guide
+
+Start with the progressive [Subspace developer guide](./docs/DEVELOPER_GUIDE.md).
+
 ## Packages (`@deft/*`)
 
 | Package | Version | Role |
