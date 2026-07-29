@@ -1,5 +1,8 @@
 /**
  * Phase 3 done-when: acp-probe CLI over shared client product + stdio fixture.
+ *
+ * Covers argv parsing, runProbe API, process exit codes, and package dep bounds
+ * (client+wire only). Does not own probe implementation.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -27,6 +30,10 @@ const agentScript = path.join(
 const node = process.execPath;
 const strip = "--experimental-strip-types";
 
+/**
+ * Spawn acp-probe as a real CLI process; optional kill if hung.
+ * Returns exit code + captured streams for exit-code contract tests.
+ */
 function runCli(
   args: string[],
   opts?: { timeoutMs?: number },
@@ -45,6 +52,7 @@ function runCli(
     child.stderr.on("data", (d) => {
       stderr += String(d);
     });
+    // Hard ceiling so a wedged agent cannot hang the suite forever
     const timer =
       opts?.timeoutMs !== undefined
         ? setTimeout(() => {
@@ -65,6 +73,7 @@ function runCli(
 
 describe("phase3_acp_probe", () => {
   it("parseArgv — requires command + prompt; rejects approve-all", () => {
+    // approve-all is a hard non-goal; missing command must error with help surface
     const bad = parseArgv([]);
     assert.ok("error" in bad);
 
@@ -99,6 +108,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("runProbe API — stdio session-echo one-shot green", async () => {
+    // Library path (no CLI) must still yield dual ids + stream events
     const result = await runProbe({
       command: node,
       args: [strip, agentScript],
@@ -119,6 +129,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("runProbe API — bad command fails (not silent success)", async () => {
+    // Failure must set ok:false with a non-empty error string
     const result = await runProbe({
       command: path.join(root, "definitely-not-a-real-agent-binary"),
       args: [],
@@ -132,6 +143,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("CLI — smoke vs session-echo-agent exit 0 + transcript", async () => {
+    // End-to-end process contract: 0 + acp-probe: ok on stderr
     const { code, stdout, stderr } = await runCli(
       [
         "--command",
@@ -154,6 +166,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("CLI — bad flags exit 1", async () => {
+    // User error (missing --command) is exit 1, not agent failure
     const { code, stderr } = await runCli(["--prompt", "only"], {
       timeoutMs: 5_000,
     });
@@ -162,6 +175,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("CLI — agent failure exit 2", async () => {
+    // Spawn/runtime failure is exit 2 so scripts can distinguish from bad flags
     const { code, stderr } = await runCli(
       [
         "--command",
@@ -178,6 +192,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("probe depends on client+wire only (no agent package dep)", () => {
+    // Boundary gate: probe must not pull agent or foundation packages
     const require = createRequire(
       path.join(root, "packages/acp-probe/package.json"),
     );
@@ -195,6 +210,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("buildSessionNewParams always includes cwd + mcpServers", () => {
+    // Session/new shape must satisfy wire schema even with empty options
     const def = buildSessionNewParams();
     assert.equal(typeof def.cwd, "string");
     assert.ok(def.cwd.length > 0);
@@ -209,6 +225,7 @@ describe("phase3_acp_probe", () => {
   });
 
   it("formatWireError never returns [object Object] for RPC errors", () => {
+    // Nested data must stringify usefully for probe/user diagnostics
     const s = formatWireError({
       code: -32602,
       message: "Invalid params",

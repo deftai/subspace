@@ -1,5 +1,6 @@
 /**
  * Phase 4 done-when: @deft/acp-testkit importable scenarios on client product.
+ *
  * Gates: ≥3 scenarios linked; ≥1 stdio; no second client; no acp-tester package.
  *
  * Path matrix (Elon 2026-07-29): all three named scenarios on linked; ≥1 stdio
@@ -30,6 +31,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("phase4_acp_testkit", () => {
   it("package exists as @deft/acp-testkit (no acp-tester)", () => {
+    // Structural non-goals: package name, deps, and no acp-tester twin
     const pkgPath = path.join(root, "packages/acp-testkit/package.json");
     assert.equal(existsSync(pkgPath), true, "packages/acp-testkit must exist");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
@@ -72,6 +74,7 @@ describe("phase4_acp_testkit", () => {
   });
 
   it("stdio — multi-turn scenario (required path)", async () => {
+    // Matrix minimum: at least one full stdio scenario must stay green
     const r = await scenarioMultiTurnStdio();
     assert.equal(r.ok, true);
     assert.equal(r.mode, "stdio");
@@ -84,6 +87,7 @@ describe("phase4_acp_testkit", () => {
   });
 
   it("assert helpers work on live product stream", async () => {
+    // Helpers are not scenario-only — usable on ad-hoc product streams
     const h = await withLinkedProduct({ permissionPolicy: "deny" });
     try {
       const s = await h.product.sessions.create();
@@ -95,6 +99,7 @@ describe("phase4_acp_testkit", () => {
   });
 
   it("runMinimumScenarios — all green", async () => {
+    // Aggregate entry: kit's declared minimum set must all pass
     const results = await runMinimumScenarios();
     assert.ok(results.length >= 4);
     assert.ok(results.every((r) => r.ok));

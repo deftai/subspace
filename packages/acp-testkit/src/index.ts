@@ -1,6 +1,9 @@
 /**
  * @deft/acp-testkit — importable multi-turn scenarios + asserts over
- * defineAcpClientProduct. Sibling of acp-probe (CLI smoke); not a second client.
+ * defineAcpClientProduct.
+ *
+ * Owns: public barrel re-exports only (assert, harness, scenarios, client types).
+ * Does not own: wire framing, a second client, or CLI smoke (sibling of acp-probe).
  */
 export {
   textChunks,
