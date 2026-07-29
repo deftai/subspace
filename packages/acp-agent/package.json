@@ -1,9 +1,36 @@
 {
   "name": "@deft/acp-agent",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "ACP agent façade + reverse RPC + session-echo fixture helpers",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.ts"
-  }
+  },
+  "bin": {
+    "acp-session-echo-agent": "./bin/session-echo-agent.ts"
+  },
+  "files": [
+    "src",
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git",
+    "directory": "packages/acp-agent"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "agent",
+    "subspace"
+  ]
 }
