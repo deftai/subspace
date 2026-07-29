@@ -2,8 +2,28 @@
  * ACP agent (server) façade — thin request dispatch + outbound request/notify.
  * Phase 2: supports reverse RPC so session agents can call host methods
  * (e.g. session/request_permission) during a prompt.
+ *
+ * DX first pass: shared helpers in `./helpers.ts` (promptToText, chunk notify, init defaults).
  */
 import type { AcpMessage, AcpTransport } from "../../acp-wire/src/index.ts";
+import {
+  createDeferredBridge,
+  notifyAgentMessageChunk,
+  promptToText,
+  type AgentBridge,
+} from "./helpers.ts";
+
+export type {
+  AgentBridge,
+  InitializeAgentInfo,
+} from "./helpers.ts";
+export {
+  agentMessageChunkUpdate,
+  createDeferredBridge,
+  defaultInitializeResult,
+  notifyAgentMessageChunk,
+  promptToText,
+} from "./helpers.ts";
 
 export type AcpHandler = (
   params: unknown,
@@ -103,10 +123,8 @@ export function defineAcpServer(options: {
   };
 }
 
-export type SessionEchoBridge = {
-  notify(method: string, params?: unknown): Promise<void>;
-  request(method: string, params?: unknown): Promise<unknown>;
-};
+/** @deprecated Prefer `AgentBridge` — same shape. */
+export type SessionEchoBridge = AgentBridge;
 
 /**
  * Minimal session-capable agent handlers for phase-2 product tests.
@@ -114,7 +132,7 @@ export type SessionEchoBridge = {
  * that need notify / reverse request.
  */
 export function defineSessionEchoHandlers(
-  bridge: SessionEchoBridge,
+  bridge: AgentBridge,
 ): Record<string, AcpHandler> {
   const sessions = new Map<string, { turns: number }>();
   const cancelFlags = new Map<string, boolean>();
@@ -147,34 +165,24 @@ export function defineSessionEchoHandlers(
       cancelFlags.set(p.sessionId, false);
       const rec = sessions.get(p.sessionId)!;
       rec.turns += 1;
-      const promptText =
-        typeof p.prompt === "string"
-          ? p.prompt
-          : JSON.stringify(p.prompt ?? null);
+      const promptText = promptToText(p.prompt);
 
-      await bridge.notify("session/update", {
-        sessionId: p.sessionId,
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: `turn:${rec.turns}:${promptText}` },
-        },
-      });
+      await notifyAgentMessageChunk(
+        bridge,
+        p.sessionId,
+        `turn:${rec.turns}:${promptText}`,
+      );
 
       if (promptText === "need-perm") {
         const perm = await bridge.request("session/request_permission", {
           sessionId: p.sessionId,
           toolCall: { kind: "read", title: "read workspace file" },
         });
-        await bridge.notify("session/update", {
-          sessionId: p.sessionId,
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-              type: "text",
-              text: `perm:${JSON.stringify(perm)}`,
-            },
-          },
-        });
+        await notifyAgentMessageChunk(
+          bridge,
+          p.sessionId,
+          `perm:${JSON.stringify(perm)}`,
+        );
       }
 
       if (promptText === "need-perm-write") {
@@ -182,16 +190,11 @@ export function defineSessionEchoHandlers(
           sessionId: p.sessionId,
           toolCall: { kind: "edit", title: "write file" },
         });
-        await bridge.notify("session/update", {
-          sessionId: p.sessionId,
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-              type: "text",
-              text: `perm:${JSON.stringify(perm)}`,
-            },
-          },
-        });
+        await notifyAgentMessageChunk(
+          bridge,
+          p.sessionId,
+          `perm:${JSON.stringify(perm)}`,
+        );
       }
 
       if (promptText === "slow") {
@@ -200,13 +203,7 @@ export function defineSessionEchoHandlers(
             return { stopReason: "cancelled" };
           }
           await new Promise((r) => setTimeout(r, 15));
-          await bridge.notify("session/update", {
-            sessionId: p.sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: `slow:${i}` },
-            },
-          });
+          await notifyAgentMessageChunk(bridge, p.sessionId, `slow:${i}`);
         }
       }
 
@@ -229,20 +226,9 @@ export function defineSessionEchoHandlers(
 export async function listenSessionEcho(
   transport: AcpTransport,
 ): Promise<AcpServerHandle> {
-  const bridge: {
-    current?: AcpServerHandle;
-  } = {};
-  const handlers = defineSessionEchoHandlers({
-    notify: (m, p) => {
-      if (!bridge.current) throw new Error("server not bound");
-      return bridge.current.notify(m, p);
-    },
-    request: (m, p) => {
-      if (!bridge.current) throw new Error("server not bound");
-      return bridge.current.request(m, p);
-    },
-  });
+  const { bridge, bind } = createDeferredBridge();
+  const handlers = defineSessionEchoHandlers(bridge);
   const server = await defineAcpServer({ handlers }).listen(transport);
-  bridge.current = server;
+  bind(server);
   return server;
 }
