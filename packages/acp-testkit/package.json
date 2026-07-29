@@ -1,14 +1,37 @@
 {
   "name": "@deft/acp-testkit",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Importable ACP scenarios + asserts on the client product (no separate acp-tester package)",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
   "dependencies": {
     "@deft/acp-agent": "workspace:*",
     "@deft/acp-client": "workspace:*",
     "@deft/acp-wire": "workspace:*"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deftai/subspace.git",
+    "directory": "packages/acp-testkit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "acp",
+    "testkit",
+    "scenarios",
+    "subspace"
+  ]
 }
