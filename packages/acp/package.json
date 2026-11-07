@@ -1,0 +1,26 @@
+{
+  "name": "@deft-subspace/acp",
+  "version": "0.0.0-experiment",
+  "description": "ACP for apps: one model over protocol v1 and v2, turns you can await, cancellation that works, permissions that fail closed. Types come from the official @agentclientprotocol/sdk.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": { "node": ">=22.19" },
+  "exports": {
+    ".": { "source": "./src/index.ts", "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./node": { "source": "./src/node.ts", "types": "./dist/node.d.ts", "default": "./dist/node.js" }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/kernel": "workspace:*",
+    "@agentclientprotocol/sdk": "2.4.0"
+  },
+  "devDependencies": {
+    "zod": "^4.1.0"
+  }
+}

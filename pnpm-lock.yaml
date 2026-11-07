@@ -6,7 +6,27 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/acp:
+    dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 2.4.0
+        version: 2.4.0(zod@4.6.7)
+      '@deft-subspace/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+    devDependencies:
+      zod:
+        specifier: ^4.1.0
+        version: 4.6.7
 
   packages/acp-agent: {}
 
@@ -41,4 +61,47 @@ importers:
         specifier: workspace:*
         version: link:../subspace-foundation
 
+  packages/kernel: {}
+
   packages/subspace-foundation: {}
+
+packages:
+
+  '@agentclientprotocol/sdk@2.4.0':
+    resolution: {integrity: sha512-7qJ8nnyj7WesC5ve185ioTpB2/svQoeGV4HA4nLEhgDUrcmBe54/08VcXc/oL4p14tDbxxECZzdYmUYQ+4l+Wg==}
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.4.0
+      zod: ^3.25.76 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/server':
+        optional: true
+
+  '@types/node@22.20.5':
+    resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
+snapshots:
+
+  '@agentclientprotocol/sdk@2.4.0(zod@4.6.7)':
+    dependencies:
+      zod: 4.6.7
+
+  '@types/node@22.20.5':
+    dependencies:
+      undici-types: 6.21.0
+
+  typescript@5.9.3: {}
+
+  undici-types@6.21.0: {}
+
+  zod@4.6.7: {}

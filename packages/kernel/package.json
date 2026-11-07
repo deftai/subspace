@@ -1,0 +1,20 @@
+{
+  "name": "@deft-subspace/kernel",
+  "version": "0.0.0-experiment",
+  "description": "Protocol-neutral kernel: channels, NDJSON framing, JSON-RPC peer with one owner for every request's lifecycle, and (Node) supervised agent processes. No dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": { "node": ">=22.19" },
+  "exports": {
+    ".": { "source": "./src/index.ts", "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./node": { "source": "./src/node.ts", "types": "./dist/node.d.ts", "default": "./dist/node.js" },
+    "./testing": { "source": "./src/testing.ts", "types": "./dist/testing.d.ts", "default": "./dist/testing.js" }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts"
+  }
+}
