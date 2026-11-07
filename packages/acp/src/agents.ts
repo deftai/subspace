@@ -75,6 +75,12 @@ export interface AgentCatalog {
   registrySource: string;
   /** Lowest first: later layers override earlier ones. */
   layers: CatalogLayer[];
+  /**
+   * Registry binaries installed by `subspace agents install` (`installAgent`):
+   * `<id>@<version>` -> the folder they were unpacked into. Used by absolute
+   * path; PATH is not touched.
+   */
+  binaries?: Record<string, string>;
 }
 
 /** An agent ready to start. */
@@ -227,20 +233,27 @@ function canonical(catalog: AgentCatalog, name: string): string | undefined {
   return undefined;
 }
 
-function registryLaunch(entry: RegistryAgent, platform: string, arch: string): Pick<ResolvedAgent, 'command' | 'args' | 'env' | 'launch'> & { install?: string } {
+function registryLaunch(
+  entry: RegistryAgent,
+  platform: string,
+  arch: string,
+  binaries: Record<string, string> = {}
+): Pick<ResolvedAgent, 'command' | 'args' | 'env' | 'launch'> & { install?: string } {
   const d = entry.distribution;
   if (d.npx) return { command: 'npx', args: ['-y', d.npx.package, ...(d.npx.args ?? [])], env: d.npx.env ?? {}, launch: 'npx' };
   if (d.uvx) return { command: 'uvx', args: [d.uvx.package, ...(d.uvx.args ?? [])], env: d.uvx.env ?? {}, launch: 'uvx' };
   const target = d.binary?.[registryTarget(platform, arch)] ?? Object.values(d.binary ?? {})[0];
-  // A registry binary is expected on PATH under its command's name; the archive is where to get it.
+  // Installed by `subspace agents install`: run it from there.
+  const dir = binaries[`${entry.id}@${entry.version}`];
+  if (target && dir) return { command: `${dir.replace(/[\\/]+$/, '')}/${target.cmd.replace(/^\.\//, '')}`, args: target.args ?? [], env: target.env ?? {}, launch: 'binary' };
+  // Otherwise it is expected on PATH under its command's name.
   const command = (target?.cmd ?? entry.id).split(/[\\/]/).pop()!;
-  return {
-    command,
-    args: target?.args ?? [],
-    env: target?.env ?? {},
-    launch: 'binary',
-    ...(target ? { install: `Install ${entry.name} so \`${command}\` is on PATH (download: ${target.archive})` } : {}),
-  };
+  const install = !target
+    ? undefined
+    : target.sha256
+      ? `Run \`subspace agents install ${entry.id}\`, or install ${entry.name} so \`${command}\` is on PATH (download: ${target.archive})`
+      : `Install ${entry.name} so \`${command}\` is on PATH (download: ${target.archive}; the registry lists no checksum for it, so Subspace does not install it)`;
+  return { command, args: target?.args ?? [], env: target?.env ?? {}, launch: 'binary', ...(install ? { install } : {}) };
 }
 
 /** Resolve a name (a defined name, an alias, or a registry id). Undefined when unknown. */
@@ -274,7 +287,7 @@ export function resolveAgent(
   const entry = catalog.registry.agents.find((a) => a.id === (merged.registry ?? id));
   if (entry) sources.unshift('registry');
   const launch = entry
-    ? registryLaunch(entry, host.platform, host.arch)
+    ? registryLaunch(entry, host.platform, host.arch, catalog.binaries)
     : merged.fallback
       ? { command: merged.fallback.command, args: merged.fallback.args ?? [], env: {}, launch: (merged.fallback.command === 'npx' || merged.fallback.command === 'uvx' ? merged.fallback.command : 'command') as ResolvedAgent['launch'] }
       : undefined;

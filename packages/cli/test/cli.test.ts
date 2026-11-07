@@ -182,3 +182,10 @@ test('run: each turn is drawn fresh; the second starts right after its prompt li
   assert.equal(turns[1], `${turns[2]}\n`);
   assert.match(turns[2]!, /^thinking: Looking around\./);
 });
+
+test('agents install: a name is needed; an npx agent is not a registry binary', async () => {
+  assert.equal((await cli('agents', 'install')).code, 2);
+  const npx = await cli('agents', 'install', 'claude');
+  assert.equal(npx.code, 1);
+  assert.match(npx.err, /claude is not installed from a registry binary \(it starts with `npx`\)/);
+});

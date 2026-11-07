@@ -24,6 +24,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { builtinCatalog, type AgentCatalog, type AgentDefinition, type CatalogLayer, type Quirk } from './agents.ts';
+import { installedBinaries } from './install.ts';
 import { REGISTRY_URL, trimRegistry, type Registry } from './registry.ts';
 import { REGISTRY_SNAPSHOT, REGISTRY_SNAPSHOT_DATE } from './registry-snapshot.ts';
 
@@ -208,6 +209,7 @@ export async function refreshRegistry(options: { url?: string; env?: Record<stri
 export function loadCatalog(options: CatalogOptions = {}): AgentCatalog {
   const { registry, source } = loadRegistry(options.env);
   const catalog = builtinCatalog(registry, source);
+  catalog.binaries = installedBinaries(options.env);
   if (options.builtinOnly) return catalog;
   for (const { path, exists } of agentFiles(options)) {
     if (!exists) {

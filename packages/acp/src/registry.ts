@@ -15,6 +15,8 @@ export interface RegistryLaunch {
 
 export interface RegistryBinary {
   archive: string;
+  /** The archive's SHA-256, hex. `subspace agents install` refuses a binary without one. */
+  sha256?: string;
   cmd: string;
   args?: string[];
   env?: Record<string, string>;
@@ -65,7 +67,8 @@ export function trimRegistry(raw: unknown): Registry {
       if (!isRecord(b) || typeof b.cmd !== 'string' || typeof b.archive !== 'string') continue;
       const args = strings(b.args);
       const vars = env(b.env);
-      binary[target] = { archive: b.archive, cmd: b.cmd, ...(args?.length ? { args } : {}), ...(vars && Object.keys(vars).length ? { env: vars } : {}) };
+      const sha256 = typeof b.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(b.sha256) ? b.sha256.toLowerCase() : undefined;
+      binary[target] = { archive: b.archive, ...(sha256 ? { sha256 } : {}), cmd: b.cmd, ...(args?.length ? { args } : {}), ...(vars && Object.keys(vars).length ? { env: vars } : {}) };
     }
     const npx = launch(d.npx);
     const uvx = launch(d.uvx);

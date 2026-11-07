@@ -22,7 +22,10 @@ import {
   AgentFileError,
   askInTerminal,
   BUILTIN_AGENTS,
+  installAgent,
+  InstallError,
   listAgents,
+  resolveAgent,
   loadCatalog,
   refreshRegistry,
   type AgentCatalog,
@@ -145,6 +148,7 @@ waived (shown as WAIVE). Exits 1 if any check failed.
 ${AGENTS_NOTE.replace('subspace run "hello" -- node my-agent.js', 'subspace check -- node my-agent.js')}
 `,
   agents: `Usage: subspace agents [name] [options]
+       subspace agents install <name>
 
 Lists the known agents and whether each one's command is installed (logins are
 checked when it starts). With a name, shows how it starts and its quirks.
@@ -157,6 +161,10 @@ the nearest subspace.toml, and the files in $SUBSPACE_AGENTS or --agents-file.
   --refresh              Fetch the latest ACP registry into the cache
   --files                List the agents files read, and whether each exists
   --json                 Print as JSON
+
+\`agents install <name>\` downloads a registry agent's binary for this machine
+into ~/.cache/subspace/bin, and agents run it from there. Only on request, and
+only when the registry lists a sha256 for it, which the download must match.
 
 An agents file:
 
@@ -464,7 +472,31 @@ const launchNote = (a: ResolvedAgent) => (a.launch === 'npx' || a.launch === 'uv
 /** Installed: its command is on PATH (npx and uvx fetch the package themselves). */
 const ready = (a: ResolvedAgent) => installed(a.command);
 
+/** `subspace agents install <name>`: a registry binary, checked, into the cache. */
+async function installCommand(parsed: Parsed, io: Io): Promise<number> {
+  const name = parsed.positional[1];
+  if (!name) throw new UsageError('subspace agents install <name>');
+  const catalog = catalogOf(parsed);
+  const agent = resolveAgent(catalog, name);
+  const entry = agent?.registry ? catalog.registry.agents.find((a) => a.id === agent.registry) : undefined;
+  if (!agent) throw new UsageError(`Unknown agent ${JSON.stringify(name)}; \`subspace agents --all\` lists them`);
+  if (!entry?.distribution.binary) {
+    io.err(`${agent.id} is not installed from a registry binary (it starts with \`${agent.command}\`)${agent.install ? `; ${agent.install}` : ''}\n`);
+    return 1;
+  }
+  try {
+    const installed = await installAgent(entry);
+    io.out(installed.reused ? `${entry.id} ${entry.version} is already installed: ${installed.command}\n` : `Installed ${entry.id} ${entry.version} (sha256 ${installed.sha256}): ${installed.command}\n`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof InstallError)) throw error;
+    io.err(`${error.message}\n`);
+    return 1;
+  }
+}
+
 async function agentsCommand(parsed: Parsed, io: Io): Promise<number> {
+  if (parsed.positional[0] === 'install') return installCommand(parsed, io);
   if (parsed.flags.refresh) {
     const { agents, path } = await refreshRegistry();
     io.out(`Fetched the ACP registry: ${agents} agents -> ${path}\n`);

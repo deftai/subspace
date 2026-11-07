@@ -86,4 +86,7 @@ A file can add quirks to a built-in agent, or turn one of its quirks off, by id.
 Registry entries run three ways:
 
 - **npx and uvx packages** run as `npx -y <package>` and `uvx <package>`, pinned to the registry's version. The first start downloads them.
-- **Binaries** are expected on your `PATH` under the command's name. `subspace agents <name>` shows the download link. Subspace does not download archives itself.
+- **Binaries:** `subspace agents install <name>` downloads the archive for this machine into `~/.cache/subspace/bin/<id>/<version>` (`$XDG_CACHE_HOME`), and the agent then runs from there by absolute path; `PATH` is not changed. Otherwise a binary is expected on your `PATH` under the command's name, and `subspace agents <name>` shows the download link.
+  - Only on request: starting an agent never downloads one.
+  - Only archives the registry lists a `sha256` for, and the download must match it. Some registry agents have no checksum; install those yourself. The checksum comes from the same registry as the link, so it catches a changed or broken download, not a compromised registry.
+  - The archive is unpacked into a fresh folder, and the command must stay inside it, symlinks included. `installAgent()` in `@deft-subspace/acp/node` does the same from code.
