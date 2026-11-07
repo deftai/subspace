@@ -5,12 +5,18 @@
 #
 #   packages/testkit/scripts/check-claude-codex.sh            # both agents
 #   packages/testkit/scripts/check-claude-codex.sh codex      # one agent
+#   packages/testkit/scripts/check-claude-codex.sh --quick    # only the checks with no model turn
 #
 # Prints each report and saves it to /tmp/deft-check-<agent>.txt.
 set -o pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
+only=""
+if [ "$1" = "--quick" ]; then
+  only="initialize.version,auth.methods,session.new,config.set-current,session.delete,session.unknown"
+  shift
+fi
 if [ $# -gt 0 ]; then agents=("$@"); else agents=(claude codex); fi
 
 ok=()
@@ -23,7 +29,9 @@ for agent in "${agents[@]}"; do
   esac
   echo
   echo "=== $agent (mode $mode)"
-  if env MODE="$mode" node --conditions=source scripts/check-agent.ts npx -y "$pkg" 2>&1 | tee "/tmp/deft-check-$agent.txt"; then
+  vars=("MODE=$mode")
+  [ -n "$only" ] && vars+=("ONLY=$only")
+  if env "${vars[@]}" node --conditions=source scripts/check-agent.ts npx -y "$pkg" 2>&1 | tee "/tmp/deft-check-$agent.txt"; then
     ok+=("$agent")
   else
     failed+=("$agent")
