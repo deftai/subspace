@@ -12,10 +12,9 @@
  */
 import type { Channel } from '@deft-subspace/kernel';
 import { ErrorCode, RpcError } from '@deft-subspace/kernel';
-import { AcpClient, type ClientOptions, type PromptOptions, type Session, type SessionMcpServers } from './client.ts';
+import { AcpClient, type ClientOptions, type Session, type SessionMcpServers } from './client.ts';
 import { mergeHandlers, type TurnHandlers } from './handlers.ts';
-import type { ContentBlock, TurnResult } from './model.ts';
-import type { Turn } from './turn.ts';
+import { conveniences, type SessionConveniences } from './conveniences.ts';
 
 export interface SessionSetup {
   cwd: string;
@@ -65,13 +64,10 @@ export function requirePermissionAnswer(options: Pick<ClientOptions, 'permission
 
 export interface ConnectSessionOptions extends ClientOptions, Partial<SessionSetup> {}
 
-export interface ConnectedSession {
+export interface ConnectedSession extends SessionConveniences {
   readonly client: AcpClient;
   readonly session: Session;
   readonly modeWarning?: string;
-  /** Run one turn and resolve with its result (after its handlers ran). */
-  run(prompt: string | ContentBlock | ContentBlock[], options?: PromptOptions): Promise<TurnResult>;
-  prompt(prompt: string | ContentBlock | ContentBlock[], options?: PromptOptions): Turn;
   /** Close the session and the connection. */
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
@@ -111,8 +107,7 @@ export async function connectSession(channel: Channel<unknown>, options: Connect
     client,
     session,
     ...(opened.modeWarning ? { modeWarning: opened.modeWarning } : {}),
-    run: (prompt, promptOptions) => session.prompt(prompt, promptOptions).done,
-    prompt: (prompt, promptOptions) => session.prompt(prompt, promptOptions),
+    ...conveniences(session),
     close,
     [Symbol.asyncDispose]: close,
   };

@@ -34,6 +34,7 @@ import { ErrorCode, ndjson, RpcError, traceTap, type RpcPeer } from '@deft-subsp
 import { serveAgent, type AgentOptions } from './agent.ts';
 import type { ElicitationHandler, PromptOptions, Session, SessionMcpServers } from './client.ts';
 import { mergeHandlers, type TurnHandlers } from './handlers.ts';
+import { conveniences, type SessionConveniences } from './conveniences.ts';
 import { openSession, requirePermissionAnswer } from './open.ts';
 import type { ContentBlock, TurnResult } from './model.ts';
 import type { PermissionPolicy } from './permissions.ts';
@@ -118,17 +119,13 @@ export interface StartOptions extends Omit<ConnectAgentOptions, 'cwd' | 'workspa
   quiet?: boolean;
 }
 
-export interface StartedAgent {
+export interface StartedAgent extends SessionConveniences {
   readonly client: ConnectedAgent['client'];
   readonly process: ConnectedAgent['process'];
   /** The session opened by `start()`. */
   readonly session: Session;
   /** Why the preset's mode was not applied, if it was not. */
   readonly modeWarning?: string;
-  /** Run one turn in the session and resolve with its result (after its handlers ran). */
-  run(prompt: string | ContentBlock | ContentBlock[], options?: PromptOptions): Promise<TurnResult>;
-  /** Start a turn in the session; iterate it, or pass handlers. */
-  prompt(prompt: string | ContentBlock | ContentBlock[], options?: PromptOptions): Turn;
   /** Another session with the same agent (switched to the same mode). */
   newSession(options?: StartOptions['session']): Promise<Session>;
   /** Cancel what is running, close the session and the connection, and stop the agent. */
@@ -220,8 +217,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
     get modeWarning() {
       return modeWarning;
     },
-    run: (prompt, promptOptions) => session.prompt(prompt, promptOptions).done,
-    prompt: (prompt, promptOptions) => session.prompt(prompt, promptOptions),
+    ...conveniences(session),
     newSession: (extra) => open(extra),
     close,
     [Symbol.asyncDispose]: close,

@@ -236,6 +236,7 @@ export function workspaceTerminals(
   };
 }
 
+export { file, image } from './content.ts';
 export { askInTerminal, terminal, type AskOptions, type TerminalOptions } from './terminal-ui.ts';
 export { AGENT_PRESETS, run, serveStdio, start, type AgentName, type AgentPreset, type StartedAgent, type StartOptions } from './start.ts';
 

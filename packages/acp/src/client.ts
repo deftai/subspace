@@ -155,7 +155,14 @@ export interface ClientOptions extends TurnHandlers {
 
 /** Which existing session to open, and where. */
 /** Options for one prompt: limits, queueing, and handlers for this turn. */
-export type PromptOptions = { limits?: TurnLimits; queue?: boolean } & TurnHandlers;
+export type PromptOptions = {
+  limits?: TurnLimits;
+  queue?: boolean;
+  /** Cancel the turn when this fires. */
+  signal?: AbortSignal;
+  /** Cancel the turn after this long (the same as `limits.maxDurationMs`). */
+  timeoutMs?: number;
+} & TurnHandlers;
 
 /** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
 export type SessionMcpServers = ReadonlyArray<McpServer | McpRegistration>;
@@ -806,9 +813,9 @@ export class Session {
    * `turn.done` then settles after they ran.
    */
   prompt(input: string | ContentBlock | ContentBlock[], options: PromptOptions = {}): Turn {
-    const blocks: ContentBlock[] =
+    const given: ContentBlock[] =
       typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
-    this.checkContent(blocks);
+    const blocks = this.fitContent(given);
     if (this.active && !(options.queue ?? this.client.queuePrompts)) {
       throw new Error(`Session ${this.id} already has a turn running (pass { queue: true } to queue it)`);
     }
@@ -818,7 +825,10 @@ export class Session {
       projection,
       promptAnswered: false,
       cancelController: new AbortController(),
-      limits: options.limits ?? this.client.defaultLimits ?? {},
+      limits: {
+        ...(options.limits ?? this.client.defaultLimits ?? {}),
+        ...(options.timeoutMs !== undefined ? { maxDurationMs: options.timeoutMs } : {}),
+      },
       toolCalls: 0,
       refused: 0,
       timers: [],
@@ -831,6 +841,16 @@ export class Session {
     if (handlers?.onPermission) active.permissions = handlers.onPermission;
     if (handlers?.onQuestion) active.question = handlers.onQuestion;
     if (observes(handlers)) active.turn.observe(handlers!);
+    if (options.signal) {
+      // Aborting the signal cancels the turn (or, if it is queued, means it is never sent).
+      const signal = options.signal;
+      const onAbort = () => void active.turn.cancel();
+      if (signal.aborted) queueMicrotask(onAbort);
+      else {
+        signal.addEventListener('abort', onAbort, { once: true });
+        void active.turn.done.finally(() => signal.removeEventListener('abort', onAbort)).catch(() => {});
+      }
+    }
     if (this.active) this.queued.push({ active, blocks });
     else this.begin(active, blocks);
     return active.turn;
@@ -846,13 +866,24 @@ export class Session {
     return this.queued.length;
   }
 
-  private checkContent(blocks: ContentBlock[]): void {
+  /**
+   * The prompt as the agent can take it: an embedded text file it cannot take
+   * becomes text (its path, then its contents); images, audio and binary
+   * files it cannot take throw a CapabilityError.
+   */
+  private fitContent(blocks: ContentBlock[]): ContentBlock[] {
     const can = this.client.supports.prompt;
-    for (const block of blocks) {
+    return blocks.map((block) => {
       if (block.type === 'image' && !can.image) throw new CapabilityError('image prompts', 'agent');
       if (block.type === 'audio' && !can.audio) throw new CapabilityError('audio prompts', 'agent');
-      if (block.type === 'resource' && !can.embeddedContext) throw new CapabilityError('embedded resources in prompts', 'agent');
-    }
+      if (block.type === 'resource' && !can.embeddedContext) {
+        const resource = (block as { resource?: { uri?: string; text?: string } }).resource;
+        if (typeof resource?.text !== 'string') throw new CapabilityError('embedded resources in prompts', 'agent');
+        const name = resource.uri?.replace(/^file:\/\//, '') ?? 'file';
+        return { type: 'text', text: `${name}:\n\n\`\`\`\n${resource.text}\n\`\`\`` } as ContentBlock;
+      }
+      return block;
+    });
   }
 
   private begin(active: ActiveTurn, blocks: ContentBlock[]): void {

@@ -38,6 +38,7 @@ export {
   type PermissionMatch,
   type PermissionRule,
 } from './policies.ts';
+export { findJson, JsonAnswerError, type JsonOptions, type SessionConveniences, type StandardSchema } from './conveniences.ts';
 export { connectSession, openSession, type ConnectedSession, type ConnectSessionOptions, type SessionSetup } from './open.ts';
 export { type TextInfo, type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
