@@ -178,3 +178,35 @@ test('serveStdio(): an agent that logs to the console still speaks clean ACP; tu
     assert.equal(result.toolCalls.find((c) => c.title === 'Delete b.txt')?.status, permissions === 'allow' ? 'completed' : 'failed');
   }
 });
+
+test('streaming separator + delta reproduces result.text across messages (v1 and v2)', async () => {
+  for (const protocol of [1, 2] as const) {
+    const [agentEnd, clientEnd] = channelPair<unknown>();
+    serveAgent(agentEnd, {
+      name: 'chatty',
+      protocols: [protocol],
+      async prompt(turn) {
+        await turn.say("I'll check the README.");
+        await turn.tool({ title: 'Read README.md', kind: 'read' }, () => 'text');
+        await turn.say('It is a library ');
+        await turn.say('for ACP.\n');
+        await turn.tool({ title: 'Read package.json', kind: 'read' }, () => '{}');
+        await turn.say('Version 0.');
+      },
+    });
+    const client = await AcpClient.connect(clientEnd);
+    const session = await client.newSession({ cwd: '/w' });
+    let streamed = '';
+    const firsts: Array<[number, boolean]> = [];
+    const result = await session.prompt('go', {
+      onMessage: (delta, { separator, first, index }) => {
+        streamed += separator + delta;
+        firsts.push([index, first]);
+      },
+    }).done;
+    assert.equal(streamed, result.text, `v${protocol}`);
+    assert.equal(result.text, "I'll check the README.\n\nIt is a library for ACP.\nVersion 0.");
+    assert.deepEqual(firsts, [[0, true], [1, true], [1, false], [2, true]]);
+    await client.close();
+  }
+});

@@ -14,7 +14,7 @@ import { start } from '@deft-subspace/acp/node';
 
 const agent = await start('claude', { onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject') });
 try {
-  await agent.run('What does this repo do?', { onMessage: (delta) => process.stdout.write(delta) });
+  await agent.run('What does this repo do?', { onMessage: (delta, { separator }) => process.stdout.write(separator + delta) });
 } finally {
   await agent.close();
 }

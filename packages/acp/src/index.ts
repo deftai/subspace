@@ -25,7 +25,7 @@ export {
   type ToolCallInit,
 } from './agent.ts';
 export { Turn } from './turn.ts';
-export { type TurnHandlers } from './handlers.ts';
+export { type TextInfo, type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
 export {
   extensionNotification,

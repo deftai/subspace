@@ -4,7 +4,7 @@
  *
  *   const agent = await start('claude', { onPermission: (r) => (r.toolCall?.kind === 'read' ? 'allow' : 'reject') });
  *   try {
- *     await agent.run('Summarize README.md', { onMessage: (delta) => process.stdout.write(delta) });
+ *     await agent.run('Summarize README.md', { onMessage: (delta, { separator }) => process.stdout.write(separator + delta) });
  *   } finally {
  *     await agent.close();
  *   }

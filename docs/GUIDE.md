@@ -49,7 +49,7 @@ import { run, start } from '@deft-subspace/acp/node';
 
 // Start a known agent in its ask-first mode, in this folder, with a session ready.
 const agent = await start('claude', { onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject') });
-await agent.run('Summarize README.md', { onMessage: (delta) => process.stdout.write(delta) });
+await agent.run('Summarize README.md', { onMessage: (delta, { separator }) => process.stdout.write(separator + delta) });
 await agent.close();
 
 // Or: start, one prompt, stop.

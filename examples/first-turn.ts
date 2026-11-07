@@ -11,7 +11,7 @@ const agent = await start('claude', {
 });
 try {
   const result = await agent.run('Summarize README.md in one sentence.', {
-    onMessage: (delta) => process.stdout.write(delta),
+    onMessage: (delta, { separator }) => process.stdout.write(separator + delta), // separator: a blank line between messages
     onToolCall: (call, { created }) => created && console.log(`\n[${call.title}]`),
   });
   console.log(`\n${result.stopReason}, ${result.toolCalls.length} tool call(s)`);

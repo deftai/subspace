@@ -21,7 +21,7 @@ Every turn takes handler options. They work with `start()`, and with `session.pr
 
 | Handler | Called with |
 |---|---|
-| `onMessage`, `onThought`, `onUserMessage` | `(delta, text, event)`: what is new, and the whole message so far |
+| `onMessage`, `onThought`, `onUserMessage` | `(delta, info, event)`: what is new; `info` has the whole `text` so far, `messageId`, `first` (the message's first chunk), `index` (which message in the turn), and `separator` |
 | `onToolCall` | `(toolCall, { created }, event)`: a snapshot, each time it changes |
 | `onPlan` | `(entries, event)` |
 | `onUsage` | `({ used, size, cost }, event)` |
@@ -35,6 +35,16 @@ Two handlers answer rather than observe:
 
 - `onPermission(request, signal)` answers this turn's permission questions, in place of the client's `permissions`.
 - `onQuestion(request, signal)` answers this turn's questions to the user, in place of the client's `elicitation`. The client must advertise elicitation: `start()` does; with `AcpClient.connect`, pass an `elicitation` option.
+
+## Streaming text
+
+An agent often sends more than one message in a turn ("I'll check the README.", then tool calls, then the answer). Write `separator` before each chunk and the stream reads like `result.text`: a blank line before each later message, unless the previous one already ended a line.
+
+```ts
+onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
+```
+
+For messages streamed one after another, which is what agents do, the concatenated stream is exactly `result.text`.
 
 ## Defaults for every turn
 

@@ -21,7 +21,7 @@ const client = await AcpClient.connect(clientEnd, {
 });
 const session = await client.newSession({ cwd: process.cwd() });
 const result = await session.prompt('Are the tests passing?', {
-  onMessage: (delta) => process.stdout.write(delta),
+  onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
   onToolCall: (call) => console.log(`[${call.title}: ${call.status}]`),
   onPermission: (request) => (request.title.startsWith('Run npm test') ? 'allow' : 'reject'),
 }).done;

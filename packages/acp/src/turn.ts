@@ -10,7 +10,7 @@
  * - `cancel()` tells the agent, answers its open permission questions with
  *   `cancelled`, and ends the turn if the agent does not confirm in time.
  */
-import { dispatch, type TurnHandlers } from './handlers.ts';
+import { dispatch, TextTracker, type TurnHandlers } from './handlers.ts';
 import type { ToolCall, TurnEvent, TurnResult } from './model.ts';
 
 /** @internal What the turn knows so far, for `text` and `toolCalls`. */
@@ -122,7 +122,8 @@ export class Turn implements AsyncIterable<TurnEvent> {
     if (this.observer) return;
     this.observer = (async () => {
       try {
-        for await (const event of this) await dispatch(event, handlers);
+        const text = new TextTracker();
+        for await (const event of this) await dispatch(event, handlers, text);
       } catch (error) {
         // The turn's own failure ends the loop too; only a handler's error is kept.
         if (this.finished?.ok !== false || this.finished.error !== error) {

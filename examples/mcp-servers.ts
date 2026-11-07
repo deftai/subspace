@@ -17,7 +17,7 @@ const agent = await start('claude', {
 });
 try {
   console.log(agent.client.supports.mcp); // { stdio: true, http: true, sse: false, acp: false }
-  await agent.run('List the tools you got from the files server.', { onMessage: (delta) => process.stdout.write(delta) });
+  await agent.run('List the tools you got from the files server.', { onMessage: (delta, { separator }) => process.stdout.write(separator + delta) });
 } finally {
   await agent.close();
 }

@@ -2,7 +2,7 @@
  * Handler options for a turn: callbacks instead of (or as well as) iterating.
  *
  *   const result = await session.prompt('Fix the failing test', {
- *     onMessage: (delta) => process.stdout.write(delta),
+ *     onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
  *     onToolCall: (call) => render(call),
  *     onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject'),
  *   }).done;
@@ -24,12 +24,29 @@ import type { BackgroundItem, PlanEntry, ToolCall, TurnEvent } from './model.ts'
 type Maybe = unknown;
 type Of<T extends TurnEvent['type']> = Extract<TurnEvent, { type: T }>;
 
+/** About one chunk of text, for `onMessage`, `onThought` and `onUserMessage`. */
+export interface TextInfo {
+  /** The whole message so far. */
+  text: string;
+  messageId: string;
+  /** This is the message's first chunk. */
+  first: boolean;
+  /** Which message of its kind in the turn this is, from 0. */
+  index: number;
+  /**
+   * What to write before this chunk so the stream reads like `result.text`:
+   * a blank line before a later message (unless the last one ended a line), else ''.
+   * `process.stdout.write(separator + delta)` streams exactly `result.text`.
+   */
+  separator: string;
+}
+
 export interface TurnHandlers {
-  /** Agent text: what is new, and the whole message so far. */
-  onMessage?(delta: string, text: string, event: Of<'message'>): Maybe;
-  onThought?(delta: string, text: string, event: Of<'thought'>): Maybe;
+  /** Agent text: what is new, and about its message (`first`, `separator`, the whole `text`). */
+  onMessage?(delta: string, info: TextInfo, event: Of<'message'>): Maybe;
+  onThought?(delta: string, info: TextInfo, event: Of<'thought'>): Maybe;
   /** The user's message as the agent echoes or replays it. */
-  onUserMessage?(delta: string, text: string, event: Of<'user_message'>): Maybe;
+  onUserMessage?(delta: string, info: TextInfo, event: Of<'user_message'>): Maybe;
   /** A tool call was created (`created`) or changed; `toolCall` is a snapshot. */
   onToolCall?(toolCall: Readonly<ToolCall>, info: { created: boolean }, event: Of<'tool_call'>): Maybe;
   onPlan?(entries: PlanEntry[], event: Of<'plan'>): Maybe;
@@ -85,17 +102,34 @@ export function observes(handlers: TurnHandlers | undefined): boolean {
   return !!handlers && HANDLER_KEYS.some((key) => key !== 'onPermission' && key !== 'onQuestion' && handlers[key] !== undefined);
 }
 
+/** Per turn: which messages of each kind were seen, and how the last one ended. */
+export class TextTracker {
+  private readonly kinds = new Map<string, { ids: Map<string, number>; lastEnd: string }>();
+
+  info(kind: 'message' | 'thought' | 'user_message', event: { messageId: string; delta: string; text: string }): TextInfo {
+    let seen = this.kinds.get(kind);
+    if (!seen) this.kinds.set(kind, (seen = { ids: new Map(), lastEnd: '' }));
+    let index = seen.ids.get(event.messageId);
+    const first = index === undefined;
+    if (index === undefined) seen.ids.set(event.messageId, (index = seen.ids.size));
+    // Same rule as result.text: messages are joined by a blank line unless the earlier ends a line.
+    const separator = first && index > 0 && seen.lastEnd !== '\n' ? '\n\n' : '';
+    if (event.text) seen.lastEnd = event.text.slice(-1);
+    return { text: event.text, messageId: event.messageId, first, index, separator };
+  }
+}
+
 /** Call the handler for one event, then `onEvent`. */
-export async function dispatch(event: TurnEvent, h: TurnHandlers): Promise<void> {
+export async function dispatch(event: TurnEvent, h: TurnHandlers, text: TextTracker = new TextTracker()): Promise<void> {
   switch (event.type) {
     case 'message':
-      await h.onMessage?.(event.delta, event.text, event);
+      await h.onMessage?.(event.delta, text.info('message', event), event);
       break;
     case 'thought':
-      await h.onThought?.(event.delta, event.text, event);
+      await h.onThought?.(event.delta, text.info('thought', event), event);
       break;
     case 'user_message':
-      await h.onUserMessage?.(event.delta, event.text, event);
+      await h.onUserMessage?.(event.delta, text.info('user_message', event), event);
       break;
     case 'tool_call':
       await h.onToolCall?.(event.toolCall, { created: event.created }, event);
