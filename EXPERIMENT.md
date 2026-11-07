@@ -79,7 +79,13 @@ Run with `packages/acp/examples/live-turn.ts`.
 - **Permission:** with the `reject` policy, Grok's file write was refused, the tool call ended `failed`, and no file was created.
   - Quirk: Grok then ended the turn as `cancelled`, not `end_turn`. That's the same "a rejection aborts the turn" behaviour acpx users report, and it belongs in a quirks corpus.
 
-Not run live: the Claude adapter (`npx -y @agentclientprotocol/claude-agent-acp`). Downloading and running it needs the operator's go-ahead.
+### Live, against the real Claude adapter (`npx -y @agentclientprotocol/claude-agent-acp`, 0.101.0)
+
+The operator ran this one.
+
+- **Protocol v2 end to end.** The adapter chose **protocol v2**, the first real v2 agent we've seen. The turn streamed the message, `usage` and the `state` updates, and ended `end_turn` with `text="SUBSPACE_OK"`. The process exited 0 on close.
+- **Same code for both.** The client code that handled Grok on v1 handled this without changes, and produced the same model.
+- **Not modelled yet:** v2 echoes the prompt back as `user_message`, and also sends `session_info_update`. Both still arrive as raw `update` events.
 
 ## Try it
 
@@ -105,7 +111,8 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - terminal handlers;
    - elicitation;
    - session config options (v1 modes and v2 config options as one API);
-   - capability-typed peers.
+   - capability-typed peers;
+   - first-class events for v2 `user_message` and `session_info_update` (title).
 4. **Journal projection kit for Ideal:**
    - stamp updates with sequence numbers and replay on load;
    - send only the unsent suffix of a message;
