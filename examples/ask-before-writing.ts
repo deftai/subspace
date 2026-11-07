@@ -22,7 +22,9 @@ try {
   const result = await agent.run('Create a file named hello.txt containing the word hi.', {
     onToolCall: (call, { created }) => created && console.log(`[${call.title}]`),
   });
-  console.log(`${turnEnd(result)}; hello.txt ${existsSync(join(cwd, 'hello.txt')) ? 'written' : 'not written'}`);
+  // turnEnd: 'refused' when an agent ends a refused turn as "cancelled" (Grok, Codex); Claude
+  // finishes the turn normally after a refusal, so it is 'completed' with result.refused counting it.
+  console.log(`${turnEnd(result)}, ${result.refused ?? 0} refused; hello.txt ${existsSync(join(cwd, 'hello.txt')) ? 'written' : 'not written'}`);
 } finally {
   await agent.close();
 }
