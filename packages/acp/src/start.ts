@@ -30,6 +30,7 @@
  */
 import { Readable, Writable } from 'node:stream';
 import { createWriteStream } from 'node:fs';
+import { basename } from 'node:path';
 import { ErrorCode, ndjson, RpcError, traceTap, type RpcPeer } from '@deft-subspace/kernel';
 import { serveAgent, type AgentOptions } from './agent.ts';
 import type { ElicitationHandler, PromptOptions, Session, SessionMcpServers } from './client.ts';
@@ -141,7 +142,9 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
   requirePermissionAnswer(options, 'start()');
   const cwd = options.cwd ?? process.cwd();
   const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, trace, quiet, ...rest } = options;
-  const name = typeof agent === 'string' ? agent : preset.command;
+  // A label for messages and traces: the preset's name, or the program (and the script it runs).
+  const script = preset.args.find((a) => !a.startsWith('-'));
+  const name = typeof agent === 'string' ? agent : [basename(preset.command), ...(script ? [basename(script)] : [])].join(' ');
   const recording = trace ? traceFile(trace, name, cwd) : undefined;
   const tap = recording
     ? (direction: 'in' | 'out', message: unknown) => {

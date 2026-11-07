@@ -51,7 +51,8 @@ test('run --json prints the result; --trace then trace --summary', async () => {
   assert.equal(result.text, 'Found 2 logs.\n\nDeleted them.');
   const summary = await cli('trace', trace, '--summary');
   assert.equal(summary.code, 0, summary.err);
-  assert.match(summary.out, /session\/prompt/);
+  assert.match(summary.out, /1 turns/);
+  assert.match(summary.out, /"tidy up"  end_turn/);
 });
 
 test('check runs the conformance checks; agents lists presets; usage errors exit 2', async () => {
