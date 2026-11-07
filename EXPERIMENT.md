@@ -18,6 +18,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 |---|---|
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
+| `@deft-subspace/acp-testkit` (`packages/testkit`) | Record and replay traces, faults, conformance checks for agents and clients, and a corpus of real agents' traces. See its README. |
 
 ## What the prototype shows
 
@@ -69,6 +70,14 @@ The new packages sit next to the existing ones. The old packages and their tests
   - `..` can't leave it;
   - symbolic links are checked;
   - names starting with `..` are allowed.
+
+### Testkit (33 tests)
+
+- **Record and replay** in the kernel trace format. A replayed agent remaps ids both ways, matches the client's calls by method, and fails with expected vs got instead of hanging.
+- **Faults:** banner lines, odd and coalesced chunks, delay, disconnect after N messages, close mid-turn.
+- **Conformance:** `checkAgent` (7 checks) passes against `serveAgent` and official-SDK agents, v1 and v2, and catches a broken agent. `checkClient` (4 checks) passes against `AcpClient`, v1 and v2, and catches a careless official-SDK client.
+- **Quirks corpus:** three real Grok traces (plain, write rejected, cancel) replay to `AcpClient` with the same `TurnResult` as live.
+- **Live `checkAgent` against Grok:** initialize, session/new and cancel pass. An unknown session is answered `-32602`, not `-32002`.
 
 ### Live, against real Grok Build (`grok --permission-mode default agent stdio`)
 
@@ -186,7 +195,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - capability-typed peers;
    - first-class events for v2 `user_message` and `session_info_update` (title).
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
-5. **Testkit (`experiment/acp-testkit`, `packages/testkit`, first cut done, 33 tests):**
+5. **Testkit (`packages/testkit`, merged, first cut done, 33 tests):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;
    - still to do: Claude and Codex traces (the operator records them, since they need `npx`);
    - still to do: whether Grok's `-32602` for an unknown session counts as a known quirk or a failure;
