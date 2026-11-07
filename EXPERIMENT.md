@@ -87,6 +87,33 @@ The operator ran this one.
 - **Same code for both.** The client code that handled Grok on v1 handled this without changes, and produced the same model.
 - **Not modelled yet:** v2 echoes the prompt back as `user_message`, and also sends `session_info_update`. Both still arrive as raw `update` events.
 
+### Bridge as the first real user (Bridge branch `experiment/subspace-client`)
+
+`bridge mcp` (`packages/mcp-front`) now runs its agents on Subspace, in two steps:
+
+1. **Kernel.** `AcpConnection` became an adapter over `spawnProcess`, `ndjson` and `RpcPeer`. Two new tests fail on the old code: stopping an agent now stops the processes it started, and a reply written just before exit is delivered.
+2. **ACP.** `SessionManager` drives `AcpClient`, `Session`, `Turn` and a `PermissionHandler` that feeds its own host and user permission queues.
+   - **Net size:** `AcpConnection`, its tests and four hand-written wire types are gone, and `mcp-front/src` is 292 lines smaller.
+   - **One changed behaviour:** `fs/write_text_file` now answers `{}`, the spec's object, instead of `null`.
+
+**Results:**
+- All 1220 Bridge tests pass, and `mcp-front`'s pass 10 runs out of 10.
+- The live check against Grok passes 8 of 8 through `bridge mcp`.
+- The Claude and Codex live checks start through `npx`, so the operator runs them.
+
+**What Bridge needed added:**
+- session modes as one API over v1 modes and v2 config options;
+- `turn.text` and `turn.toolCalls` while the turn runs;
+- a permission request with no turn running answered `cancelled`;
+- raw updates for listeners between turns;
+- `stop(graceMs)`;
+- `./package.json` exports.
+
+**What Bridge's tests caught in Subspace:**
+- text after a tool call first seen in a permission request wasn't separated;
+- an extra blank line after text that already ends a line;
+- updates sent right after `session/new` could be dropped, both before the session existed and before its listener was added.
+
 ## Try it
 
 `packages/acp/examples/quickstart.ts` writes an agent and a client against each other in one process: streaming, a tool call, a permission question, and a cancel. It runs on v2, or on v1 with `PROTOCOL=1`.
@@ -105,7 +132,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
 
 ## Not done yet (next steps, if this direction holds)
 
-1. **Bridge as the first real user,** on a Bridge branch: replace `mcp-front`'s `AcpConnection` with `connectAgent`, then run Bridge's live tests against Claude, Codex and Grok.
+1. **Bridge:** done for `bridge mcp` (see above). Remaining: the Claude and Codex live runs, and Bridge's ACP server side (`transport/stdio`) on `serveAgent`.
 2. **Agent side:**
    - `session/load` and `session/resume`;
    - several turns queued per session;
