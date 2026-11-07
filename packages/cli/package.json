@@ -1,0 +1,37 @@
+{
+  "name": "@deft-subspace/cli",
+  "version": "0.0.0-experiment",
+  "description": "subspace: run, chat with, check and trace ACP agents from the command line.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "subspace": "./bin/subspace.js"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/cli.ts",
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/acp-testkit": "workspace:*",
+    "@deft-subspace/devtools": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  }
+}

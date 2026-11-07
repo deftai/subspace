@@ -17,6 +17,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./cli": {
+      "source": "./src/cli.ts",
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
