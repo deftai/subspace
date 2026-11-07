@@ -98,3 +98,22 @@ test('waivers turn a known failure into WAIVE; a waiver for a passing check is d
   assert.equal(report[1]!.waived, undefined);
   assert.match(formatReport(report), /^WAIVE session\.unknown .*\[waived: answers -32602\]/m);
 });
+
+test('./ agent paths are relative to the scenario file; sameAs compares two workspace files', async () => {
+  const report = await runScenario(
+    {
+      name: 'relative agent',
+      agent: { command: process.execPath, args: ['--conditions=source', './fixtures/writer-agent.ts'] },
+      workspace: { from: 'fixtures/greeting' },
+      permissions: 'allow',
+      turns: [
+        { prompt: 'write a.txt same words' },
+        { prompt: 'write b.txt same words', expect: { files: { 'b.txt': { sameAs: 'a.txt' } } } },
+        { prompt: 'write c.txt other words', expect: { files: { 'c.txt': { sameAs: 'a.txt' } } } },
+      ],
+    },
+    { baseDir: here, artifacts: await mkdtemp(join(tmpdir(), 'scenario-same-')) }
+  );
+  assert.equal(report.turns[1]!.pass, true, formatScenarios([report]));
+  assert.deepEqual(report.turns[2]!.failures, ['c.txt differs from a.txt']);
+});

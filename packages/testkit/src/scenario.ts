@@ -55,7 +55,7 @@ export interface Expectations {
   };
   permissions?: { min?: number; max?: number; titles?: string[] };
   /** Paths relative to the workspace, checked after the turn. */
-  files?: Record<string, { exists?: boolean; contains?: string; equals?: string; matches?: string }>;
+  files?: Record<string, { exists?: boolean; contains?: string; equals?: string; matches?: string; sameAs?: string }>;
   /** Session updates in the turn. */
   updates?: { min?: number; max?: number };
 }
@@ -71,7 +71,11 @@ export type ScenarioPermissions = 'allow' | 'reject' | 'read-only' | { allow?: s
 
 export interface Scenario {
   name: string;
-  /** A known agent, or a command (args, env, an optional mode). */
+  /**
+   * A known agent, or a command (args, env, an optional mode). The agent
+   * runs in the workspace; arguments starting with ./ or ../ are paths
+   * relative to the scenario file.
+   */
   agent: AgentName | { command: string; args?: string[]; env?: Record<string, string>; mode?: string };
   /** Session mode; false keeps the agent's own. Default: the preset's ask-first mode. */
   mode?: string | false;
@@ -200,6 +204,11 @@ export async function check(expect: Expectations, turn: { result: TurnResult; up
     if (want.contains !== undefined && !content.includes(want.contains)) failures.push(`${path} does not contain ${JSON.stringify(want.contains)}`);
     if (want.equals !== undefined && content !== want.equals) failures.push(`${path} is not ${JSON.stringify(want.equals)}`);
     if (want.matches !== undefined && !new RegExp(want.matches).test(content)) failures.push(`${path} does not match /${want.matches}/`);
+    if (want.sameAs !== undefined) {
+      const other = await readFile(join(turn.workspace, want.sameAs), 'utf8').catch(() => undefined);
+      if (other === undefined) failures.push(`${want.sameAs} does not exist`);
+      else if (other !== content) failures.push(`${path} differs from ${want.sameAs}`);
+    }
   }
   const u = expect.updates;
   if (u?.min !== undefined && turn.updates < u.min) failures.push(`${turn.updates} updates, expected at least ${u.min}`);
@@ -227,7 +236,12 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   const tracePath = join(await mkdtemp(join(tmpdir(), 'subspace-trace-')), 'trace.jsonl');
   const report: ScenarioReport = { name: scenario.name, pass: false, turns: [], workspace, trace: tracePath, durationMs: 0 };
 
-  const target = typeof scenario.agent === 'string' ? scenario.agent : { command: scenario.agent.command, args: scenario.agent.args ?? [], ...(scenario.agent.mode ? { mode: scenario.agent.mode } : {}) };
+  // ./ and ../ arguments are relative to the scenario file (the agent itself runs in the workspace).
+  const local = (arg: string) => (arg.startsWith('./') || arg.startsWith('../') ? resolve(baseDir, arg) : arg);
+  const target =
+    typeof scenario.agent === 'string'
+      ? scenario.agent
+      : { command: local(scenario.agent.command), args: (scenario.agent.args ?? []).map(local), ...(scenario.agent.mode ? { mode: scenario.agent.mode } : {}) };
   const env = typeof scenario.agent === 'string' ? undefined : scenario.agent.env;
   let agent: Awaited<ReturnType<typeof start>> | undefined;
   try {
