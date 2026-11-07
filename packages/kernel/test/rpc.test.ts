@@ -161,11 +161,16 @@ test('malformed messages with a recoverable id get InvalidRequest; others are re
   new RpcPeer(end.channel, { onDiagnostic: (d) => diagnostics.push(d) }).start();
   await end.send({ jsonrpc: '2.0', id: 7 }); // neither method nor result
   await end.send('banner text');
-  await end.send({ jsonrpc: '2.0', id: null, method: 'x' });
+  await end.send({ jsonrpc: '2.0', id: { no: 'objects' }, method: 'x' });
+  await end.send({ jsonrpc: '2.0', id: null, method: 'x' }); // valid JSON-RPC: answered, not rejected
   await tick();
   assert.deepEqual(
-    end.sent.map((m) => (m as { id: unknown; error: { code: number } }).error.code),
-    [ErrorCode.InvalidRequest, ErrorCode.InvalidRequest]
+    end.sent.map((m) => [(m as { id: unknown }).id, (m as { error: { code: number } }).error.code]),
+    [
+      [7, ErrorCode.InvalidRequest],
+      [null, ErrorCode.InvalidRequest],
+      [null, ErrorCode.MethodNotFound],
+    ]
   );
   assert.deepEqual(diagnostics.map((d) => d.kind), ['invalid-message', 'invalid-message']);
 });
@@ -201,4 +206,13 @@ test('a request on a closed peer fails at once with closed', async () => {
   start();
   await client.close();
   await assert.rejects(client.request('x'), (e) => LocalError.is(e, 'closed'));
+});
+
+test('sendRaw writes a message as given, outside request tracking', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel).start();
+  await peer.sendRaw({ id: 'never-received', result: 42 });
+  await tick();
+  assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 'never-received', result: 42 }]);
+  assert.equal(peer.pendingCount, 0);
 });

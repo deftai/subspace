@@ -2,8 +2,12 @@ import type { Channel } from './channel.ts';
 import { systemClock, type Clock } from './clock.ts';
 import { ErrorCode, LocalError, RpcError } from './errors.ts';
 
-/** JSON-RPC ids are opaque. `0` and `""` are as valid as any other id. */
-export type JsonRpcId = string | number;
+/**
+ * JSON-RPC ids are opaque. `0` and `""` are as valid as any other id, and
+ * JSON-RPC 2.0 also allows `null` (discouraged) for requests we receive.
+ * Requests we send always get a number.
+ */
+export type JsonRpcId = string | number | null;
 
 export interface RequestOptions {
   /** Stop waiting when this fires. The peer is told, if a cancel method is configured. */
@@ -82,7 +86,7 @@ interface Pending {
 }
 
 const isId = (value: unknown): value is JsonRpcId =>
-  typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+  value === null || typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -172,6 +176,15 @@ export class RpcPeer {
       await this.write(this.message({ method, params: finalParams }));
       return undefined;
     }) as Promise<void>;
+  }
+
+  /**
+   * Write a message exactly as given (`jsonrpc: '2.0'` is added if missing),
+   * outside request tracking. For proxies and adapters, e.g. answering an id
+   * this peer did not receive. Prefer request/notify/handlers otherwise.
+   */
+  sendRaw(message: Record<string, unknown>): Promise<void> {
+    return this.write('jsonrpc' in message ? message : this.message(message));
   }
 
   /** Close the connection. Pending requests fail with `closed`; running handlers are aborted. */
@@ -276,7 +289,7 @@ export class RpcPeer {
     if (typeof method === 'string') {
       if ('id' in message) {
         if (isId(id)) this.handleRequest(id, method, message.params);
-        else void this.replyError(null, ErrorCode.InvalidRequest, 'Request id must be a string or number');
+        else void this.replyError(null, ErrorCode.InvalidRequest, 'Request id must be a string, number or null');
         return;
       }
       this.handleNotification(method, message.params);
@@ -292,7 +305,7 @@ export class RpcPeer {
 
   private handleResponse(message: Record<string, unknown>): void {
     const id = message.id;
-    if (!isId(id) || !this.pending.has(id)) {
+    if (!isId(id) || id === null || !this.pending.has(id)) {
       this.diagnose('late-response', `Response for unknown or finished request ${JSON.stringify(id)}`, message);
       return;
     }
