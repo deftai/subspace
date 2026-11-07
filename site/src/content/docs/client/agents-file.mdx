@@ -1,0 +1,88 @@
+---
+title: Known agents and agents files
+description: Where agent names come from - the ACP registry, Subspace's built-ins, and your agents.toml and subspace.toml - and how quirks and their fixes are recorded.
+---
+
+`start('claude')`, `subspace run codex ...` and a scenario's `"agent": "grok"` all look a name up in the **agent catalog**. It has layers; each one changes the one before it field by field:
+
+1. **The ACP agent registry**, the official list of ACP agents and how to run them (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`). Subspace bundles a snapshot; `subspace agents --refresh` fetches the latest into `~/.cache/subspace/registry.json`, which is used once it is newer than the snapshot. Any registry id works as a name (`subspace run cursor "hello"`).
+2. **Subspace's built-ins**: `claude`, `codex`, `grok`, `gemini`, `opencode`. Each maps to a registry entry and adds a short name, login and install hints, and **quirks**. Each also has a fallback command for when the registry has no entry.
+3. **Your files**, in this order:
+   - `~/.config/subspace/agents.toml` (or `$XDG_CONFIG_HOME/subspace/agents.toml`): yours, everywhere;
+   - the nearest `subspace.toml`, from the current folder up: a project's;
+   - each file in `$SUBSPACE_AGENTS` (separated like `PATH`), then each `--agents-file`.
+
+```sh
+subspace agents            # the defined agents: installed, quirks
+subspace agents codex      # how it starts, where each setting came from, its quirks
+subspace agents --all      # and the registry's other agents
+subspace agents --files    # which files are read
+```
+
+## The file
+
+```toml
+# Change one field of a known agent
+[agents.claude]
+extra_args = ["--verbose"]       # added after its arguments
+env = { DEBUG = "1" }
+
+# An agent of your own
+[agents.mine]
+description = "Our review agent"
+command = "node"
+args = ["/srv/agents/review.js"]
+mode = "ask"                     # the session mode to switch to; false keeps its own
+aliases = ["review"]
+
+# Pin a different registry entry, or hide an agent
+[agents.gemini]
+enabled = false
+```
+
+| Field | |
+|---|---|
+| `command`, `args` | How to start it. A command of its own replaces the registry's; `args` replaces earlier arguments. |
+| `extra_args` | Added after the arguments (and after a quirk's). |
+| `env` | Its environment, on top of yours. |
+| `mode` | The session mode `start()` switches to: its ask-first mode, so permission answers are consulted. `false`: the agent's own. |
+| `registry` | The registry id to take launch details from (default: the name). |
+| `name`, `description`, `install`, `login`, `aliases` | For listings and error messages. |
+| `enabled` | `false` hides it. |
+| `quirks` | See below. |
+
+Keys may be `snake_case` or `camelCase`. A misspelt field, or a value of the wrong type, is an error naming the file and the field. Other top-level tables in `subspace.toml` are left alone.
+
+From code: `loadCatalog({ cwd })` reads the same layers; `start(name, { catalog })` takes one; `resolveAgent(catalog, name)` shows what a name resolves to, and `listAgents(catalog)` lists them.
+
+## Quirks and fixes
+
+A quirk records something an agent does that it should not, or that a client has to know about, together with what is done about it. Every non-default setting then has its reason next to it:
+
+```toml
+[agents.mine.quirks.unknown-session]
+summary = "Answers a prompt for an unknown session with -32603, not -32002"
+waives = ["session.unknown"]    # the conformance checks it explains
+fix = "None needed: clients treat any error as 'no such session'"
+seen = "mine 1.4, 2026-11"
+
+[agents.mine.quirks.starts-in-auto-mode]
+summary = "Starts in auto mode, where it acts without asking"
+apply = { mode = "ask" }        # settings used because of it: mode, args, env
+```
+
+- `summary` (required): what it does.
+- `waives`: conformance check ids it explains. `subspace check` waives them, shown as `WAIVE`, unless `--strict`.
+- `apply`: the settings used because of it, `mode`, `args` (added) and `env`. The agent's own fields still win over these.
+- `fix`: what Subspace, or your code, does about it.
+- `seen`: which version, or when.
+- `enabled = false`: ignore it. This turns off a built-in quirk's settings and waivers too.
+
+A file can add quirks to a built-in agent, or turn one of its quirks off, by id. The built-in quirks come from the recorded corpus ([Quirks of real agents](/subspace/behaviour/quirks/)); `subspace agents <name>` lists them.
+
+## Registry agents
+
+Registry entries run three ways:
+
+- **npx and uvx packages** run as `npx -y <package>` and `uvx <package>`, pinned to the registry's version. The first start downloads them.
+- **Binaries** are expected on your `PATH` under the command's name. `subspace agents <name>` shows the download link. Subspace does not download archives itself.

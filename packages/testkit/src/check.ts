@@ -10,15 +10,6 @@ export interface CheckResult {
   detail: string;
 }
 
-/**
- * Known quirks of real agents, as waivers: a check they fail for a known
- * reason (recorded in the quirks corpus). `subspace check <agent>` applies
- * them unless asked to be strict.
- */
-export const KNOWN_QUIRKS: Record<string, Record<string, string>> = {
-  grok: { 'session.unknown': 'Grok Build answers a prompt for an unknown session with -32602 Invalid params, not -32002' },
-};
-
 /** Mark failed checks listed in `waive` (id: reason) as waived. A waiver for a check that passed is dropped. */
 export function applyWaivers(report: CheckResult[], waive: Record<string, string> | undefined): CheckResult[] {
   if (!waive) return report;

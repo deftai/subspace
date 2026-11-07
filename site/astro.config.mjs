@@ -43,7 +43,7 @@ export default defineConfig({
         { label: 'Cookbook', items: ['cookbook', 'cookbook/review', 'cookbook/commit-message', 'cookbook/compare', 'cookbook/editor-tools', 'cookbook/tiny-agent'] },
         {
           label: 'Clients',
-          items: ['client/starting-agents', 'client/handlers', 'client/terminal', 'client/answers', 'client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
+          items: ['client/starting-agents', 'client/agents-file', 'client/handlers', 'client/terminal', 'client/answers', 'client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
         },
         { label: 'Agents', items: ['agents/writing-an-agent', 'agents/tools', 'agents/model-agents', 'agents/extensions'] },
         { label: 'MCP', items: ['mcp/servers', 'mcp/over-acp'] },

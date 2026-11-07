@@ -109,3 +109,16 @@ export type {
   v1,
   v2,
 } from './model.ts';
+export {
+  BUILTIN_AGENTS,
+  builtinCatalog,
+  listAgents,
+  resolveAgent,
+  type AgentCatalog,
+  type AgentDefinition,
+  type BuiltinAgentName,
+  type CatalogLayer,
+  type Quirk,
+  type ResolvedAgent,
+} from './agents.ts';
+export { REGISTRY_URL, registryTarget, trimRegistry, type Registry, type RegistryAgent } from './registry.ts';

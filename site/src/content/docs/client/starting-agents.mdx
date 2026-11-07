@@ -12,13 +12,13 @@ import firstTurn from '../../../../../examples/first-turn.ts?raw';
 
 | Name | Starts | Mode it switches to |
 |---|---|---|
-| `claude` | `npx -y @agentclientprotocol/claude-agent-acp` | `default` (asks first) |
-| `codex` | `npx -y @agentclientprotocol/codex-acp` | `read-only` (asks first; acts once allowed) |
+| `claude` | `npx -y @agentclientprotocol/claude-agent-acp@<registry version>` | `default` (asks first) |
+| `codex` | `npx -y @agentclientprotocol/codex-acp@<registry version>` | `read-only` (asks first; acts once allowed) |
 | `grok` | `grok --permission-mode default agent stdio` | (asks first through its flag) |
-| `gemini` | `gemini --experimental-acp` | |
+| `gemini` | `npx -y @google/gemini-cli@<registry version> --acp` | |
 | `opencode` | `opencode acp` | |
 
-Or pass `{ command, args, mode }` for any other agent. `AGENT_PRESETS` has the table. Adapters run through `npx`, so the first start may take a while to download them.
+Any [ACP registry](/subspace/client/agents-file/) id works too, and so do agents of your own in `agents.toml` or a project's `subspace.toml`. [Known agents and agents files](/subspace/client/agents-file/) covers those, and the quirks behind each mode. Or pass `{ command, args, mode }`. Adapters run through `npx`, so the first start may take a while to download them.
 
 ## What `start()` does for you
 

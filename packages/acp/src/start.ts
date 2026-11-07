@@ -12,10 +12,11 @@
  *   const { text } = await run('codex', 'What does this repo do?', { permissions: 'reject' });
  *
  * What `start()` does for you:
- * - Presets for known agents (claude, codex, grok, gemini, opencode), each
- *   started in the mode where it asks before acting, so your permission
- *   answers are actually consulted. `{ mode }` overrides, `mode: false` keeps
- *   the agent's own.
+ * - Known agents by name: the built-ins (claude, codex, grok, gemini,
+ *   opencode), any ACP registry id, and agents files (agents.toml,
+ *   subspace.toml; see catalog.ts). Each starts in the mode where it asks
+ *   before acting, so your permission answers are actually consulted (a
+ *   quirk records why). `{ mode }` overrides, `mode: false` keeps the agent's own.
  * - One folder: `cwd` (default `process.cwd()`) is the agent's working
  *   directory, the workspace its file requests are confined to, and the session's cwd.
  * - A session, opened and ready (`agent.session`, `agent.run()`).
@@ -41,68 +42,34 @@ import type { ContentBlock, TurnResult } from './model.ts';
 import type { PermissionPolicy } from './permissions.ts';
 import { connectAgent, type ConnectAgentOptions, type ConnectedAgent } from './node.ts';
 import type { Turn } from './turn.ts';
+import { listAgents, resolveAgent, type AgentCatalog, type BuiltinAgentName, type ResolvedAgent } from './agents.ts';
+import { loadCatalog } from './catalog.ts';
 
-export interface AgentPreset {
+/** An agent given by its command (not by name). */
+export interface AgentCommand {
   command: string;
-  args: string[];
-  /** The mode to switch each session to (the agent's ask-first mode). */
+  args?: readonly string[];
+  /** The mode to switch each session to (its ask-first mode). */
   mode?: string;
-  description: string;
+  env?: Record<string, string>;
+  description?: string;
   /** How to install it, for the error when it is missing. */
   install?: string;
   /** How to log in, for the error when it needs a login. */
   login?: string;
 }
 
-/** Known agents. Adapters run through `npx`, so the first start may download them. */
-export const AGENT_PRESETS = {
-  claude: {
-    command: 'npx',
-    args: ['-y', '@agentclientprotocol/claude-agent-acp'],
-    mode: 'default',
-    description: 'Claude Code through its ACP adapter, in ask-first mode',
-    install: 'Install Node.js (for npx); the adapter downloads on first start',
-    login: 'Log in to Claude Code first: run `claude` and sign in, or set ANTHROPIC_API_KEY',
-  },
-  codex: {
-    command: 'npx',
-    args: ['-y', '@agentclientprotocol/codex-acp'],
-    mode: 'read-only',
-    description: 'OpenAI Codex through its ACP adapter, in read-only mode (it still acts once you allow it)',
-    install: 'Install Node.js (for npx); the adapter downloads on first start',
-    login: 'Log in to Codex first: run `codex login`, or set OPENAI_API_KEY',
-  },
-  grok: {
-    command: 'grok',
-    args: ['--permission-mode', 'default', 'agent', 'stdio'],
-    description: 'Grok Build, asking before tools',
-    install: 'Install Grok Build (the `grok` command)',
-    login: 'Log in to Grok Build first: run `grok` and sign in',
-  },
-  gemini: {
-    command: 'gemini',
-    args: ['--experimental-acp'],
-    description: 'Gemini CLI',
-    install: 'Install the Gemini CLI (npm install -g @google/gemini-cli)',
-    login: 'Log in to the Gemini CLI first: run `gemini` and sign in, or set GEMINI_API_KEY',
-  },
-  opencode: {
-    command: 'opencode',
-    args: ['acp'],
-    description: 'OpenCode',
-    install: 'Install OpenCode (the `opencode` command)',
-    login: 'Log in to OpenCode first: run `opencode auth login`',
-  },
-} as const satisfies Record<string, AgentPreset>;
-
-export type AgentName = keyof typeof AGENT_PRESETS;
+/** A known agent's name (built in, from an agents file, or an ACP registry id). */
+export type AgentName = BuiltinAgentName | (string & {});
 
 export interface StartOptions extends Omit<ConnectAgentOptions, 'cwd' | 'workspace' | 'permissions' | 'handlers' | 'args' | 'files'>, TurnHandlers {
   /** The agent's folder, the workspace its file requests stay in, and the session's cwd. Default `process.cwd()`. */
   cwd?: string;
   /** Serve the agent's file requests from `cwd` (v1). Default true. */
   files?: ConnectAgentOptions['files'] | false;
-  /** Arguments added after the preset's. */
+  /** Where names are looked up. Default: loadCatalog({ cwd }) (built-ins, the ACP registry, agents files). */
+  catalog?: AgentCatalog;
+  /** Arguments added after the agent's. */
   extraArgs?: string[];
   /** The session mode to switch to. Default: the preset's ask-first mode. `false`: the agent's own. */
   mode?: string | false;
@@ -125,7 +92,9 @@ export interface StartedAgent extends SessionConveniences {
   readonly process: ConnectedAgent['process'];
   /** The session opened by `start()`. */
   readonly session: Session;
-  /** Why the preset's mode was not applied, if it was not. */
+  /** The agent as resolved from the catalog (when started by name): its command, quirks, sources. */
+  readonly agent?: ResolvedAgent;
+  /** Why the agent's mode was not applied, if it was not. */
   readonly modeWarning?: string;
   /** Another session with the same agent (switched to the same mode). */
   newSession(options?: StartOptions['session']): Promise<Session>;
@@ -134,17 +103,29 @@ export interface StartedAgent extends SessionConveniences {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
-/** Start a known agent (or `{ command, args }`) and open a session. */
-export async function start(agent: AgentName | (Omit<AgentPreset, 'description'> & { description?: string }), options: StartOptions): Promise<StartedAgent> {
-  const preset: Omit<AgentPreset, 'description'> = typeof agent === 'string' ? AGENT_PRESETS[agent] : agent;
-  if (!preset) throw new TypeError(`Unknown agent "${String(agent)}". Known: ${Object.keys(AGENT_PRESETS).join(', ')}, or pass { command, args }.`);
+/** Look up a name in a catalog; an error that lists the known names if it is not there. */
+export function agentByName(name: string, catalog: AgentCatalog): ResolvedAgent {
+  const found = resolveAgent(catalog, name);
+  if (found) return found;
+  const known = listAgents(catalog)
+    .filter((a) => !a.sources.every((s) => s === 'registry'))
+    .map((a) => a.id);
+  throw new TypeError(`Unknown agent "${name}". Known: ${known.join(', ')} (and the ACP registry's; \`subspace agents --all\`), or pass { command, args }.`);
+}
+
+/** Start a known agent (by name) or `{ command, args }`, and open a session. */
+export async function start(agent: AgentName | AgentCommand, options: StartOptions): Promise<StartedAgent> {
+  const resolved = typeof agent === 'string' ? agentByName(agent, options.catalog ?? loadCatalog({ cwd: options.cwd ?? process.cwd() })) : undefined;
+  const preset: AgentCommand & { args: readonly string[] } = resolved ?? { ...agent as AgentCommand, args: (agent as AgentCommand).args ?? [] };
   const handlers = mergeHandlers(options.handlers, options);
   requirePermissionAnswer(options, 'start()');
   const cwd = options.cwd ?? process.cwd();
-  const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, trace, quiet, ...rest } = options;
+  const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, trace, quiet, catalog: _catalog, ...rest } = options;
+  // The agent's environment on top of ours; the caller's on top of that.
+  const env = preset.env && Object.keys(preset.env).length ? { ...(process.env as Record<string, string>), ...preset.env, ...(rest.env ?? {}) } : rest.env;
   // A label for messages and traces: the preset's name, or the program (and the script it runs).
   const script = preset.args.find((a) => !a.startsWith('-'));
-  const name = typeof agent === 'string' ? agent : [basename(preset.command), ...(script ? [basename(script)] : [])].join(' ');
+  const name = resolved ? resolved.id : [basename(preset.command), ...(script ? [basename(script)] : [])].join(' ');
   const recording = trace ? traceFile(trace, name, cwd) : undefined;
   const tap = recording
     ? (direction: 'in' | 'out', message: unknown) => {
@@ -163,6 +144,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
     connected = await connectAgent(preset.command, {
       ...rest,
       ...(tap ? { tap } : {}),
+      ...(env ? { env } : {}),
       args: [...preset.args, ...(extraArgs ?? [])],
       cwd,
       ...(files === false ? {} : files ? { files } : { workspace: cwd }),
@@ -217,6 +199,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
     client: connected.client,
     process: connected.process,
     session,
+    ...(resolved ? { agent: resolved } : {}),
     get modeWarning() {
       return modeWarning;
     },
@@ -229,7 +212,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
 }
 
 /** Errors with a next step: a missing program says how to install it, a needed login how to log in. */
-function explain(error: unknown, preset: Partial<AgentPreset>, name: string): unknown {
+function explain(error: unknown, preset: Pick<AgentCommand, 'install' | 'login'>, name: string): unknown {
   if (!(error instanceof Error)) return error;
   if (error.name === 'SpawnError' && preset.install) error.message += `\n${name}: ${preset.install}.`;
   else if (RpcError.is(error) && error.code === ErrorCode.AuthRequired) {

@@ -7,8 +7,9 @@
  *   subspace check grok
  *   subspace trace run.jsonl
  *
- * An agent is a known name (claude, codex, grok, gemini, opencode) or a
- * command after `--` (the prompt comes before it):  subspace run "hello" -- node my-agent.js
+ * An agent is a known name (built in, from agents.toml / subspace.toml, or an
+ * ACP registry id) or a command after `--` (the prompt comes before it):
+ *   subspace run "hello" -- node my-agent.js
  */
 import { accessSync, constants, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
@@ -16,21 +17,27 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import {
-  AGENT_PRESETS,
+  agentByName,
+  agentFiles,
+  AgentFileError,
   askInTerminal,
+  BUILTIN_AGENTS,
+  listAgents,
+  loadCatalog,
+  refreshRegistry,
+  type AgentCatalog,
+  type ResolvedAgent,
   firstOf,
   readOnly,
   start,
   terminal,
   turnEnd,
-  type AgentName,
-  type AgentPreset,
   type PermissionHandler,
   type StartedAgent,
   type StartOptions,
   type TurnResult,
 } from '@deft-subspace/acp/node';
-import { failures, formatReport, KNOWN_QUIRKS } from '@deft-subspace/acp-testkit';
+import { failures, formatReport } from '@deft-subspace/acp-testkit';
 import { checkAgentProcess, formatJUnit, formatScenarios, loadScenarios, runScenario, type ScenarioReport } from '@deft-subspace/acp-testkit/node';
 import { main as traceMain } from '@deft-subspace/devtools/cli';
 
@@ -41,7 +48,8 @@ export interface Io {
 
 const defaultIo: Io = { out: (t) => process.stdout.write(t), err: (t) => process.stderr.write(t) };
 
-const AGENTS_NOTE = `<agent> is one of ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after -- (the prompt goes before it):
+const AGENTS_NOTE = `<agent> is a known agent (${Object.keys(BUILTIN_AGENTS).join(', ')}, any in subspace agents --all,
+or one of your own in agents.toml), or a command after -- (the prompt goes before it):
   subspace run "hello" -- node my-agent.js`;
 
 const SESSION_OPTIONS = `  --cwd <dir>            The agent's folder (default: here)
@@ -136,10 +144,36 @@ waived (shown as WAIVE). Exits 1 if any check failed.
 
 ${AGENTS_NOTE.replace('subspace run "hello" -- node my-agent.js', 'subspace check -- node my-agent.js')}
 `,
-  agents: `Usage: subspace agents
+  agents: `Usage: subspace agents [name] [options]
 
-Lists the known agents, what each one is, and whether its command is installed
-(logins are checked when an agent starts).
+Lists the known agents and whether each one's command is installed (logins are
+checked when it starts). With a name, shows how it starts and its quirks.
+
+Agents come from layers, each later one changing the earlier field by field:
+the ACP agent registry, Subspace's built-ins, ~/.config/subspace/agents.toml,
+the nearest subspace.toml, and the files in $SUBSPACE_AGENTS or --agents-file.
+
+  --all                  Also list the registry's other agents
+  --refresh              Fetch the latest ACP registry into the cache
+  --files                List the agents files read, and whether each exists
+  --json                 Print as JSON
+
+An agents file:
+
+  [agents.claude]                     # change one field of a built-in agent
+  extra_args = ["--verbose"]
+
+  [agents.mine]                       # an agent of your own
+  command = "node"
+  args = ["/path/to/agent.js"]
+  mode = "ask"                        # the session mode to switch to (false: its own)
+  env = { LOG_LEVEL = "debug" }
+
+  [agents.mine.quirks.unknown-session]  # something it does that it should not
+  summary = "Answers an unknown session with -32603"
+  waives = ["session.unknown"]        # conformance checks it explains
+  fix = "None needed"
+  # apply = { mode = "ask", args = [...], env = {...} }  settings used because of it
 `,
   trace: `Usage: subspace trace <trace.jsonl> [options]
 
@@ -175,7 +209,7 @@ interface Parsed {
 
 const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'junit', 'artifacts', 'prompts-file', 'timeout', 'expect-end', 'expect-stop-reason']);
 /** Valued flags that may be given more than once. */
-const REPEATED = new Set(['prompt', 'env', 'expect-contains', 'expect-not-contains']);
+const REPEATED = new Set(['prompt', 'env', 'expect-contains', 'expect-not-contains', 'agents-file']);
 
 export function parse(argv: string[]): Parsed {
   const dash = argv.indexOf('--');
@@ -197,13 +231,32 @@ export function parse(argv: string[]): Parsed {
   return parsed;
 }
 
-function agentOf(parsed: Parsed): AgentName | { command: string; args: string[] } {
+function catalogOf(parsed: Parsed): AgentCatalog {
+  try {
+    return loadCatalog({ cwd: cwdOf(parsed), files: parsed.lists['agents-file'] ?? [] });
+  } catch (error) {
+    if (error instanceof AgentFileError) throw new UsageError(error.message);
+    throw error;
+  }
+}
+
+const cwdOf = (parsed: Parsed) => (typeof parsed.flags.cwd === 'string' ? resolve(parsed.flags.cwd) : process.cwd());
+
+/** The agent: a command after --, or a name looked up in the catalog. */
+function agentOf(parsed: Parsed): { command: string; args: string[] } | ResolvedAgent {
   if (parsed.custom) return parsed.custom;
   const name = parsed.positional.shift();
   if (!name) throw new UsageError('Which agent? Give a name or a command after --.');
-  if (!(name in AGENT_PRESETS)) throw new UsageError(`Unknown agent "${name}". Known: ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after --.`);
-  return name as AgentName;
+  try {
+    return agentByName(name, catalogOf(parsed));
+  } catch (error) {
+    if (error instanceof TypeError) throw new UsageError(`${error.message.replace(', or pass { command, args }.', '')}, or a command after --.`);
+    throw error;
+  }
 }
+
+/** start() takes a resolved agent as its command, keeping its name for messages. */
+const startTarget = (agent: ReturnType<typeof agentOf>) => ('id' in agent ? agent.id : agent);
 
 class UsageError extends Error {}
 
@@ -281,7 +334,7 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
   const prompts = await promptsOf(parsed);
   if (!prompts.length) throw new UsageError('What should the agent do? Give a prompt (or --prompt, --prompts-file, --stdin).');
   const timeout = typeof parsed.flags.timeout === 'string' ? Number(parsed.flags.timeout) * 1000 : undefined;
-  const started = await start(agent, startOptions(parsed, io, permissionsOf(parsed)));
+  const started = await start(startTarget(agent), { ...startOptions(parsed, io, permissionsOf(parsed)), catalog: catalogOf(parsed) });
   const results: TurnResult[] = [];
   try {
     if (started.modeWarning && !parsed.flags.quiet) io.err(`${started.modeWarning}\n`);
@@ -333,7 +386,7 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
     } else rl.close();
   });
   try {
-    started = await start(agent, { ...startOptions(parsed, io, onPermission), handleSignals: false });
+    started = await start(startTarget(agent), { ...startOptions(parsed, io, onPermission), catalog: catalogOf(parsed), handleSignals: false });
     io.err(`${started.client.agent.name ?? 'agent'} ready. /exit to quit.\n`);
     rl.prompt();
     for await (const line of rl) {
@@ -373,29 +426,92 @@ function askVia(rl: Interface): PermissionHandler {
   };
 }
 
-function agentsCommand(io: Io): number {
-  const rows = Object.entries(AGENT_PRESETS).map(([name, preset]) => {
-    const p: AgentPreset = preset;
-    const ok = installed(p.command);
-    return { name, ok, line: `${ok ? '✓' : '·'} ${name.padEnd(9)} ${p.description}${ok ? '' : `  (${p.install ?? `needs ${p.command}`})`}` };
-  });
-  io.out(`${rows.map((r) => r.line).join('\n')}\n`);
-  io.out(`\n✓ = its command is installed. Logins are checked when it starts.\n`);
+const launchNote = (a: ResolvedAgent) => (a.launch === 'npx' || a.launch === 'uvx' ? `${a.launch} ${a.args.find((x) => !x.startsWith('-')) ?? ''}` : [a.command, ...a.args].join(' '));
+
+/** Installed: its command is on PATH (npx and uvx fetch the package themselves). */
+const ready = (a: ResolvedAgent) => installed(a.command);
+
+async function agentsCommand(parsed: Parsed, io: Io): Promise<number> {
+  if (parsed.flags.refresh) {
+    const { agents, path } = await refreshRegistry();
+    io.out(`Fetched the ACP registry: ${agents} agents -> ${path}\n`);
+    if (!parsed.positional.length && !parsed.flags.all) return 0;
+  }
+  if (parsed.flags.files) {
+    for (const f of agentFiles({ cwd: cwdOf(parsed), files: parsed.lists['agents-file'] ?? [] })) io.out(`${f.exists ? '✓' : '·'} ${f.path}\n`);
+    return 0;
+  }
+  const catalog = catalogOf(parsed);
+  const name = parsed.positional[0];
+  if (name) {
+    const agent = agentOf(parsed);
+    if (!('id' in agent)) throw new UsageError('subspace agents <name>');
+    if (parsed.flags.json) {
+      io.out(`${JSON.stringify(agent, null, 2)}\n`);
+      return 0;
+    }
+    const lines = [
+      `${agent.id}${agent.name !== agent.id ? ` (${agent.name})` : ''}${agent.version ? ` ${agent.version}` : ''}`,
+      ...(agent.description ? [`  ${agent.description}`] : []),
+      `  command   ${[agent.command, ...agent.args].join(' ')}${ready(agent) ? '' : '   (not installed)'}`,
+      ...(Object.keys(agent.env).length ? [`  env       ${Object.entries(agent.env).map(([k, v]) => `${k}=${v}`).join(' ')}`] : []),
+      `  mode      ${agent.mode ?? "(the agent's own)"}`,
+      ...(agent.aliases.length ? [`  aliases   ${agent.aliases.join(', ')}`] : []),
+      ...(agent.install ? [`  install   ${agent.install}`] : []),
+      ...(agent.login ? [`  login     ${agent.login}`] : []),
+      `  from      ${agent.sources.join(' < ')}`,
+    ];
+    const quirks = Object.entries(agent.quirks);
+    if (quirks.length) {
+      lines.push('', 'Quirks:');
+      for (const [id, q] of quirks) {
+        lines.push(`  ${id}: ${q.summary}`);
+        if (q.fix) lines.push(`    fix: ${q.fix}`);
+        const applied = [
+          ...(q.apply?.mode !== undefined ? [`mode ${q.apply.mode === false ? "(the agent's own)" : q.apply.mode}`] : []),
+          ...(q.apply?.args?.length ? [`args ${q.apply.args.join(' ')}`] : []),
+          ...(q.apply?.env ? [`env ${Object.keys(q.apply.env).join(', ')}`] : []),
+        ];
+        if (applied.length) lines.push(`    applies: ${applied.join('; ')}`);
+        if (q.waives?.length) lines.push(`    waives: ${q.waives.join(', ')}`);
+        if (q.seen) lines.push(`    seen: ${q.seen}`);
+      }
+    }
+    io.out(`${lines.join('\n')}\n`);
+    return 0;
+  }
+  const all = listAgents(catalog);
+  const shown = parsed.flags.all ? all : all.filter((a) => a.sources.some((s) => s !== 'registry'));
+  if (parsed.flags.json) {
+    io.out(`${JSON.stringify(shown, null, 2)}\n`);
+    return 0;
+  }
+  const width = Math.max(...shown.map((a) => a.id.length)) + 1;
+  for (const a of shown) {
+    const ok = ready(a);
+    const quirks = Object.keys(a.quirks).length;
+    const mark = !ok ? '·' : a.launch === 'npx' || a.launch === 'uvx' ? '↓' : '✓';
+    io.out(`${mark} ${a.id.padEnd(width)} ${a.description || a.name}${quirks ? `  [${quirks} quirk${quirks > 1 ? 's' : ''}]` : ''}${ok ? '' : `  (${a.install ?? `needs ${a.command}`})`}\n`);
+  }
+  const more = all.length - shown.length;
+  io.out(`\n✓ installed   ↓ fetched by ${'npx/uvx'} on first start   · not installed. Logins are checked when it starts.\n`);
+  io.out(`subspace agents <name> shows one${more ? `; --all lists ${more} more from the ACP registry (${catalog.registrySource})` : ''}.\n`);
   return 0;
 }
 
 async function checkCommand(parsed: Parsed, io: Io): Promise<number> {
   const agent = agentOf(parsed);
-  const preset: { command: string; args: readonly string[]; mode?: string } = typeof agent === 'string' ? AGENT_PRESETS[agent] : agent;
+  const known = 'id' in agent ? agent : undefined;
   const cwd = typeof parsed.flags.cwd === 'string' ? parsed.flags.cwd : await mkdtemp(join(tmpdir(), 'subspace-check-'));
-  const mode = typeof parsed.flags.mode === 'string' ? (parsed.flags.mode === 'none' ? undefined : parsed.flags.mode) : preset.mode;
-  const report = await checkAgentProcess(preset.command, {
-    args: [...preset.args],
+  const mode = typeof parsed.flags.mode === 'string' ? (parsed.flags.mode === 'none' ? undefined : parsed.flags.mode) : known?.mode;
+  const report = await checkAgentProcess(agent.command, {
+    args: [...agent.args],
     cwd,
+    ...(known && Object.keys(known.env).length ? { env: { ...(process.env as Record<string, string>), ...known.env } } : {}),
     ...(mode ? { mode } : {}),
     ...(typeof parsed.flags.only === 'string' ? { only: parsed.flags.only.split(',') } : {}),
-    // Known quirks of this agent are waived, unless --strict.
-    ...(typeof agent === 'string' && KNOWN_QUIRKS[agent] && !parsed.flags.strict ? { waive: KNOWN_QUIRKS[agent] } : {}),
+    // The agent's known quirks waive the checks they explain, unless --strict.
+    ...(known && Object.keys(known.waivers).length && !parsed.flags.strict ? { waive: known.waivers } : {}),
   });
   io.out(`${formatReport(report)}\n`);
   return failures(report).length ? 1 : 0;
@@ -445,7 +561,7 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
       case 'chat':
         return await chatCommand(parsed, io);
       case 'agents':
-        return agentsCommand(io);
+        return await agentsCommand(parsed, io);
       case 'check':
         return await checkCommand(parsed, io);
       case 'test':

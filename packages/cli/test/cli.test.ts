@@ -141,3 +141,28 @@ test('help: --help, -h and help exit 0; a command has its own help; --version; u
   assert.equal(missing.code, 2);
   assert.match(missing.err, /Run subspace run --help for its options/);
 });
+
+test('agents: an agent of your own in subspace.toml, details with quirks, waivers in check, bad files exit 2', async () => {
+  const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
+  const dir = await mk(join(tmpdir(), 'subspace-cli-agents-'));
+  const fixture = new URL('./fixtures/tidy-agent.ts', import.meta.url).pathname;
+  await wf(
+    join(dir, 'subspace.toml'),
+    `[agents.tidy]\ndescription = "The test agent"\ncommand = "node"\nargs = ["--conditions=source", "${fixture}"]\n\n[agents.tidy.quirks.made-up]\nsummary = "A quirk for the test"\nfix = "Nothing"\nwaives = ["session.unknown"]\n`
+  );
+  const list = await cli('agents', '--cwd', dir);
+  assert.equal(list.code, 0, list.err);
+  assert.match(list.out, /✓ tidy +The test agent {2}\[1 quirk\]/);
+  const one = await cli('agents', 'tidy', '--cwd', dir);
+  assert.match(one.out, /command {3}node --conditions=source/);
+  assert.match(one.out, /made-up: A quirk for the test\n {4}fix: Nothing\n {4}waives: session.unknown/);
+  assert.match(one.out, /from {6}\/.*subspace\.toml\n/);
+  const run = await cli('run', 'tidy', 'tidy up', '--cwd', dir, '--yes', '--quiet', '--expect-end', 'completed');
+  assert.equal(run.code, 0, run.err);
+  const json = JSON.parse((await cli('agents', 'grok', '--json')).out);
+  assert.equal(json.waivers['session.unknown'].length > 0, true);
+  await wf(join(dir, 'subspace.toml'), '[agents.tidy]\ncomand = "x"\n');
+  const bad = await cli('agents', '--cwd', dir);
+  assert.equal(bad.code, 2);
+  assert.match(bad.err, /subspace\.toml: agents\.tidy\.comand is not a known field/);
+});

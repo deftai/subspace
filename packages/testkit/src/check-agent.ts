@@ -31,7 +31,7 @@ export interface CheckAgentOptions {
   cancelAfterMs?: number;
   /** Run only these check ids. */
   only?: string[];
-  /** Failed checks to waive, as check id: reason (known quirks; see KNOWN_QUIRKS). */
+  /** Failed checks to waive, as check id: reason (known quirks: an agent's `waivers` from the catalog, `resolveAgent()`). */
   waive?: Record<string, string>;
   /**
    * Switch every session to this mode before its turn, e.g. an ask-first mode

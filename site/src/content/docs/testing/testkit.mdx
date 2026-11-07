@@ -21,7 +21,7 @@ import testing from '../../../../../examples/testing.ts?raw';
 
 ## Conformance
 
-- `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; `KNOWN_QUIRKS` has the waivers for real agents' recorded quirks, which `subspace check <agent>` applies (`--strict` to not).
+- `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; An agent's quirks carry its waivers (`resolveAgent(catalog, name).waivers`; see [agents files](/subspace/client/agents-file/)), which `subspace check <agent>` applies (`--strict` to not).
 - `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
 - From the command line: `node --conditions=source packages/testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
 

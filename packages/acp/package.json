@@ -28,11 +28,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --conditions=source --test --test-force-exit test/*.test.ts"
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts",
+    "registry:update": "node --conditions=source scripts/update-registry.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
     "@deft-subspace/kernel": "workspace:*",
-    "@agentclientprotocol/sdk": "2.4.0"
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
     "zod": "^4.1.0"
