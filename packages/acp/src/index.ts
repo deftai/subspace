@@ -31,9 +31,10 @@ export {
   type ExtensionRequest,
   type Validator,
 } from './extensions.ts';
-export type { SessionMode, SessionModes } from './modes.ts';
+export { modesFrom, type SessionMode, type SessionModes } from './modes.ts';
 export { decide, resolveDecision, type PermissionDecision, type PermissionHandler, type PermissionPolicy } from './permissions.ts';
 export { TurnProjection } from './projection.ts';
+export { turnEnd, type TurnEnd } from './model.ts';
 export type {
   ContentBlock,
   Exhaustion,

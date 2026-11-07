@@ -9,6 +9,7 @@
  * are options, so a real agent can be steered into each situation.
  */
 import { cancelRequest, ErrorCode, RpcError, RpcPeer, type Channel } from '@deft-subspace/kernel';
+import { modesFrom } from '@deft-subspace/acp';
 import { runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
 
 export interface CheckAgentOptions {
@@ -30,6 +31,12 @@ export interface CheckAgentOptions {
   cancelAfterMs?: number;
   /** Run only these check ids. */
   only?: string[];
+  /**
+   * Switch every session to this mode before its turn, e.g. an ask-first mode
+   * (Claude "default", Codex "read-only"), since in their starting modes some
+   * agents never ask permission and `cancel.permission` is skipped.
+   */
+  mode?: string;
 }
 
 export const AGENT_CHECKS = {
@@ -172,7 +179,22 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   const newSession = async (): Promise<string> => {
     const result = (await peer.request('session/new', { cwd, mcpServers: [] }, { timeoutMs: 60_000 })) as { sessionId?: unknown };
     if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new Error(`session/new returned ${JSON.stringify(result)}`);
+    if (options.mode) await switchMode(result.sessionId, result as Record<string, unknown>, options.mode);
     return result.sessionId;
+  };
+
+  /** session/set_mode (v1 modes) or session/set_config_option (a "mode" config option). */
+  const switchMode = async (sessionId: string, answer: Record<string, unknown>, modeId: string) => {
+    const modes = modesFrom(answer);
+    if (!modes?.available.some((m) => m.id === modeId)) {
+      throw new Error(`the agent offers no mode "${modeId}" (available: ${modes?.available.map((m) => m.id).join(', ') || 'none'})`);
+    }
+    if (modes.via === 'modes') {
+      await peer.request('session/set_mode', { sessionId, modeId }, { timeoutMs: 30_000 });
+    } else {
+      const params = { sessionId, configId: modes.configId, value: modeId, ...(v === 2 ? { type: 'id' } : {}) };
+      await peer.request('session/set_config_option', params, { timeoutMs: 30_000 });
+    }
   };
 
   const startTurn = (sessionId: string, text: string): TurnWatch => {

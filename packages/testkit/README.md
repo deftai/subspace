@@ -36,6 +36,8 @@ To run the conformance checks against a real agent (each prompt check is one mod
 ONLY=initialize.version,session.new,session.unknown node --conditions=source scripts/check-agent.ts grok --permission-mode default agent stdio
 ```
 
+`MODE` switches every session to that mode first. `scripts/check-claude-codex.sh` runs the checks against Claude and Codex in their ask-first modes, so `cancel.permission` runs instead of being skipped.
+
 ## Known quirks (Grok Build, recorded 2026-11-07)
 
 - A write rejected by the permission policy ends the turn with `stopReason: "cancelled"`, though the client did not cancel (`grok-write-rejected`).
@@ -46,6 +48,6 @@ ONLY=initialize.version,session.new,session.unknown node --conditions=source scr
 
 - Both start in a mode that writes without asking (Claude `auto`, Codex `agent`); switch to Claude `default` or Codex `read-only` to be asked.
 - Claude's adapter (`@agentclientprotocol/claude-agent-acp` 0.101.0) speaks protocol v2. A rejected write ends the turn with `end_turn` and the tool call `failed` (`claude-write-rejected`).
-- Codex, like Grok, ends a turn whose write was rejected with `stopReason: "cancelled"` though the client did not cancel, and leaves the tool call `pending` (`codex-write-rejected`). Its reject option is named `cancel` (kind `reject_once`).
+- Codex, like Grok, ends a turn whose write was rejected with `stopReason: "cancelled"` though the client did not cancel, and leaves the tool call `pending` (`codex-write-rejected`). `TurnResult.refused` counts refused requests, and `turnEnd(result)` gives `refused` for such a turn rather than `cancelled`. Its reject option is named `cancel` (kind `reject_once`).
 - Both send `_auth/status_update` with the signed-in account's email, organization and plan; the recorder redacts it.
 - Both confirm a cancel mid-stream with `stopReason: "cancelled"`; neither turn is forced (`claude-cancel`, `codex-cancel`).

@@ -7,6 +7,8 @@ export interface NormalizedTurn {
   forced: boolean;
   text: string;
   toolCalls: Array<{ title: string; kind?: string; status: string; content: number }>;
+  /** Permission requests refused; absent when none were. */
+  refused?: number;
 }
 
 export function normalizeTurn(result: TurnResult): NormalizedTurn {
@@ -21,5 +23,6 @@ export function normalizeTurn(result: TurnResult): NormalizedTurn {
       status: c.status,
       content: c.content.length,
     })),
+    ...(result.refused ? { refused: result.refused } : {}),
   };
 }

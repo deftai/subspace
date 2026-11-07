@@ -183,3 +183,50 @@ test('an agent that answers cancel too late fails, and one with no v1/v2 fails i
   const bad = await checkAgent(other.client);
   assert.deepEqual(summary(bad), ['initialize.version:fail']);
 });
+
+test('mode: every session is switched before its turn (v1 modes and a mode config option); an unknown mode fails session.new', async () => {
+  for (const via of ['modes', 'config'] as const) {
+    const link = byteLink();
+    const current = new Map<string, string>();
+    const promptedIn: string[] = [];
+    let n = 0;
+    officialV1
+      .agent({ name: `modes-${via}` })
+      .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+      .onRequest('session/new', () => {
+        const sessionId = `s${++n}`;
+        current.set(sessionId, 'auto');
+        const available = [{ id: 'auto', name: 'Auto' }, { id: 'ask', name: 'Ask' }];
+        return via === 'modes'
+          ? { sessionId, modes: { currentModeId: 'auto', availableModes: available } }
+          : {
+              sessionId,
+              configOptions: [
+                { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'auto', options: available.map((m) => ({ value: m.id, name: m.name })) },
+              ],
+            };
+      })
+      .onRequest('session/set_mode', ({ params }) => {
+        current.set(params.sessionId as string, params.modeId as string);
+        return {};
+      })
+      .onRequest('session/set_config_option', ({ params }) => {
+        current.set(params.sessionId as string, params.value as string);
+        return {};
+      })
+      .onRequest('session/prompt', ({ params }) => {
+        promptedIn.push(current.get(params.sessionId as string)!);
+        return { stopReason: 'end_turn' };
+      })
+      .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+    const report = await checkAgent(link.client, { only: ['session.new', 'prompt.ends'], mode: 'ask' });
+    assert.deepEqual(summary(report), ['session.new:pass', 'prompt.ends:pass'], `${via}: ${formatReport(report)}`);
+    assert.deepEqual(promptedIn, ['ask'], via);
+  }
+
+  const link = byteLink();
+  serveAgent(link.agent, { name: 'no-modes', prompt: wellBehaved });
+  const report = await checkAgent(link.client, { only: ['session.new'], mode: 'ask' });
+  assert.deepEqual(summary(report), ['session.new:fail']);
+  assert.match(report[0]!.detail, /offers no mode "ask"/);
+});

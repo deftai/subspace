@@ -445,6 +445,8 @@ interface ActiveTurn {
   limits: TurnLimits;
   toolCalls: number;
   exhausted?: Exhaustion;
+  /** Permission requests refused while the turn was not being cancelled. */
+  refused: number;
   timers: Array<ReturnType<typeof setTimeout>>;
   idleTimer?: ReturnType<typeof setTimeout>;
 }
@@ -573,6 +575,7 @@ export class Session {
       cancelController: new AbortController(),
       limits: options.limits ?? this.client.defaultLimits ?? {},
       toolCalls: 0,
+      refused: 0,
       timers: [],
     } as unknown as ActiveTurn;
     active.turn = new Turn(id, () => this.cancelTurn(active), {
@@ -750,6 +753,7 @@ export class Session {
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
     const outcome = await decide(policy, request, combined);
+    if ((outcome.outcome === 'cancelled' || !outcome.allowed) && !active.cancelController.signal.aborted) active.refused++;
     active?.turn.push({ type: 'permission', request, outcome });
     if (outcome.outcome === 'cancelled') return { outcome: { outcome: 'cancelled' } };
     return { outcome: { outcome: 'selected', optionId: outcome.optionId } };
@@ -793,6 +797,7 @@ export class Session {
       ...(forced ? { forced: true } : {}),
       ...(error !== undefined ? { error } : {}),
       ...(active.exhausted ? { exhausted: active.exhausted } : {}),
+      ...(active.refused ? { refused: active.refused } : {}),
     });
   }
 

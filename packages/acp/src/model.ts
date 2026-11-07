@@ -119,4 +119,29 @@ export interface TurnResult {
   error?: unknown;
   /** Set when a turn limit ended the turn. */
   exhausted?: Exhaustion;
+  /**
+   * How many of the agent's permission requests this side refused (rejected,
+   * or answered cancelled while the turn was not being cancelled). Absent when
+   * none were. Some agents (Grok, Codex) end a turn whose request was refused
+   * with stopReason "cancelled" though nobody cancelled: `cancelled` false and
+   * `refused` set tells that apart from a real cancel (see `turnEnd`).
+   */
+  refused?: number;
+}
+
+/**
+ * Why a turn ended, in one word, with the agent quirks taken out:
+ * `limit` (a turn limit), `cancelled` (cancelled from this side, or by the
+ * agent unprompted), `refused` (the agent stopped after a permission request
+ * was refused), `error` (a v2 error stop), or `completed` (any other stop:
+ * end_turn, max_tokens, refusal, ...).
+ */
+export type TurnEnd = 'completed' | 'cancelled' | 'refused' | 'limit' | 'error';
+
+export function turnEnd(result: TurnResult): TurnEnd {
+  if (result.exhausted) return 'limit';
+  if (result.cancelled) return 'cancelled';
+  if (result.stopReason === 'error') return 'error';
+  if (result.stopReason === 'cancelled') return result.refused ? 'refused' : 'cancelled';
+  return 'completed';
 }
