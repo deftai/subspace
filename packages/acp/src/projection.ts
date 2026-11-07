@@ -7,6 +7,7 @@
  * one message. Either way the app gets the same events.
  */
 import type { PlanEntry, StopReason, ToolCall, TurnEvent } from './model.ts';
+import { Terminals } from './terminals.ts';
 
 type Update = Record<string, unknown> & { sessionUpdate?: unknown };
 
@@ -31,9 +32,12 @@ export class TurnProjection {
   private segment = 0;
   private lastKind: 'text' | 'other' = 'other';
   private readonly prefix: string;
+  /** Agent terminals (v2), shared with the session so they outlive the turn. */
+  readonly terminals: Terminals;
 
-  constructor(prefix: string) {
+  constructor(prefix: string, terminals: Terminals = new Terminals()) {
     this.prefix = prefix;
+    this.terminals = terminals;
   }
 
   /** Apply one update. Returns the events it produced, and a state change if it was one. */
@@ -69,6 +73,13 @@ export class TurnProjection {
         const plan = update.plan;
         const entries = isRecord(plan) && Array.isArray(plan.entries) ? (plan.entries as PlanEntry[]) : [];
         return { events: [{ type: 'plan', entries }] };
+      }
+      case 'terminal_update':
+      case 'terminal_output_chunk': {
+        const applied = this.terminals.apply(update);
+        if (!applied) return { events: [] };
+        const { terminal, appended, replaced } = applied;
+        return { events: [{ type: 'terminal', terminal: { ...terminal }, ...(appended ? { appended } : {}), replaced }] };
       }
       case 'usage_update':
         return { events: [{ type: 'usage', used: Number(update.used), size: Number(update.size), cost: update.cost }] };

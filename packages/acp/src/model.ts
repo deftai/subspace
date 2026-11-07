@@ -7,6 +7,7 @@
  */
 import type * as v1 from '@agentclientprotocol/sdk';
 import type * as v2 from '@agentclientprotocol/sdk/experimental/v2';
+import type { TerminalState } from './terminals.ts';
 
 export type { v1, v2 };
 
@@ -99,6 +100,12 @@ export type TurnEvent =
   | { type: 'plan'; entries: PlanEntry[] }
   | { type: 'permission'; request: PermissionRequest; outcome: PermissionOutcome }
   | { type: 'usage'; used: number; size: number; cost?: unknown }
+  /**
+   * v2: a terminal the agent runs changed. `terminal` is a snapshot;
+   * `appended` holds a chunk's new bytes; `replaced` means the output was
+   * replaced by a snapshot (redraw from `terminal.output`).
+   */
+  | { type: 'terminal'; terminal: Readonly<TerminalState>; appended?: Uint8Array; replaced: boolean }
   /** v2 only: the agent's run state. */
   | { type: 'state'; state: string }
   /** A turn limit was reached; the turn is being cancelled. */

@@ -44,6 +44,7 @@ import {
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { TurnProjection } from './projection.ts';
+import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
 
 /** File access an agent may ask for (v1 `fs/*`). See `workspaceFiles()` in `@deft-subspace/acp/node`. */
@@ -531,6 +532,13 @@ export class Session {
   created: Record<string, unknown>;
   /** Title and update time, from the agent's `session_info_update`. */
   readonly info: { title?: string; updatedAt?: string } = {};
+  /**
+   * Terminals the agent runs and shows (v2 `terminal_update`,
+   * `terminal_output_chunk`), by id. Kept across turns: one may outlive the
+   * turn that started it, and its updates may come before the tool call that
+   * shows it.
+   */
+  readonly terminals = new Terminals();
 
   private active?: ActiveTurn;
   /** Prompts waiting for the running turn to end (with `queue`). */
@@ -694,7 +702,7 @@ export class Session {
       throw new Error(`Session ${this.id} already has a turn running (pass { queue: true } to queue it)`);
     }
     const id = this.client.nextTurnId(this.id);
-    const projection = new TurnProjection(id);
+    const projection = new TurnProjection(id, this.terminals);
     const active = {
       projection,
       promptAnswered: false,
@@ -822,7 +830,7 @@ export class Session {
     this.trackModes(update);
     const active = this.active;
     if (!active) {
-      const { events } = new TurnProjection(`${this.id}#idle`).apply(update);
+      const { events } = new TurnProjection(`${this.id}#idle`, this.terminals).apply(update);
       for (const event of events) {
         this.idleHistory.push({ event, raw: update });
         if (this.idleHistory.length > 50) this.idleHistory.shift();
@@ -877,7 +885,7 @@ export class Session {
     const active = this.active;
     // No turn is running, or it is being cancelled: nobody asked for this. Fail closed.
     if (!active || active.cancelController.signal.aborted) return { outcome: { outcome: 'cancelled' } };
-    const projection = active?.projection ?? new TurnProjection(`${this.id}#idle`);
+    const projection = active?.projection ?? new TurnProjection(`${this.id}#idle`, this.terminals);
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
     const outcome = await decide(policy, request, combined);

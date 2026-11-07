@@ -212,6 +212,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - logging in: `client.authMethods` (one shape for v1 and v2), `client.authenticate(id)` (v1 `authenticate`, v2 `auth/login`), `client.logout()`, and `terminalAuth` to advertise that the app can run a `terminal` login method;
    - `client.deleteSession(id)` (`session/delete`);
    - config options: `session.configOptions`, `session.setConfigOption(id, value)` for select and on/off options, and `session.model` / `session.setModel()` (the option with category `model`). Values the agent did not offer are refused before any request.
+   - v2 agent terminals (`terminal_update`, `terminal_output_chunk`): `terminal` turn events (a snapshot, the appended bytes, whether a snapshot replaced the output) and `session.terminals`, kept across turns since a terminal can outlive its turn and its updates can come before the tool call that shows it. Output is bytes, capped at 1 MB per terminal; `terminalText()` decodes it. Display only, as the proposal says.
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
 5. **Testkit (`packages/testkit`, merged, first cut done, 33 tests):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;
