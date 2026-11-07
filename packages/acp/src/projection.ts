@@ -78,6 +78,8 @@ export class TurnProjection {
   /** Merge a permission request's tool call into the known state (v1 sends an update with it). */
   mergeToolCall(update: Record<string, unknown>): ToolCall | undefined {
     if (typeof update.toolCallId !== 'string') return undefined;
+    // A tool call first seen here still separates the text before and after it.
+    this.lastKind = 'other';
     return this.upsert(update, false).toolCall;
   }
 
@@ -93,13 +95,19 @@ export class TurnProjection {
     return events;
   }
 
-  /** All agent message text, in order, separated by blank lines. */
+  /**
+   * All agent message text, in order. Messages are separated by a blank line,
+   * except where the earlier one already ends a line.
+   */
   get text(): string {
-    return this.messageOrder
-      .map((id) => this.messages.get(id)!)
-      .filter((m) => m.kind === 'message' && m.text)
-      .map((m) => m.text)
-      .join('\n\n');
+    let out = '';
+    for (const id of this.messageOrder) {
+      const message = this.messages.get(id)!;
+      if (message.kind !== 'message' || !message.text) continue;
+      if (out && !out.endsWith('\n')) out += '\n\n';
+      out += message.text;
+    }
+    return out;
   }
 
   private messageId(update: Update, kind: 'message' | 'thought'): string {
