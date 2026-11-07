@@ -18,7 +18,17 @@ import {
   type PeerDiagnostic,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
-import type { ContentBlock, PermissionRequest, ProtocolVersion, ToolCall, TurnEvent, v1, v2 } from './model.ts';
+import type {
+  ContentBlock,
+  Exhaustion,
+  PermissionRequest,
+  ProtocolVersion,
+  ToolCall,
+  TurnEvent,
+  TurnLimits,
+  v1,
+  v2,
+} from './model.ts';
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { TurnProjection } from './projection.ts';
@@ -47,6 +57,8 @@ export interface ClientOptions {
     /** How long a cancelled turn may take to confirm before it is ended here. Default 10 s. */
     cancelGraceMs?: number;
   };
+  /** Limits for every turn, unless a prompt sets its own. Default: none. */
+  limits?: TurnLimits;
   /** Sees every JSON-RPC message, both directions. */
   tap?: RpcPeerOptions['tap'];
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
@@ -179,6 +191,11 @@ export class AcpClient {
   }
 
   /** @internal */
+  get defaultLimits(): TurnLimits | undefined {
+    return this.options.limits;
+  }
+
+  /** @internal */
   get cancelGraceMs(): number {
     return this.options.timeouts?.cancelGraceMs ?? 10_000;
   }
@@ -211,7 +228,17 @@ interface ActiveTurn {
   promptAnswered: boolean;
   idle?: { stopReason: string; error?: unknown };
   cancelController: AbortController;
+  limits: TurnLimits;
+  toolCalls: number;
+  exhausted?: Exhaustion;
+  timers: Array<ReturnType<typeof setTimeout>>;
+  idleTimer?: ReturnType<typeof setTimeout>;
 }
+
+const unrefTimer = (handle: ReturnType<typeof setTimeout>) => {
+  (handle as { unref?: () => void }).unref?.();
+  return handle;
+};
 
 export class Session {
   readonly id: string;
@@ -276,7 +303,8 @@ export class Session {
     return () => this.listeners.delete(listener);
   }
 
-  prompt(input: string | ContentBlock | ContentBlock[]): Turn {
+  /** Start a turn. `limits` replace the client's default limits for this turn. */
+  prompt(input: string | ContentBlock | ContentBlock[], options: { limits?: TurnLimits } = {}): Turn {
     if (this.active) throw new Error(`Session ${this.id} already has a turn running`);
     const blocks: ContentBlock[] =
       typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
@@ -290,8 +318,18 @@ export class Session {
       projection,
       promptAnswered: false,
       cancelController: new AbortController(),
+      limits: options.limits ?? this.client.defaultLimits ?? {},
+      toolCalls: 0,
+      timers: [],
     };
     this.active = active;
+    const { maxDurationMs } = active.limits;
+    if (maxDurationMs !== undefined) {
+      active.timers.push(
+        unrefTimer(setTimeout(() => this.exhaust(active, { limit: 'duration', max: maxDurationMs, value: maxDurationMs }), maxDurationMs))
+      );
+    }
+    this.restartIdle(active);
 
     this.client.peer.request('session/prompt', { sessionId: this.id, prompt: blocks }).then(
       (result) => {
@@ -324,6 +362,28 @@ export class Session {
     void active.turn.done.finally(() => clearTimeout(handle)).catch(() => {});
   }
 
+  /** A limit was reached: record it once, tell the turn, cancel. */
+  private exhaust(active: ActiveTurn, exhaustion: Exhaustion): void {
+    if (this.active !== active || active.exhausted) return;
+    active.exhausted = exhaustion;
+    active.turn.push({ type: 'exhausted', ...exhaustion });
+    void this.cancel();
+  }
+
+  private restartIdle(active: ActiveTurn): void {
+    const { idleMs } = active.limits;
+    if (idleMs === undefined || active.exhausted) return;
+    if (active.idleTimer) clearTimeout(active.idleTimer);
+    active.idleTimer = unrefTimer(
+      setTimeout(() => this.exhaust(active, { limit: 'idle', max: idleMs, value: idleMs }), idleMs)
+    );
+  }
+
+  private stopTimers(active: ActiveTurn): void {
+    for (const handle of active.timers) clearTimeout(handle);
+    if (active.idleTimer) clearTimeout(active.idleTimer);
+  }
+
   /** @internal */
   connectionClosed(error: LocalError): void {
     if (this.active) this.failTurn(this.active, error);
@@ -344,10 +404,26 @@ export class Session {
     }
     const { events, state } = active.projection.apply(update);
     active.turn.push(...events);
+    this.restartIdle(active);
+    this.checkLimits(active, events);
     if (state?.state === 'idle') {
       active.idle = { stopReason: state.stopReason ?? 'end_turn', error: state.error };
       // v2: the turn ends at idle. The prompt answer normally came first.
       if (this.client.protocol === 2 && active.promptAnswered) this.end(active, active.idle.stopReason, active.idle.error);
+    }
+  }
+
+  private checkLimits(active: ActiveTurn, events: TurnEvent[]): void {
+    const { maxToolCalls, maxUsage } = active.limits;
+    for (const event of events) {
+      if (event.type === 'tool_call' && event.created) {
+        active.toolCalls++;
+        if (maxToolCalls !== undefined && active.toolCalls > maxToolCalls) {
+          this.exhaust(active, { limit: 'toolCalls', max: maxToolCalls, value: active.toolCalls });
+        }
+      } else if (event.type === 'usage' && maxUsage !== undefined && event.used > maxUsage) {
+        this.exhaust(active, { limit: 'usage', max: maxUsage, value: event.used });
+      }
     }
   }
 
@@ -403,6 +479,7 @@ export class Session {
   private end(active: ActiveTurn, stopReason: string, error?: unknown, forced?: boolean): void {
     if (this.active !== active) return;
     this.active = undefined;
+    this.stopTimers(active);
     const cancelled = active.cancelController.signal.aborted;
     active.turn.finish({
       stopReason,
@@ -411,12 +488,14 @@ export class Session {
       cancelled,
       ...(forced ? { forced: true } : {}),
       ...(error !== undefined ? { error } : {}),
+      ...(active.exhausted ? { exhausted: active.exhausted } : {}),
     });
   }
 
   private failTurn(active: ActiveTurn, error: unknown): void {
     if (this.active !== active) return;
     this.active = undefined;
+    this.stopTimers(active);
     active.turn.fail(error);
   }
 }

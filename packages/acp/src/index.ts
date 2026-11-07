@@ -6,6 +6,7 @@ export { decide, resolveDecision, type PermissionDecision, type PermissionHandle
 export { TurnProjection } from './projection.ts';
 export type {
   ContentBlock,
+  Exhaustion,
   PermissionOption,
   PermissionOutcome,
   PermissionRequest,
@@ -16,6 +17,7 @@ export type {
   ToolCallContent,
   ToolCallStatus,
   TurnEvent,
+  TurnLimits,
   TurnResult,
   v1,
   v2,

@@ -58,6 +58,29 @@ export type PermissionOutcome =
   | { outcome: 'selected'; optionId: string; allowed: boolean }
   | { outcome: 'cancelled' };
 
+/**
+ * Limits on one turn. When one is reached the turn is cancelled the normal way
+ * (the agent is told, open permission questions are answered `cancelled`) and
+ * the result says which limit it was. Durations are milliseconds.
+ */
+export interface TurnLimits {
+  /** Longest the whole turn may run. */
+  maxDurationMs?: number;
+  /** Longest the agent may go without sending anything (a stuck agent). */
+  idleMs?: number;
+  /** Most tool calls the turn may start. Starting one more ends it. */
+  maxToolCalls?: number;
+  /** Most context tokens in use, as the agent's usage updates report them (v2). */
+  maxUsage?: number;
+}
+
+/** Which limit ended a turn, its setting, and the value that crossed it. */
+export interface Exhaustion {
+  limit: 'duration' | 'idle' | 'toolCalls' | 'usage';
+  max: number;
+  value: number;
+}
+
 /** Everything that can happen during a turn, in order. */
 export type TurnEvent =
   /** Agent text. `delta` is what is new; `text` is the whole message so far. */
@@ -74,6 +97,8 @@ export type TurnEvent =
   | { type: 'usage'; used: number; size: number; cost?: unknown }
   /** v2 only: the agent's run state. */
   | { type: 'state'; state: string }
+  /** A turn limit was reached; the turn is being cancelled. */
+  | ({ type: 'exhausted' } & Exhaustion)
   /** Anything else, unchanged (available commands, config options, notices, ...). */
   | { type: 'update'; sessionUpdate: string; update: unknown };
 
@@ -88,4 +113,6 @@ export interface TurnResult {
   forced?: boolean;
   /** v2: the error an `error` stop carried. */
   error?: unknown;
+  /** Set when a turn limit ended the turn. */
+  exhausted?: Exhaustion;
 }

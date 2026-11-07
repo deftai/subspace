@@ -205,7 +205,10 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - still to do: move the package to `packages/acp-testkit` once the old package is retired.
 6. **Devtools (`packages/devtools`, merged, first cut done, 14 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
-   - still to do: check the viewer in a real browser;
+   - published as a private page for review;
+   - still to do: an answer that arrives after a `$/cancel_request` is flagged as a problem, though LSP expects one;
+   - still to do: sessions seen only in error replies count as real sessions;
+   - still to do: anything found when looking at it in a browser;
    - still to do: OpenTelemetry spans per request and per turn.
-7. **Bounded turns:** `Turn` limits on time, tool calls and usage, ending with an explicit "exhausted" result.
+7. **Bounded turns:** done. `session.prompt(input, { limits })`, or the client's `limits` option, takes `maxDurationMs`, `idleMs`, `maxToolCalls` and `maxUsage`. A limit cancels the turn the normal way, pushes an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`. 11 tests cover v1 and v2. Still to do: expose the limits in `bridge mcp`.
 8. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
