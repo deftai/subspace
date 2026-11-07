@@ -17,3 +17,15 @@ export {
   type RequestOptions,
   type RpcPeerOptions,
 } from './rpc.ts';
+export {
+  formatTrace,
+  parseTrace,
+  TRACE_VERSION,
+  traceTap,
+  type TraceHeader,
+  type TraceMessage,
+  type TraceNote,
+  type TraceRecord,
+  type TraceTap,
+  type TraceTapOptions,
+} from './trace.ts';
