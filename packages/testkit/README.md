@@ -24,7 +24,7 @@ PROMPT="Create a file named hello.txt containing the word hi." \
 # Cancel mid-stream, 300 ms after the first message
 PROMPT="Count from 1 to 300, one number per line. Do not use any tools." CANCEL_AFTER_MS=300 \
   node --conditions=source scripts/record.ts claude-cancel npx -y @agentclientprotocol/claude-agent-acp
-# Codex: the same, with npx -y @zed-industries/codex-acp (or the adapter you use)
+# Codex: the same, with npx -y @agentclientprotocol/codex-acp (the deprecated @zed-industries/codex-acp fails every prompt)
 ```
 
 `PERMISSIONS=allow` allows instead of rejecting. The corpus test picks up new files on its own.
