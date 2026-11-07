@@ -58,8 +58,11 @@ export interface SupervisedProcess {
   readonly ended: Promise<ExitInfo>;
   /** The last stderr output, trimmed. */
   stderrTail(): string;
-  /** Stop the process and its process group. Idempotent. */
-  stop(): Promise<ExitInfo>;
+  /**
+   * Stop the process and its process group: end stdin, SIGTERM, then SIGKILL
+   * after `graceMs` (default: the `killGraceMs` spawn option). Idempotent.
+   */
+  stop(graceMs?: number): Promise<ExitInfo>;
 }
 
 const live = new Set<() => void>();
@@ -147,12 +150,12 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
   });
 
   let stopping: Promise<ExitInfo> | undefined;
-  const stop = (): Promise<ExitInfo> => {
+  const stop = (graceMs?: number): Promise<ExitInfo> => {
     stopping ??= (async () => {
       child.stdin!.end();
       if (groupAlive()) {
         signalGroup('SIGTERM');
-        const grace = options.killGraceMs ?? 2000;
+        const grace = graceMs ?? options.killGraceMs ?? 2000;
         const deadline = Date.now() + grace;
         while (groupAlive() && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 25));
