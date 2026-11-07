@@ -15,7 +15,15 @@
  * - v1 and v2 differ on the wire (tool call create vs upsert, prompt answer vs
  *   idle state); the handler does not see that.
  */
-import { cancelRequest, RpcError, RpcPeer, type Channel, type RpcPeerOptions } from '@deft-subspace/kernel';
+import {
+  cancelRequest,
+  RpcError,
+  RpcPeer,
+  type Channel,
+  type RequestHandler,
+  type RequestOptions,
+  type RpcPeerOptions,
+} from '@deft-subspace/kernel';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
 
 export interface ToolCallInit {
@@ -34,9 +42,14 @@ export interface ToolCallHandle {
   fail(fields?: { content?: ToolCallContent[]; rawOutput?: unknown }): Promise<void>;
 }
 
+/** Fields of a tool call update, in ACP's wire names (`toolCallId`, `rawInput`, ...). */
+export type ToolCallFields = { toolCallId: string } & Record<string, unknown>;
+
 export interface AgentTurn {
   readonly sessionId: string;
   readonly protocol: ProtocolVersion;
+  /** What the client said it can do in initialize (v1 `clientCapabilities`, v2 `capabilities`). */
+  readonly clientCapabilities: Record<string, unknown>;
   readonly prompt: ContentBlock[];
   /** The prompt's text blocks, joined. */
   readonly text: string;
@@ -46,6 +59,16 @@ export interface AgentTurn {
   think(text: string): Promise<void>;
   toolCall(init: ToolCallInit & { id?: string }): Promise<ToolCallHandle>;
   plan(entries: Array<{ content: string; priority?: string; status?: string }>): Promise<void>;
+  /**
+   * Send a tool call update you already have in ACP shape (e.g. from a model
+   * pipeline). `create` marks the first one: v1 sends it as `tool_call`; v2
+   * always upserts with `tool_call_update`.
+   */
+  toolCallUpdate(fields: ToolCallFields, options?: { create?: boolean }): Promise<void>;
+  /** Send any `session/update` as given. You are responsible for it suiting `protocol`. */
+  sendUpdate(update: Record<string, unknown> & { sessionUpdate: string }): Promise<void>;
+  /** Call the client (e.g. `fs/read_text_file`, `terminal/create`). Aborted with the turn unless you pass a signal. */
+  request<Result = unknown>(method: string, params?: unknown, options?: RequestOptions): Promise<Result>;
   /** Ask the user. `allowed` is false for rejections and when the turn was cancelled. */
   requestPermission(request: {
     title: string;
@@ -59,8 +82,17 @@ export interface AgentOptions {
   version?: string;
   /** Protocol versions to accept. Default [1, 2]. */
   protocols?: ProtocolVersion[];
-  newSession?(request: { cwd: string; mcpServers: unknown[] }): Promise<{ sessionId?: string } | void> | { sessionId?: string } | void;
+  /** Extra fields for initialize's capabilities (v1 `agentCapabilities`, v2 `capabilities`). */
+  capabilities?: Record<string, unknown>;
+  newSession?(request: {
+    cwd: string;
+    mcpServers: unknown[];
+    /** session/new's params as sent. */
+    params: Record<string, unknown>;
+  }): Promise<{ sessionId?: string } | void> | { sessionId?: string } | void;
   prompt(turn: AgentTurn): Promise<StopReason | void> | StopReason | void;
+  /** More request handlers, e.g. vendor `_name/method` extensions. Registered before the first message. */
+  methods?: Record<string, RequestHandler<any>>;
   peer?: Omit<RpcPeerOptions, 'cancelOutbound' | 'cancelInbound'>;
 }
 
@@ -80,6 +112,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   const accepted = options.protocols ?? [1, 2];
   const sessions = new Map<string, AgentSession>();
   let protocol: ProtocolVersion = 1;
+  let clientCapabilities: Record<string, unknown> = {};
 
   const peer = new RpcPeer(channel, {
     name: options.name,
@@ -87,19 +120,28 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     ...cancelRequest,
   });
 
-  peer.onRequest('initialize', (params: { protocolVersion?: unknown }) => {
+  peer.onRequest('initialize', (params: { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown }) => {
     const asked = Number(params?.protocolVersion);
     const best = Math.max(...accepted) as ProtocolVersion;
     protocol = (accepted.includes(asked as ProtocolVersion) ? asked : best) as ProtocolVersion;
+    const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
+    clientCapabilities = caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {};
     const info = { name: options.name, version: options.version ?? '0.0.0' };
     return protocol === 2
-      ? { protocolVersion: 2, info, capabilities: {}, authMethods: [] }
-      : { protocolVersion: 1, agentInfo: info, agentCapabilities: { loadSession: false }, authMethods: [] };
+      ? { protocolVersion: 2, info, capabilities: { ...options.capabilities }, authMethods: [] }
+      : {
+          protocolVersion: 1,
+          agentInfo: info,
+          agentCapabilities: { loadSession: false, ...options.capabilities },
+          authMethods: [],
+        };
   });
 
-  peer.onRequest('session/new', async (params: { cwd?: string; mcpServers?: unknown[] }) => {
+  for (const [method, handler] of Object.entries(options.methods ?? {})) peer.onRequest(method, handler);
+
+  peer.onRequest('session/new', async (params: { cwd?: string; mcpServers?: unknown[] } & Record<string, unknown>) => {
     if (typeof params?.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
-    const created = await options.newSession?.({ cwd: params.cwd, mcpServers: params.mcpServers ?? [] });
+    const created = await options.newSession?.({ cwd: params.cwd, mcpServers: params.mcpServers ?? [], params });
     const id = (created && created.sessionId) || randomUUID();
     sessions.set(id, { id });
     return { sessionId: id };
@@ -117,7 +159,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const controller = new AbortController();
     session.controller = controller;
     const signal = AbortSignal.any([controller.signal, peer.signal]);
-    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal);
+    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities);
 
     const run = async (): Promise<StopReason> => {
       let stop: StopReason;
@@ -169,7 +211,14 @@ class TurnWriter {
   private readonly protocol: ProtocolVersion;
   private readonly turnId = randomUUID().slice(0, 8);
 
-  constructor(peer: RpcPeer, sessionId: string, protocol: ProtocolVersion, prompt: ContentBlock[], signal: AbortSignal) {
+  constructor(
+    peer: RpcPeer,
+    sessionId: string,
+    protocol: ProtocolVersion,
+    prompt: ContentBlock[],
+    signal: AbortSignal,
+    clientCapabilities: Record<string, unknown>
+  ) {
     this.peer = peer;
     this.sessionId = sessionId;
     this.protocol = protocol;
@@ -180,6 +229,7 @@ class TurnWriter {
     this.api = {
       sessionId,
       protocol,
+      clientCapabilities,
       prompt,
       text,
       signal,
@@ -193,6 +243,18 @@ class TurnWriter {
             : { sessionUpdate: 'plan', entries: entries.map(planEntry) }
         ),
       requestPermission: (request) => this.permission(request, signal),
+      toolCallUpdate: async (fields, options) => {
+        this.lastWasText = false;
+        const { toolCallId } = fields;
+        if (options?.create) this.open.add(toolCallId);
+        if (fields.status === 'completed' || fields.status === 'failed') this.open.delete(toolCallId);
+        await this.update({
+          ...fields,
+          sessionUpdate: options?.create && protocol === 1 ? 'tool_call' : 'tool_call_update',
+        });
+      },
+      sendUpdate: (update) => this.update(update),
+      request: (method, params, options) => peer.request(method, params, { signal, ...options }),
     };
   }
 
