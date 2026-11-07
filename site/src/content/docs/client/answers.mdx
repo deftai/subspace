@@ -34,4 +34,4 @@ await agent.run(['Review this change', file('src/parse.ts'), image('screenshot.p
 
 ## Stopping a turn
 
-Every prompt takes `signal` (an `AbortSignal`: aborting it cancels the turn) and `timeoutMs` (cancel after this long). Stopping a `stream()` early cancels its turn too.
+Every prompt takes `signal` (an `AbortSignal`: aborting it cancels the turn) and `timeoutMs` (cancel after this long; the timer keeps Node running until it fires, so a script with nothing else pending still gets its timeout). Stopping a `stream()` early cancels its turn too.

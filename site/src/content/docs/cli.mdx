@@ -47,6 +47,6 @@ By default reads are allowed without asking, and everything else is asked about 
 | `--json` | `run`: print the result as JSON instead of rendering it |
 | `--quiet` | no thoughts, tool lines or notices |
 
-`run` exits 0 when every turn completed, 3 when the agent stopped after a refusal, 130 when a turn was cancelled or hit a limit, 4 when an `--expect-*` check failed, and 1 on an error (the worst turn decides).
+`run` exits 0 when every turn completed, 3 when the agent stopped after a refusal, 130 when a turn was cancelled or hit a limit, 4 when an `--expect-*` check failed, and 1 on an error (the worst turn decides). A turn that ended with an error says why on stderr, for example `error: Claude API 401: invalid x-api-key (...)`; `chat` prints the same.
 
 `check` takes `--only <ids>` and `--mode`, like `check-agent.ts`.

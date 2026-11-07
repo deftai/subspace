@@ -3,7 +3,7 @@ title: Trace viewer
 description: See what an ACP connection did, from a trace.
 ---
 
-`@deft-subspace/devtools` reads a testkit trace and shows what happened: requests and their answers, timing, sessions, turns, and problems (an unanswered request, an update after a turn ended).
+`@deft-subspace/devtools` reads a testkit trace and shows what happened: requests and their answers, timing, sessions, turns, and problems (an unanswered request, an update after a turn ended). An answer that arrives after the request was cancelled is marked `after cancel` but is not a problem: a cancelled request is still answered, with a result or -32800. A session id seen only in requests that failed is not counted as a session, and gets an info note.
 
 ```sh
 deft-subspace-trace trace.jsonl             # writes trace.html, a standalone viewer
