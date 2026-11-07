@@ -5,7 +5,24 @@ export interface CheckResult {
   pass: boolean;
   /** The check could not run (e.g. the agent never asked for permission). `pass` is true. */
   skipped?: boolean;
+  /** A known quirk: the check failed, and was waived for this reason. `pass` is true. */
+  waived?: string;
   detail: string;
+}
+
+/**
+ * Known quirks of real agents, as waivers: a check they fail for a known
+ * reason (recorded in the quirks corpus). `subspace check <agent>` applies
+ * them unless asked to be strict.
+ */
+export const KNOWN_QUIRKS: Record<string, Record<string, string>> = {
+  grok: { 'session.unknown': 'Grok Build answers a prompt for an unknown session with -32602 Invalid params, not -32002' },
+};
+
+/** Mark failed checks listed in `waive` (id: reason) as waived. A waiver for a check that passed is dropped. */
+export function applyWaivers(report: CheckResult[], waive: Record<string, string> | undefined): CheckResult[] {
+  if (!waive) return report;
+  return report.map((r) => (!r.pass && waive[r.id] ? { ...r, pass: true, waived: waive[r.id]! } : r));
 }
 
 /** The checks that failed. */
@@ -16,7 +33,10 @@ export function failures(report: readonly CheckResult[]): CheckResult[] {
 /** One line per check, for logs. */
 export function formatReport(report: readonly CheckResult[]): string {
   return report
-    .map((r) => `${r.skipped ? 'SKIP' : r.pass ? 'PASS' : 'FAIL'}  ${r.id.padEnd(28)} ${r.title}${r.detail ? ` (${r.detail})` : ''}`)
+    .map(
+      (r) =>
+        `${r.waived ? 'WAIVE' : r.skipped ? 'SKIP' : r.pass ? 'PASS' : 'FAIL'}${r.waived ? ' ' : '  '}${r.id.padEnd(28)} ${r.title}${r.detail ? ` (${r.detail})` : ''}${r.waived ? ` [waived: ${r.waived}]` : ''}`
+    )
     .join('\n');
 }
 

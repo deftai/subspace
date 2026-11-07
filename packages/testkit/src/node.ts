@@ -63,3 +63,22 @@ export async function checkAgentProcess(
     await child.stop();
   }
 }
+
+export {
+  check as checkTurn,
+  defineScenario,
+  formatJUnit,
+  formatScenarios,
+  loadScenarios,
+  outcomeOf,
+  permissionPolicy,
+  runScenario,
+  type Expectations,
+  type RunOptions,
+  type Scenario,
+  type ScenarioPermissions,
+  type ScenarioReport,
+  type ScenarioTurn,
+  type TurnOutcome,
+  type TurnReport,
+} from './scenario.ts';

@@ -68,3 +68,25 @@ test('check runs the conformance checks; agents lists presets; usage errors exit
   assert.equal((await cli('frobnicate')).code, 2);
   assert.equal((await cli()).code, 2);
 });
+
+test('test runs scenario files: text report, JUnit, exit code', async () => {
+  const { mkdtemp: mk, writeFile: wf, readFile: rf } = await import('node:fs/promises');
+  const dir = await mk(join(tmpdir(), 'subspace-cli-test-'));
+  const [, command, ...args] = agent;
+  await wf(
+    join(dir, 'tidy.scenario.json'),
+    JSON.stringify({
+      scenarios: [
+        { name: 'tidy allowed', agent: { command, args }, permissions: 'allow', turns: [{ prompt: 'tidy', expect: { text: { contains: 'Deleted them' }, toolCalls: { min: 2, allCompleted: true } } }] },
+        { name: 'tidy refused', agent: { command, args }, permissions: 'read-only', turns: [{ prompt: 'tidy', expect: { text: { contains: 'Deleted them' } } }] },
+      ],
+    })
+  );
+  const junit = join(dir, 'junit.xml');
+  const run = await cli('test', join(dir, 'tidy.scenario.json'), '--junit', junit, '--artifacts', join(dir, 'artifacts'));
+  assert.equal(run.code, 1);
+  assert.match(run.out, /PASS  tidy allowed/);
+  assert.match(run.out, /FAIL  tidy refused/);
+  assert.match(run.out, /1 of 2 scenarios failed/);
+  assert.match(await rf(junit, 'utf8'), /<testsuite name="tidy refused" tests="1" failures="1"/);
+});

@@ -10,7 +10,7 @@
  */
 import { cancelRequest, ErrorCode, RpcError, RpcPeer, type Channel } from '@deft-subspace/kernel';
 import { configOptionsFrom, modesFrom } from '@deft-subspace/acp';
-import { runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
+import { applyWaivers, runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
 
 export interface CheckAgentOptions {
   /** The cwd for sessions. Default '/tmp'. */
@@ -31,6 +31,8 @@ export interface CheckAgentOptions {
   cancelAfterMs?: number;
   /** Run only these check ids. */
   only?: string[];
+  /** Failed checks to waive, as check id: reason (known quirks; see KNOWN_QUIRKS). */
+  waive?: Record<string, string>;
   /**
    * Switch every session to this mode before its turn, e.g. an ask-first mode
    * (Claude "default", Codex "read-only"), since in their starting modes some
@@ -177,7 +179,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   }
   if (protocol === undefined) {
     await peer.close();
-    return report;
+    return applyWaivers(report, options.waive);
   }
   const v = protocol;
 
@@ -369,7 +371,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   }
 
   await peer.close();
-  return report;
+  return applyWaivers(report, options.waive);
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));

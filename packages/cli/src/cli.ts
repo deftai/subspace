@@ -10,10 +10,10 @@
  * An agent is a known name (claude, codex, grok, gemini, opencode) or a
  * command after `--` (the prompt comes before it):  subspace run "hello" -- node my-agent.js
  */
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import {
   AGENT_PRESETS,
@@ -29,8 +29,8 @@ import {
   type StartedAgent,
   type StartOptions,
 } from '@deft-subspace/acp/node';
-import { failures, formatReport } from '@deft-subspace/acp-testkit';
-import { checkAgentProcess } from '@deft-subspace/acp-testkit/node';
+import { failures, formatReport, KNOWN_QUIRKS } from '@deft-subspace/acp-testkit';
+import { checkAgentProcess, formatJUnit, formatScenarios, loadScenarios, runScenario, type ScenarioReport } from '@deft-subspace/acp-testkit/node';
 import { main as traceMain } from '@deft-subspace/devtools/cli';
 
 export interface Io {
@@ -46,7 +46,8 @@ Commands:
   run <agent> <prompt>   Run one prompt and print the reply
   chat <agent>           Talk to an agent, turn after turn (Ctrl-C cancels a turn; again to quit)
   agents                 List the known agents and whether they are installed
-  check <agent>          Run the conformance checks against an agent
+  check <agent>          Run the conformance checks against an agent (known quirks waived; --strict to not)
+  test <file...>         Run scenario files (--update snapshots, --junit <file>, --artifacts <dir>, --json)
   trace <file>           Write an HTML viewer for a trace (--summary for text)
 
 <agent> is one of ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after -- (the prompt goes before it):
@@ -71,7 +72,7 @@ interface Parsed {
   custom?: { command: string; args: string[] };
 }
 
-const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title']);
+const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'junit', 'artifacts']);
 
 export function parse(argv: string[]): Parsed {
   const dash = argv.indexOf('--');
@@ -228,9 +229,32 @@ async function checkCommand(parsed: Parsed, io: Io): Promise<number> {
     cwd,
     ...(mode ? { mode } : {}),
     ...(typeof parsed.flags.only === 'string' ? { only: parsed.flags.only.split(',') } : {}),
+    // Known quirks of this agent are waived, unless --strict.
+    ...(typeof agent === 'string' && KNOWN_QUIRKS[agent] && !parsed.flags.strict ? { waive: KNOWN_QUIRKS[agent] } : {}),
   });
   io.out(`${formatReport(report)}\n`);
   return failures(report).length ? 1 : 0;
+}
+
+async function testCommand(parsed: Parsed, io: Io): Promise<number> {
+  const files = parsed.positional;
+  if (!files.length) throw new UsageError('Which scenario files? subspace test <file...>');
+  const reports: ScenarioReport[] = [];
+  for (const file of files) {
+    for (const scenario of await loadScenarios(file)) {
+      if (!parsed.flags.json) io.err(`running ${scenario.name}...\n`);
+      reports.push(
+        await runScenario(scenario, {
+          baseDir: dirname(resolve(file)),
+          updateSnapshots: !!parsed.flags.update,
+          ...(typeof parsed.flags.artifacts === 'string' ? { artifacts: parsed.flags.artifacts } : {}),
+        })
+      );
+    }
+  }
+  if (typeof parsed.flags.junit === 'string') writeFileSync(parsed.flags.junit, formatJUnit(reports));
+  io.out(parsed.flags.json ? `${JSON.stringify(reports, null, 2)}\n` : `${formatScenarios(reports)}\n`);
+  return reports.every((r) => r.pass) ? 0 : 1;
 }
 
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
@@ -245,6 +269,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return agentsCommand(io);
       case 'check':
         return await checkCommand(parsed, io);
+      case 'test':
+        return await testCommand(parsed, io);
       case 'trace':
         return await traceMain(argv.slice(1), io);
       case undefined:

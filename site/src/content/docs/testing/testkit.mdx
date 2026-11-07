@@ -21,11 +21,46 @@ import testing from '../../../../../examples/testing.ts?raw';
 
 ## Conformance
 
-- `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it.
+- `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; `KNOWN_QUIRKS` has the waivers for real agents' recorded quirks, which `subspace check <agent>` applies (`--strict` to not).
 - `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
 - From the command line: `node --conditions=source packages/testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
 
 The checks are listed on [Conformance](../../behaviour/conformance/).
+
+## Scenarios
+
+Describe what an agent should do, and check it did:
+
+```json
+{
+  "name": "writes a greeting",
+  "agent": "claude",
+  "workspace": { "from": "fixtures/empty" },
+  "permissions": { "allow": ["read", "edit"] },
+  "turns": [
+    {
+      "prompt": "Create hello.txt containing hi",
+      "expect": {
+        "end": "completed",
+        "files": { "hello.txt": { "contains": "hi" } },
+        "toolCalls": { "min": 1, "kinds": ["edit"], "allCompleted": true },
+        "permissions": { "min": 1 }
+      }
+    }
+  ],
+  "snapshot": "snapshots/greeting.json"
+}
+```
+
+Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "scenarios": [...] }`; also TypeScript modules exporting `defineScenario(...)`), or `runScenario()` from `@deft-subspace/acp-testkit/node`.
+
+- **Agent:** a known name or `{ command, args, env, mode }`; it starts in its ask-first mode unless `mode` says otherwise.
+- **Workspace:** a fresh temporary folder each run, empty or a copy of `workspace.from` (relative to the scenario file).
+- **Permissions:** `allow`, `reject` (the default), `read-only`, or `{ allow: [kinds], reject: [kinds] }`.
+- **Expectations, per turn:** `end` (`completed`, `refused`, `cancelled`, `limit`, `error`), `stopReason`, `text` (`contains`, `notContains`, `matches`), `toolCalls` (`min`, `max`, `titles`, `kinds`, `allCompleted`), `permissions` (`min`, `max`, `titles`), `files` (`exists`, `contains`, `equals`, `matches`), `updates` (`min`, `max`).
+- **Snapshots:** `snapshot` records each turn's outcome (how it ended, its text and its tool calls) the first time and compares later runs with it; `--update` accepts a change. Best for deterministic agents (your own, or replayed ones).
+- **When it fails:** a failure bundle with the trace, the report and the workspace's file list (`--artifacts <dir>`, default under the temp folder).
+- **For CI:** `--junit results.xml` (a test case per turn), `--json`, and exit code 1 when any scenario failed.
 
 ## The quirks corpus
 

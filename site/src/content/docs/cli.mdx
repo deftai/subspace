@@ -9,7 +9,8 @@ description: Run, chat with, list, check and trace ACP agents from the command l
 subspace run claude "Summarize README.md"         # one prompt, rendered as it streams
 subspace chat codex                               # turn after turn; Ctrl-C cancels a turn, again to quit
 subspace agents                                   # the known agents, and whether they are installed
-subspace check grok                               # the conformance checks
+subspace check grok                               # the conformance checks (known quirks waived; --strict to not)
+subspace test scenarios/*.json --junit results.xml # scenario files: expectations, snapshots, CI reports
 subspace trace run.jsonl                          # an HTML viewer for a trace (--summary for text)
 subspace run "hello" -- node my-agent.js          # any agent: its command after --
 ```
