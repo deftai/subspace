@@ -194,6 +194,7 @@ test('mode: every session is switched before its turn (v1 modes and a mode confi
     const link = byteLink();
     const current = new Map<string, string>();
     const promptedIn: string[] = [];
+    const available = [{ id: 'auto', name: 'Auto' }, { id: 'ask', name: 'Ask' }];
     let n = 0;
     officialV1
       .agent({ name: `modes-${via}` })
@@ -201,7 +202,7 @@ test('mode: every session is switched before its turn (v1 modes and a mode confi
       .onRequest('session/new', () => {
         const sessionId = `s${++n}`;
         current.set(sessionId, 'auto');
-        const available = [{ id: 'auto', name: 'Auto' }, { id: 'ask', name: 'Ask' }];
+
         return via === 'modes'
           ? { sessionId, modes: { currentModeId: 'auto', availableModes: available } }
           : {
@@ -216,8 +217,13 @@ test('mode: every session is switched before its turn (v1 modes and a mode confi
         return {};
       })
       .onRequest('session/set_config_option', ({ params }) => {
-        current.set(params.sessionId as string, params.value as string);
-        return {};
+        current.set(params.sessionId as string, String(params.value));
+        // The response carries the options as they are now (the spec requires it).
+        return {
+          configOptions: [
+            { id: 'mode', name: 'Mode', category: 'mode', type: 'select' as const, currentValue: String(params.value), options: available.map((m) => ({ value: m.id, name: m.name })) },
+          ],
+        };
       })
       .onRequest('session/prompt', ({ params }) => {
         promptedIn.push(current.get(params.sessionId as string)!);

@@ -31,7 +31,8 @@ test('supports reads v1 booleans and v2 marker objects into one shape', async ()
     [2, { protocolVersion: 2, info: { name: 'x', version: '1' }, capabilities: { session: { prompt: { image: {} }, mcp: { http: {} } } }, authMethods: [] }],
   ] as const) {
     const link = byteLink();
-    (protocol === 1 ? officialV1 : officialV2)
+    // The two SDK versions' builders, as one callable shape.
+    ((protocol === 1 ? officialV1 : officialV2) as typeof officialV1)
       .agent({ name: 'caps' })
       .onRequest('initialize', () => init as never)
       .connect((protocol === 1 ? officialV1 : officialV2).ndJsonStream(link.b.writable, link.b.readable));

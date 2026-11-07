@@ -34,7 +34,7 @@ import { createWriteStream } from 'node:fs';
 import { basename } from 'node:path';
 import { ErrorCode, ndjson, RpcError, traceTap, type RpcPeer } from '@deft-subspace/kernel';
 import { serveAgent, type AgentOptions } from './agent.ts';
-import type { ElicitationHandler, PromptOptions, Session, SessionMcpServers } from './client.ts';
+import type { ElicitationHandler, PromptInput, PromptOptions, Session, SessionMcpServers } from './client.ts';
 import { mergeHandlers, type TurnHandlers } from './handlers.ts';
 import { conveniences, type SessionConveniences } from './conveniences.ts';
 import { openSession, requirePermissionAnswer } from './open.ts';
@@ -234,7 +234,7 @@ function traceFile(path: string, label: string, cwd: string) {
 /** Start an agent, run one prompt, close it, and resolve with the turn's result. */
 export async function run(
   agent: Parameters<typeof start>[0],
-  prompt: string | ContentBlock | ContentBlock[],
+  prompt: PromptInput,
   options: StartOptions & Pick<PromptOptions, 'limits' | 'timeoutMs' | 'signal'>
 ): Promise<TurnResult> {
   const { limits, timeoutMs, signal, ...startOptions } = options;

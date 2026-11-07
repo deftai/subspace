@@ -95,6 +95,7 @@ test('file(): embedded where the agent takes it, text where it does not', async 
       { cwd: dir, permissions: 'reject', protocol: 1 }
     );
     await s.run(['Summarize', file(path)]);
+    assert.deepEqual((received as Array<Record<string, unknown>>)[0], { type: 'text', text: 'Summarize' }); // a string in the list is a text block
     const block = (received as Array<Record<string, unknown>>)[1]!;
     if (embedded) assert.deepEqual(block, { type: 'resource', resource: { uri: `file://${path}`, mimeType: 'text/markdown', text: '# Notes\nhi' } });
     else assert.deepEqual(block, { type: 'text', text: `${path}:\n\n\`\`\`\n# Notes\nhi\n\`\`\`` });

@@ -53,6 +53,16 @@ import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
 
 /** File access an agent may ask for (v1 `fs/*`). See `workspaceFiles()` in `@deft-subspace/acp/node`. */
+
+/** A prompt: text, a content block, or a list of both (strings become text blocks). */
+export type PromptInput = string | ContentBlock | ReadonlyArray<string | ContentBlock>;
+
+/** A prompt as content blocks. */
+export function promptBlocks(input: PromptInput): ContentBlock[] {
+  const text = (item: string | ContentBlock): ContentBlock => (typeof item === 'string' ? { type: 'text', text: item } : item);
+  return typeof input === 'string' || !Array.isArray(input) ? [text(input as string | ContentBlock)] : input.map(text);
+}
+
 export interface FileHandlers {
   readTextFile(request: { path: string; line?: number | null; limit?: number | null }): Promise<string>;
   writeTextFile(request: { path: string; content: string }): Promise<void>;
@@ -863,9 +873,9 @@ export class Session {
    * (`onMessage`, `onToolCall`, `onPermission`, ...; see `TurnHandlers`):
    * `turn.done` then settles after they ran.
    */
-  prompt(input: string | ContentBlock | ContentBlock[], options: PromptOptions = {}): Turn {
+  prompt(input: PromptInput, options: PromptOptions = {}): Turn {
     const given: ContentBlock[] =
-      typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
+      promptBlocks(input);
     const blocks = this.fitContent(given);
     if (this.active && !(options.queue ?? this.client.queuePrompts)) {
       throw new Error(`Session ${this.id} already has a turn running (pass { queue: true } to queue it)`);

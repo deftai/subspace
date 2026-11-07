@@ -11,11 +11,11 @@
  * Standard Schema: zod, valibot, arktype, ...), and if it does not fit asks
  * once more, saying what was wrong.
  */
-import type { PromptOptions, Session } from './client.ts';
+import type { PromptInput, PromptOptions, Session } from './client.ts';
 import type { ContentBlock, TurnResult } from './model.ts';
 import type { Turn } from './turn.ts';
 
-type Prompt = string | ContentBlock | ContentBlock[];
+type Prompt = PromptInput;
 
 /** The Standard Schema interface (https://standardschema.dev), as far as `json()` uses it. */
 export interface StandardSchema<Output = unknown> {

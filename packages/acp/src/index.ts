@@ -1,5 +1,6 @@
 export {
   AcpClient,
+  promptBlocks,
   Session,
   type AgentInfo,
   type ClientOptions,
@@ -7,6 +8,7 @@ export {
   type ElicitationRequest,
   type ElicitationResponse,
   type FileHandlers,
+  type PromptInput,
   type PromptOptions,
   type SessionLocator,
   type SessionMcpServers,
