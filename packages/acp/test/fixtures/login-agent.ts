@@ -13,7 +13,8 @@ acp
     protocolVersion: 1,
     agentCapabilities: {},
     agentInfo: { name: 'login-agent', version: '1.0.0' },
-    authMethods: [{ id: 'browser', name: 'Log in with a browser' }],
+    // NO_LOGIN_METHODS=1: needs a login but offers no method (start() cannot log in for you).
+    authMethods: process.env.NO_LOGIN_METHODS ? [] : [{ id: 'browser', name: 'Log in with a browser' }],
   }))
   .onRequest('authenticate', () => {
     loggedIn = true;

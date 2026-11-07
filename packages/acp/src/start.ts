@@ -29,7 +29,8 @@
  * ask before writing and running, and a silent refusal surprises everyone.
  */
 import { Readable, Writable } from 'node:stream';
-import { ndjson, type RpcPeer } from '@deft-subspace/kernel';
+import { createWriteStream } from 'node:fs';
+import { ErrorCode, ndjson, RpcError, traceTap, type RpcPeer } from '@deft-subspace/kernel';
 import { serveAgent, type AgentOptions } from './agent.ts';
 import type { ElicitationHandler, PromptOptions, Session, SessionMcpServers } from './client.ts';
 import { mergeHandlers, type TurnHandlers } from './handlers.ts';
@@ -45,6 +46,10 @@ export interface AgentPreset {
   /** The mode to switch each session to (the agent's ask-first mode). */
   mode?: string;
   description: string;
+  /** How to install it, for the error when it is missing. */
+  install?: string;
+  /** How to log in, for the error when it needs a login. */
+  login?: string;
 }
 
 /** Known agents. Adapters run through `npx`, so the first start may download them. */
@@ -54,20 +59,38 @@ export const AGENT_PRESETS = {
     args: ['-y', '@agentclientprotocol/claude-agent-acp'],
     mode: 'default',
     description: 'Claude Code through its ACP adapter, in ask-first mode',
+    install: 'Install Node.js (for npx); the adapter downloads on first start',
+    login: 'Log in to Claude Code first: run `claude` and sign in, or set ANTHROPIC_API_KEY',
   },
   codex: {
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp'],
     mode: 'read-only',
     description: 'OpenAI Codex through its ACP adapter, in read-only mode (it still acts once you allow it)',
+    install: 'Install Node.js (for npx); the adapter downloads on first start',
+    login: 'Log in to Codex first: run `codex login`, or set OPENAI_API_KEY',
   },
   grok: {
     command: 'grok',
     args: ['--permission-mode', 'default', 'agent', 'stdio'],
     description: 'Grok Build, asking before tools',
+    install: 'Install Grok Build (the `grok` command)',
+    login: 'Log in to Grok Build first: run `grok` and sign in',
   },
-  gemini: { command: 'gemini', args: ['--experimental-acp'], description: 'Gemini CLI' },
-  opencode: { command: 'opencode', args: ['acp'], description: 'OpenCode' },
+  gemini: {
+    command: 'gemini',
+    args: ['--experimental-acp'],
+    description: 'Gemini CLI',
+    install: 'Install the Gemini CLI (npm install -g @google/gemini-cli)',
+    login: 'Log in to the Gemini CLI first: run `gemini` and sign in, or set GEMINI_API_KEY',
+  },
+  opencode: {
+    command: 'opencode',
+    args: ['acp'],
+    description: 'OpenCode',
+    install: 'Install OpenCode (the `opencode` command)',
+    login: 'Log in to OpenCode first: run `opencode auth login`',
+  },
 } as const satisfies Record<string, AgentPreset>;
 
 export type AgentName = keyof typeof AGENT_PRESETS;
@@ -89,6 +112,10 @@ export interface StartOptions extends Omit<ConnectAgentOptions, 'cwd' | 'workspa
   session?: { mcpServers?: SessionMcpServers; additionalDirectories?: string[] };
   /** Cancel and stop the agent on Ctrl-C (SIGINT) before exiting. Default true. */
   handleSignals?: boolean;
+  /** Record the whole connection to this file (a trace; view it with `deft-subspace-trace`). */
+  trace?: string;
+  /** No notices on stderr (such as "the first start downloads the adapter"). */
+  quiet?: boolean;
 }
 
 export interface StartedAgent {
@@ -116,19 +143,40 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
   const handlers = mergeHandlers(options.handlers, options);
   requirePermissionAnswer(options, 'start()');
   const cwd = options.cwd ?? process.cwd();
-  const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, ...rest } = options;
+  const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, trace, quiet, ...rest } = options;
+  const name = typeof agent === 'string' ? agent : preset.command;
+  const recording = trace ? traceFile(trace, name, cwd) : undefined;
+  const tap = recording
+    ? (direction: 'in' | 'out', message: unknown) => {
+        recording.tap(direction, message);
+        rest.tap?.(direction, message);
+      }
+    : rest.tap;
+  // npx may download the adapter first; say so if it takes a while.
+  const slow =
+    !quiet && preset.command === 'npx' ? setTimeout(() => process.stderr.write(`Starting ${name}: the first start downloads its ACP adapter...\n`), 4000) : undefined;
+  (slow as { unref?: () => void } | undefined)?.unref?.();
   // Advertise form questions so a turn's onQuestion can answer them; decline otherwise.
   const decline: ElicitationHandler = () => ({ action: 'decline' });
-  const connected = await connectAgent(preset.command, {
-    ...rest,
-    args: [...preset.args, ...(extraArgs ?? [])],
-    cwd,
-    ...(files === false ? {} : files ? { files } : { workspace: cwd }),
-    ...(options.permissions ? { permissions: options.permissions } : {}),
-    ...(handlers ? { handlers } : {}),
-    elicitation: options.elicitation ?? decline,
-    elicitationModes: options.elicitationModes ?? ['form'],
-  });
+  let connected: ConnectedAgent;
+  try {
+    connected = await connectAgent(preset.command, {
+      ...rest,
+      ...(tap ? { tap } : {}),
+      args: [...preset.args, ...(extraArgs ?? [])],
+      cwd,
+      ...(files === false ? {} : files ? { files } : { workspace: cwd }),
+      ...(options.permissions ? { permissions: options.permissions } : {}),
+      ...(handlers ? { handlers } : {}),
+      elicitation: options.elicitation ?? decline,
+      elicitationModes: options.elicitationModes ?? ['form'],
+    });
+  } catch (error) {
+    await recording?.close();
+    throw explain(error, preset, name);
+  } finally {
+    clearTimeout(slow);
+  }
   const mode = modeOption === false ? undefined : (modeOption ?? preset.mode);
   let modeWarning: string | undefined;
 
@@ -148,7 +196,8 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
     session = await open();
   } catch (error) {
     await connected.close();
-    throw error;
+    await recording?.close();
+    throw explain(error, preset, name);
   }
 
   let closed: Promise<void> | undefined;
@@ -160,6 +209,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
       process.off('SIGINT', onSignal);
       await session.close().catch(() => {});
       await connected.close();
+      await recording?.close();
     })());
   if (handleSignals ?? true) process.once('SIGINT', onSignal);
 
@@ -177,6 +227,26 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
     [Symbol.asyncDispose]: close,
   };
   return started;
+}
+
+/** Errors with a next step: a missing program says how to install it, a needed login how to log in. */
+function explain(error: unknown, preset: Partial<AgentPreset>, name: string): unknown {
+  if (!(error instanceof Error)) return error;
+  if (error.name === 'SpawnError' && preset.install) error.message += `\n${name}: ${preset.install}.`;
+  else if (RpcError.is(error) && error.code === ErrorCode.AuthRequired) {
+    error.message = `${name} needs a login. ${preset.login ?? 'Log in to it first, then try again.'}\n(${error.message})`;
+  }
+  return error;
+}
+
+/** A trace written to `path` as it happens (JSON Lines, the kernel's trace format). */
+function traceFile(path: string, label: string, cwd: string) {
+  const stream = createWriteStream(path);
+  const tap = traceTap((record) => stream.write(`${JSON.stringify(record)}\n`), { peer: 'client', label, meta: { agent: label, cwd } });
+  return {
+    tap,
+    close: () => new Promise<void>((resolve) => stream.end(resolve)),
+  };
 }
 
 /** Start an agent, run one prompt, close it, and resolve with the turn's result. */

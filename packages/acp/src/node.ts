@@ -236,6 +236,7 @@ export function workspaceTerminals(
   };
 }
 
+export { askInTerminal, terminal, type AskOptions, type TerminalOptions } from './terminal-ui.ts';
 export { AGENT_PRESETS, run, serveStdio, start, type AgentName, type AgentPreset, type StartedAgent, type StartOptions } from './start.ts';
 
 // Everything in @deft-subspace/acp too, so a Node program needs one import.

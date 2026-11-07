@@ -25,6 +25,19 @@ export {
   type ToolCallInit,
 } from './agent.ts';
 export { Turn } from './turn.ts';
+export {
+  allow,
+  allowInside,
+  firstOf,
+  inside,
+  READ_KINDS,
+  readOnly,
+  reject,
+  requestCommand,
+  requestPaths,
+  type PermissionMatch,
+  type PermissionRule,
+} from './policies.ts';
 export { connectSession, openSession, type ConnectedSession, type ConnectSessionOptions, type SessionSetup } from './open.ts';
 export { type TextInfo, type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
