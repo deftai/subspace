@@ -98,12 +98,22 @@ export function ndjsonDecoder(options: NdjsonOptions = {}): TransformStream<Uint
   });
 }
 
-/** Write JSON values as lines of UTF-8. */
-export function ndjsonEncoder(): TransformStream<unknown, Uint8Array> {
+/**
+ * Write JSON values as lines of UTF-8. A value that cannot be serialized
+ * (a cycle, a BigInt) is dropped and reported; it never breaks the stream.
+ */
+export function ndjsonEncoder(options: { onError?: (error: unknown, value: unknown) => void } = {}): TransformStream<unknown, Uint8Array> {
   const encoder = new TextEncoder();
   return new TransformStream<unknown, Uint8Array>({
     transform(value, controller) {
-      controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
+      let text: string;
+      try {
+        text = JSON.stringify(value);
+      } catch (error) {
+        options.onError?.(error, value);
+        return;
+      }
+      controller.enqueue(encoder.encode(`${text}\n`));
     },
   });
 }
