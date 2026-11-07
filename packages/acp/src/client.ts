@@ -26,9 +26,18 @@ import type {
   ToolCall,
   TurnEvent,
   TurnLimits,
+  TurnResult,
   v1,
   v2,
 } from './model.ts';
+import { agentSupport, CapabilityError, type AgentSupport } from './capabilities.ts';
+import {
+  callExtension,
+  registerExtensions,
+  type ExtensionHandler,
+  type ExtensionNotification,
+  type ExtensionRequest,
+} from './extensions.ts';
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { TurnProjection } from './projection.ts';
@@ -105,6 +114,12 @@ export interface ClientOptions {
   };
   /** Limits for every turn, unless a prompt sets its own. Default: none. */
   limits?: TurnLimits;
+  /** Queue a prompt sent while a turn is running, instead of throwing. Per prompt: `{ queue }`. Default false. */
+  queuePrompts?: boolean;
+  /** Handlers for the agent's vendor extension methods (see `extensionRequest`, `handle`). */
+  extensions?: ExtensionHandler[];
+  /** The agent finished a URL-mode elicitation (`elicitation/complete`). */
+  onElicitationComplete?: (notification: { elicitationId: string; sessionId?: string }) => void;
   /** Sees every JSON-RPC message, both directions. */
   tap?: RpcPeerOptions['tap'];
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
@@ -130,6 +145,8 @@ export class AcpClient {
   readonly agent: AgentInfo;
   /** The agent's capabilities as it sent them (v1 `agentCapabilities` or v2 `capabilities`). */
   readonly capabilities: Record<string, unknown>;
+  /** What the agent can do, the same shape for v1 and v2. */
+  readonly supports: AgentSupport;
 
   private readonly options: ClientOptions;
   private readonly sessions = new Map<string, Session>();
@@ -144,6 +161,7 @@ export class AcpClient {
     const info = (init.info ?? init.agentInfo ?? {}) as AgentInfo;
     this.agent = { name: info.name, title: info.title, version: info.version };
     this.capabilities = (init.capabilities ?? init.agentCapabilities ?? {}) as Record<string, unknown>;
+    this.supports = agentSupport(protocol, this.capabilities);
     // In v2 a running turn has no request in flight, so the connection closing
     // must end it explicitly.
     void peer.closed.then((info) => {
@@ -193,6 +211,14 @@ export class AcpClient {
       peer.onRequest('terminal/release', async (p: { sessionId: string; terminalId: string }) => {
         await t.release(p);
         return {};
+      });
+    }
+    registerExtensions(peer, options.extensions);
+    if (options.onElicitationComplete) {
+      const done = options.onElicitationComplete;
+      peer.onNotification<{ elicitationId?: unknown; sessionId?: unknown }>('elicitation/complete', (p) => {
+        if (typeof p?.elicitationId !== 'string') return;
+        done({ elicitationId: p.elicitationId, ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}) });
       });
     }
     if (options.elicitation) {
@@ -279,9 +305,7 @@ export class AcpClient {
    * in order; the session then behaves like a new one.
    */
   async loadSession(request: SessionLocator): Promise<{ session: Session; replayed: TurnEvent[] }> {
-    if (this.protocol === 1 && !this.capabilities.loadSession) {
-      throw new Error('The agent does not offer session/load');
-    }
+    if (!this.supports.loadSession) throw new CapabilityError('session/load', 'agent');
     const session = this.register(request.sessionId);
     const replayed: TurnEvent[] = [];
     const stop = session.onIdleUpdate((event) => replayed.push(event));
@@ -303,9 +327,7 @@ export class AcpClient {
 
   /** Reopen an existing session without replaying its history (`session/resume`). */
   async resumeSession(request: SessionLocator): Promise<Session> {
-    if (this.protocol === 1 && !this.sessionCapability('resume')) {
-      throw new Error('The agent does not offer session/resume');
-    }
+    if (!this.supports.resumeSession) throw new CapabilityError('session/resume', 'agent');
     const session = this.register(request.sessionId);
     try {
       session.absorb(
@@ -318,10 +340,33 @@ export class AcpClient {
     }
   }
 
-  /** @internal Whether a v1 agent advertised `sessionCapabilities.<name>`. v2 agents are asked directly. */
-  sessionCapability(name: string): boolean {
-    const caps = this.capabilities.sessionCapabilities;
-    return !!caps && typeof caps === 'object' && (caps as Record<string, unknown>)[name] != null;
+  /** The agent's sessions (`session/list`), one page at a time. */
+  async listSessions(request: { cwd?: string; cursor?: string } = {}): Promise<{
+    sessions: Array<{ sessionId: string; cwd: string; title?: string; updatedAt?: string }>;
+    nextCursor?: string;
+  }> {
+    if (!this.supports.listSessions) throw new CapabilityError('session/list', 'agent');
+    const result = (await this.peer.request('session/list', request)) as { sessions?: unknown; nextCursor?: unknown };
+    const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+    return {
+      sessions: sessions as Array<{ sessionId: string; cwd: string; title?: string; updatedAt?: string }>,
+      ...(typeof result?.nextCursor === 'string' ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
+
+  /** Call one of the agent's vendor extension requests. */
+  call<Params, Result>(extension: ExtensionRequest<Params, Result>, params: Params, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Result> {
+    return callExtension(this.peer, extension, params, options);
+  }
+
+  /** Send one of the agent's vendor extension notifications. */
+  notify<Params>(extension: ExtensionNotification<Params>, params: Params): Promise<void> {
+    return this.peer.notify(extension.method, params);
+  }
+
+  /** @internal */
+  get queuePrompts(): boolean {
+    return this.options.queuePrompts ?? false;
   }
 
   /** @internal */
@@ -418,6 +463,8 @@ export class Session {
   readonly info: { title?: string; updatedAt?: string } = {};
 
   private active?: ActiveTurn;
+  /** Prompts waiting for the running turn to end (with `queue`). */
+  private readonly queued: Array<{ active: ActiveTurn; blocks: ContentBlock[] }> = [];
   private readonly listeners = new Set<(event: TurnEvent, raw: unknown) => void>();
   /** Recent updates between turns, replayed to listeners added later. */
   private readonly idleHistory: Array<{ event: TurnEvent; raw: unknown }> = [];
@@ -444,13 +491,14 @@ export class Session {
    * asked). The session is forgotten here either way.
    */
   async close(): Promise<void> {
+    for (const queued of this.queued.splice(0)) queued.active.turn.finish(this.notSent());
     if (this.active) {
       const turn = this.active.turn;
       await this.cancel();
       await turn.done.catch(() => {});
     }
     try {
-      if (this.client.protocol === 2 || this.client.sessionCapability('close')) {
+      if (this.client.supports.closeSession) {
         await this.client.peer.request('session/close', { sessionId: this.id }, { timeoutMs: 10_000 });
       }
     } catch {
@@ -503,25 +551,54 @@ export class Session {
     return () => this.listeners.delete(listener);
   }
 
-  /** Start a turn. `limits` replace the client's default limits for this turn. */
-  prompt(input: string | ContentBlock | ContentBlock[], options: { limits?: TurnLimits } = {}): Turn {
-    if (this.active) throw new Error(`Session ${this.id} already has a turn running`);
+  /**
+   * Start a turn. `limits` replace the client's default limits for this turn.
+   * While a turn is running this throws, unless `queue` (or the client's
+   * `queuePrompts`) is set: then the turn starts when the running one ends.
+   * Content the agent cannot take (an image it did not offer to accept, for
+   * example) throws a `CapabilityError`.
+   */
+  prompt(input: string | ContentBlock | ContentBlock[], options: { limits?: TurnLimits; queue?: boolean } = {}): Turn {
     const blocks: ContentBlock[] =
       typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
+    this.checkContent(blocks);
+    if (this.active && !(options.queue ?? this.client.queuePrompts)) {
+      throw new Error(`Session ${this.id} already has a turn running (pass { queue: true } to queue it)`);
+    }
     const id = this.client.nextTurnId(this.id);
     const projection = new TurnProjection(id);
-    const active: ActiveTurn = {
-      turn: new Turn(id, () => this.cancel(), {
-        text: () => projection.text,
-        toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
-      }),
+    const active = {
       projection,
       promptAnswered: false,
       cancelController: new AbortController(),
       limits: options.limits ?? this.client.defaultLimits ?? {},
       toolCalls: 0,
       timers: [],
-    };
+    } as unknown as ActiveTurn;
+    active.turn = new Turn(id, () => this.cancelTurn(active), {
+      text: () => projection.text,
+      toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
+    });
+    if (this.active) this.queued.push({ active, blocks });
+    else this.begin(active, blocks);
+    return active.turn;
+  }
+
+  /** Prompts waiting to start. */
+  get queuedCount(): number {
+    return this.queued.length;
+  }
+
+  private checkContent(blocks: ContentBlock[]): void {
+    const can = this.client.supports.prompt;
+    for (const block of blocks) {
+      if (block.type === 'image' && !can.image) throw new CapabilityError('image prompts', 'agent');
+      if (block.type === 'audio' && !can.audio) throw new CapabilityError('audio prompts', 'agent');
+      if (block.type === 'resource' && !can.embeddedContext) throw new CapabilityError('embedded resources in prompts', 'agent');
+    }
+  }
+
+  private begin(active: ActiveTurn, blocks: ContentBlock[]): void {
     this.active = active;
     const { maxDurationMs } = active.limits;
     if (maxDurationMs !== undefined) {
@@ -543,7 +620,28 @@ export class Session {
       },
       (error) => this.failTurn(active, error)
     );
-    return active.turn;
+  }
+
+  /** The next queued prompt, once nothing is running. */
+  private startNext(): void {
+    if (this.active) return;
+    const next = this.queued.shift();
+    if (next) this.begin(next.active, next.blocks);
+  }
+
+  /** The result of a queued turn cancelled before it reached the agent. */
+  private notSent(): TurnResult {
+    return { stopReason: 'cancelled', text: '', toolCalls: [], cancelled: true };
+  }
+
+  private cancelTurn(active: ActiveTurn): Promise<void> {
+    const index = this.queued.findIndex((q) => q.active === active);
+    if (index >= 0) {
+      this.queued.splice(index, 1);
+      active.turn.finish(this.notSent());
+      return Promise.resolve();
+    }
+    return this.active === active ? this.cancel() : Promise.resolve();
   }
 
   /** Cancel the running turn, if any. */
@@ -586,6 +684,7 @@ export class Session {
 
   /** @internal */
   connectionClosed(error: LocalError): void {
+    for (const queued of this.queued.splice(0)) queued.active.turn.fail(error);
     if (this.active) this.failTurn(this.active, error);
   }
 
@@ -684,6 +783,7 @@ export class Session {
     if (this.active !== active) return;
     this.active = undefined;
     this.stopTimers(active);
+    queueMicrotask(() => this.startNext());
     const cancelled = active.cancelController.signal.aborted;
     active.turn.finish({
       stopReason,
@@ -700,6 +800,7 @@ export class Session {
     if (this.active !== active) return;
     this.active = undefined;
     this.stopTimers(active);
+    queueMicrotask(() => this.startNext());
     active.turn.fail(error);
   }
 }

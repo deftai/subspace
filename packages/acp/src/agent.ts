@@ -24,6 +24,14 @@ import {
   type RequestOptions,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
+import { CapabilityError, clientSupport, type ClientSupport } from './capabilities.ts';
+import {
+  callExtension,
+  registerExtensions,
+  type ExtensionHandler,
+  type ExtensionNotification,
+  type ExtensionRequest,
+} from './extensions.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
 
 export interface ToolCallInit {
@@ -50,6 +58,18 @@ export interface AgentTurn {
   readonly protocol: ProtocolVersion;
   /** What the client said it can do in initialize (v1 `clientCapabilities`, v2 `capabilities`). */
   readonly clientCapabilities: Record<string, unknown>;
+  /** The same, as one shape for v1 and v2. */
+  readonly clientSupports: ClientSupport;
+  /** Read a file through the client (v1 `fs/read_text_file`). Throws a `CapabilityError` if it offers none. */
+  readFile(path: string, options?: { line?: number; limit?: number }): Promise<string>;
+  /** Write a file through the client (v1 `fs/write_text_file`). Throws a `CapabilityError` if it offers none. */
+  writeFile(path: string, content: string): Promise<void>;
+  /** Tell the client a URL-mode elicitation finished (`elicitation/complete`). */
+  completeElicitation(elicitationId: string): Promise<void>;
+  /** Call one of the client's vendor extension requests. Aborted with the turn. */
+  call<Params, Result>(extension: ExtensionRequest<Params, Result>, params: Params): Promise<Result>;
+  /** Send one of the client's vendor extension notifications. */
+  notify<Params>(extension: ExtensionNotification<Params>, params: Params): Promise<void>;
   readonly prompt: ContentBlock[];
   /** The prompt's text blocks, joined. */
   readonly text: string;
@@ -85,7 +105,11 @@ export interface AgentTurn {
     requestedSchema?: unknown;
     url?: string;
     toolCallId?: string;
-  }): Promise<{ action: 'accept'; content?: Record<string, unknown> } | { action: 'decline' } | { action: 'cancel' }>;
+  }): Promise<
+    | { action: 'accept'; content?: Record<string, unknown>; elicitationId?: string }
+    | { action: 'decline'; elicitationId?: string }
+    | { action: 'cancel'; elicitationId?: string }
+  >;
   /** Ask the user. `allowed` is false for rejections and when the turn was cancelled. */
   requestPermission(request: {
     title: string;
@@ -137,6 +161,10 @@ export interface AgentOptions {
   }): Promise<void | Record<string, unknown>> | void | Record<string, unknown>;
   /** Called when the client closes a session (`session/close`), after its turn is cancelled. */
   closeSession?(sessionId: string): Promise<void> | void;
+  /** Queue a prompt that arrives while a turn is running, instead of refusing it. Default false. */
+  queuePrompts?: boolean;
+  /** Handlers for the client's calls to your vendor extension methods (see `extensionRequest`, `handle`). */
+  extensions?: ExtensionHandler[];
   peer?: Omit<RpcPeerOptions, 'cancelOutbound' | 'cancelInbound'>;
 }
 
@@ -150,7 +178,13 @@ const DEFAULT_OPTIONS: PermissionOption[] = [
 interface AgentSession {
   id: string;
   controller?: AbortController;
+  /** Prompts waiting for the running one (with `queuePrompts`). */
+  waiting: Set<AbortController>;
+  /** Settles when the last queued turn ends. */
+  tail: Promise<void>;
 }
+
+const newSession = (id: string): AgentSession => ({ id, waiting: new Set(), tail: Promise.resolve() });
 
 export function serveAgent(channel: Channel<unknown>, options: AgentOptions): RpcPeer {
   const accepted = options.protocols ?? [1, 2];
@@ -186,12 +220,13 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   });
 
   for (const [method, handler] of Object.entries(options.methods ?? {})) peer.onRequest(method, handler);
+  registerExtensions(peer, options.extensions);
 
   peer.onRequest('session/new', async (params: { cwd?: string; mcpServers?: unknown[] } & Record<string, unknown>) => {
     if (typeof params?.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
     const created = await options.newSession?.({ cwd: params.cwd, mcpServers: params.mcpServers ?? [], params });
     const id = (created && created.sessionId) || randomUUID();
-    sessions.set(id, { id });
+    sessions.set(id, newSession(id));
     return { sessionId: id };
   });
 
@@ -211,7 +246,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
         params,
         ...(writer ? { replay: writer } : {}),
       });
-      if (!sessions.has(id)) sessions.set(id, { id });
+      if (!sessions.has(id)) sessions.set(id, newSession(id));
       return result ?? {};
     };
     peer.onRequest<Record<string, unknown>>('session/load', (params) => open(params, true));
@@ -224,6 +259,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
     if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
     session.controller?.abort(new Error('session closed'));
+    for (const waiting of session.waiting) waiting.abort(new Error('session closed'));
     sessions.delete(session.id);
     await options.closeSession?.(session.id);
     return {};
@@ -232,18 +268,33 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   peer.onNotification('session/cancel', (params: { sessionId?: string }) => {
     const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
     session?.controller?.abort(new Error('cancelled by the client'));
+    // Queued prompts are cancelled too: the client asked for the session to stop.
+    for (const waiting of session?.waiting ?? []) waiting.abort(new Error('cancelled by the client'));
   });
 
   peer.onRequest('session/prompt', async (params: { sessionId?: string; prompt?: ContentBlock[] }, context) => {
     const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
     if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
-    if (session.controller) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
+    const busy = !!session.controller || session.waiting.size > 0;
+    if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
     const controller = new AbortController();
-    session.controller = controller;
     const signal = AbortSignal.any([controller.signal, peer.signal]);
     const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities);
+    // Wait for the turn ahead (if any), in order.
+    const ahead = session.tail;
+    let release!: () => void;
+    session.tail = new Promise<void>((resolve) => (release = resolve));
+    session.waiting.add(controller);
 
-    const run = async (): Promise<StopReason> => {
+    const run = async (onStart?: () => Promise<void>): Promise<StopReason> => {
+      await ahead;
+      session.waiting.delete(controller);
+      if (signal.aborted) {
+        release();
+        return 'cancelled';
+      }
+      session.controller = controller;
+      await onStart?.();
       let stop: StopReason;
       try {
         stop = (await options.prompt(turn.api)) ?? 'end_turn';
@@ -256,6 +307,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
         stop = 'cancelled';
       } finally {
         session.controller = undefined;
+        release();
       }
       if (signal.aborted) {
         stop = 'cancelled';
@@ -270,8 +322,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const userMessageId = randomUUID();
     setTimeout(() => {
       void (async () => {
-        await turn.state('running');
-        const stop = await run();
+        const stop = await run(() => turn.state('running'));
         if (stop !== 'error') await turn.idle(stop);
       })().catch(() => {});
     }, 0);
@@ -308,10 +359,12 @@ class TurnWriter {
       .map((b) => (b.type === 'text' ? (b as { text: string }).text : ''))
       .filter(Boolean)
       .join('\n');
+    const supports = clientSupport(protocol, clientCapabilities);
     this.api = {
       sessionId,
       protocol,
       clientCapabilities,
+      clientSupports: supports,
       prompt,
       text,
       signal,
@@ -339,8 +392,24 @@ class TurnWriter {
       request: (method, params, options) => peer.request(method, params, { signal, ...options }),
       userMessage: (text) =>
         this.update({ sessionUpdate: 'user_message_chunk', messageId: `${this.turnId}-u`, content: { type: 'text', text } }),
+      readFile: async (path, options) => {
+        if (!supports.readTextFile) throw new CapabilityError('fs/read_text_file', 'client');
+        const result = await peer.request<{ content: string }>(
+          'fs/read_text_file',
+          { sessionId, path, ...(options?.line !== undefined ? { line: options.line } : {}), ...(options?.limit !== undefined ? { limit: options.limit } : {}) },
+          { signal }
+        );
+        return result.content;
+      },
+      writeFile: async (path, content) => {
+        if (!supports.writeTextFile) throw new CapabilityError('fs/write_text_file', 'client');
+        await peer.request('fs/write_text_file', { sessionId, path, content }, { signal });
+      },
+      completeElicitation: (elicitationId) => peer.notify('elicitation/complete', { sessionId, elicitationId }),
+      call: (extension, params) => callExtension(peer, extension, params, { signal }),
+      notify: (extension, params) => peer.notify(extension.method, params),
       terminal: async (command, options) => {
-        if (protocol !== 1 || clientCapabilities.terminal !== true) throw new Error('The client offers no terminal');
+        if (!supports.terminal) throw new CapabilityError('terminals', 'client');
         const created = await peer.request<{ terminalId: string }>(
           'terminal/create',
           {
@@ -363,9 +432,9 @@ class TurnWriter {
         };
       },
       elicit: async (request) => {
-        const caps = clientCapabilities.elicitation as { form?: unknown; url?: unknown } | undefined;
         const mode = request.url ? 'url' : 'form';
-        if (!caps || caps[mode] == null) throw new Error(`The client offers no ${mode} elicitation`);
+        if (!supports.elicitation[mode]) throw new CapabilityError(`${mode} elicitation`, 'client');
+        const elicitationId = mode === 'url' ? randomUUID() : undefined;
         const params = {
           sessionId,
           mode,
@@ -373,16 +442,17 @@ class TurnWriter {
           ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
           ...(mode === 'form'
             ? { requestedSchema: request.requestedSchema ?? { type: 'object', properties: {} } }
-            : { url: request.url, elicitationId: randomUUID() }),
+            : { url: request.url, elicitationId }),
         };
+        const id = elicitationId ? { elicitationId } : {};
         try {
           const answer = await peer.request<{ action?: string; content?: Record<string, unknown> }>('elicitation/create', params, { signal });
-          if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
-          if (answer?.action === 'decline') return { action: 'decline' };
+          if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}), ...id };
+          if (answer?.action === 'decline') return { action: 'decline', ...id };
         } catch {
           // Aborted with the turn, or an error answer.
         }
-        return { action: 'cancel' };
+        return { action: 'cancel', ...id };
       },
     };
   }

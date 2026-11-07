@@ -21,6 +21,16 @@ export {
   type ToolCallInit,
 } from './agent.ts';
 export { Turn } from './turn.ts';
+export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
+export {
+  extensionNotification,
+  extensionRequest,
+  handle,
+  type ExtensionHandler,
+  type ExtensionNotification,
+  type ExtensionRequest,
+  type Validator,
+} from './extensions.ts';
 export type { SessionMode, SessionModes } from './modes.ts';
 export { decide, resolveDecision, type PermissionDecision, type PermissionHandler, type PermissionPolicy } from './permissions.ts';
 export { TurnProjection } from './projection.ts';

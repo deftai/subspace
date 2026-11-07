@@ -136,7 +136,7 @@ test('elicit throws when the client offers none', async () => {
     },
   });
   await (await client.newSession({ cwd: '/tmp' })).prompt('go').done;
-  assert.match(String(error), /offers no form elicitation/);
+  assert.match(String(error), /CapabilityError: The client does not offer form elicitation/);
   await client.close();
 });
 
@@ -201,7 +201,7 @@ test('v2: no client terminals (v2 removed them)', async () => {
     { terminals: workspaceTerminals(tmpdir()) }
   );
   await (await client.newSession({ cwd: '/tmp' })).prompt('go').done;
-  assert.match(String(error), /offers no terminal/);
+  assert.match(String(error), /CapabilityError: The client does not offer terminals/);
   await client.close();
 });
 
