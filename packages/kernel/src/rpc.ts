@@ -26,8 +26,9 @@ export interface InboundContext {
   peer: RpcPeer;
 }
 
-export type RequestHandler = (params: any, context: InboundContext) => unknown;
-export type NotificationHandler = (params: any, context: InboundContext) => void;
+/** Params are `unknown` unless the handler declares a type for them (it is not checked at run time). */
+export type RequestHandler<Params = unknown> = (params: Params, context: InboundContext) => unknown;
+export type NotificationHandler<Params = unknown> = (params: Params, context: InboundContext) => void;
 
 /** A message as middleware sees it. */
 export interface Call {
@@ -64,7 +65,7 @@ export interface RpcPeerOptions {
    */
   cancelOutbound?: { method: string; params: (id: JsonRpcId) => unknown };
   /** Which inbound notification cancels one of our handlers, and how to find its id. */
-  cancelInbound?: { method: string; id: (params: any) => JsonRpcId | undefined };
+  cancelInbound?: { method: string; id: (params: unknown) => JsonRpcId | undefined };
   inbound?: InboundMiddleware[];
   outbound?: OutboundMiddleware[];
   /** Sees every message in both directions, e.g. for tracing. Must not throw. */
@@ -84,6 +85,21 @@ interface Pending {
   reject: (error: unknown) => void;
   cleanups: Array<() => void>;
 }
+
+/**
+ * Request cancellation as ACP and LSP do it: `$/cancel_request` with
+ * `{ requestId }`, both ways. Spread into RpcPeerOptions.
+ */
+export const cancelRequest = {
+  cancelOutbound: { method: '$/cancel_request', params: (requestId: JsonRpcId) => ({ requestId }) },
+  cancelInbound: {
+    method: '$/cancel_request',
+    id: (params: unknown) => {
+      const id = (params as { requestId?: unknown } | null)?.requestId;
+      return id === null || typeof id === 'string' || typeof id === 'number' ? id : undefined;
+    },
+  },
+} satisfies Pick<RpcPeerOptions, 'cancelOutbound' | 'cancelInbound'>;
 
 const isId = (value: unknown): value is JsonRpcId =>
   value === null || typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
@@ -147,13 +163,15 @@ export class RpcPeer {
     return this.connectionAbort.signal;
   }
 
-  onRequest(method: string, handler: RequestHandler): this {
-    this.requestHandlers.set(method, handler);
+  /** Handle a request. `'*'` handles every method without its own handler (see `context.method`). */
+  onRequest<Params = unknown>(method: string, handler: RequestHandler<Params>): this {
+    this.requestHandlers.set(method, handler as RequestHandler);
     return this;
   }
 
-  onNotification(method: string, handler: NotificationHandler): this {
-    this.notificationHandlers.set(method, handler);
+  /** Handle a notification. `'*'` handles every method without its own handler. */
+  onNotification<Params = unknown>(method: string, handler: NotificationHandler<Params>): this {
+    this.notificationHandlers.set(method, handler as NotificationHandler);
     return this;
   }
 

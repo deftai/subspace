@@ -15,7 +15,7 @@
  * - v1 and v2 differ on the wire (tool call create vs upsert, prompt answer vs
  *   idle state); the handler does not see that.
  */
-import { RpcError, RpcPeer, type Channel, type RpcPeerOptions } from '@deft-subspace/kernel';
+import { cancelRequest, RpcError, RpcPeer, type Channel, type RpcPeerOptions } from '@deft-subspace/kernel';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
 
 export interface ToolCallInit {
@@ -84,8 +84,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   const peer = new RpcPeer(channel, {
     name: options.name,
     ...options.peer,
-    cancelOutbound: { method: '$/cancel_request', params: (requestId) => ({ requestId }) },
-    cancelInbound: { method: '$/cancel_request', id: (p: { requestId?: string | number }) => p?.requestId },
+    ...cancelRequest,
   });
 
   peer.onRequest('initialize', (params: { protocolVersion?: unknown }) => {
