@@ -41,12 +41,30 @@ export interface TextInfo {
   separator: string;
 }
 
+/** About a message that ended, for `onMessageEnd`, `onThoughtEnd` and `onUserMessageEnd`. */
+export interface TextEndInfo {
+  messageId: string;
+  /** Which message of its kind in the turn this is, from 0. */
+  index: number;
+  /** False when the turn ended early (cancelled, failed, not `end_turn`) while it was open. */
+  complete: boolean;
+}
+
 export interface TurnHandlers {
   /** Agent text: what is new, and about its message (`first`, `separator`, the whole `text`). */
   onMessage?(delta: string, info: TextInfo, event: Of<'message'>): Maybe;
   onThought?(delta: string, info: TextInfo, event: Of<'thought'>): Maybe;
   /** The user's message as the agent echoes or replays it. */
   onUserMessage?(delta: string, info: TextInfo, event: Of<'user_message'>): Maybe;
+  /**
+   * A message stopped: something else came after it, or the turn ended.
+   * `text` is its final text (always right, even when a v2 agent rewrote it).
+   * ACP has no end signal, so this is inferred: if the agent continues the
+   * same message later, it ends again with the longer text.
+   */
+  onMessageEnd?(text: string, info: TextEndInfo, event: Of<'message_end'>): Maybe;
+  onThoughtEnd?(text: string, info: TextEndInfo, event: Of<'thought_end'>): Maybe;
+  onUserMessageEnd?(text: string, info: TextEndInfo, event: Of<'user_message_end'>): Maybe;
   /** A tool call was created (`created`) or changed; `toolCall` is a snapshot. */
   onToolCall?(toolCall: Readonly<ToolCall>, info: { created: boolean }, event: Of<'tool_call'>): Maybe;
   onPlan?(entries: PlanEntry[], event: Of<'plan'>): Maybe;
@@ -78,6 +96,9 @@ export const HANDLER_KEYS = [
   'onMessage',
   'onThought',
   'onUserMessage',
+  'onMessageEnd',
+  'onThoughtEnd',
+  'onUserMessageEnd',
   'onToolCall',
   'onPlan',
   'onUsage',
@@ -120,19 +141,42 @@ export class TextTracker {
     if (event.text) seen.lastEnd = event.text.slice(-1);
     return { text: event.text, messageId: event.messageId, first, index, separator };
   }
+
+  end(kind: 'message' | 'thought' | 'user_message', event: { messageId: string; complete: boolean }): TextEndInfo {
+    const index = this.kinds.get(kind)?.ids.get(event.messageId) ?? 0;
+    return { messageId: event.messageId, index, complete: event.complete };
+  }
 }
 
 /** Call the handler for one event, then `onEvent`. */
 export async function dispatch(event: TurnEvent, h: TurnHandlers, text: TextTracker = new TextTracker()): Promise<void> {
   switch (event.type) {
-    case 'message':
-      await h.onMessage?.(event.delta, text.info('message', event), event);
+    case 'message': {
+      // Always tracked, so the end handlers know each message's index.
+      const info = text.info('message', event);
+      await h.onMessage?.(event.delta, info, event);
       break;
-    case 'thought':
-      await h.onThought?.(event.delta, text.info('thought', event), event);
+    }
+    case 'thought': {
+      // Always tracked, so the end handlers know each message's index.
+      const info = text.info('thought', event);
+      await h.onThought?.(event.delta, info, event);
       break;
-    case 'user_message':
-      await h.onUserMessage?.(event.delta, text.info('user_message', event), event);
+    }
+    case 'user_message': {
+      // Always tracked, so the end handlers know each message's index.
+      const info = text.info('user_message', event);
+      await h.onUserMessage?.(event.delta, info, event);
+      break;
+    }
+    case 'message_end':
+      await h.onMessageEnd?.(event.text, text.end('message', event), event);
+      break;
+    case 'thought_end':
+      await h.onThoughtEnd?.(event.text, text.end('thought', event), event);
+      break;
+    case 'user_message_end':
+      await h.onUserMessageEnd?.(event.text, text.end('user_message', event), event);
       break;
     case 'tool_call':
       await h.onToolCall?.(event.toolCall, { created: event.created }, event);

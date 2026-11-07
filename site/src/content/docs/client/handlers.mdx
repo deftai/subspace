@@ -22,6 +22,7 @@ Every turn takes handler options. They work with `start()`, and with `session.pr
 | Handler | Called with |
 |---|---|
 | `onMessage`, `onThought`, `onUserMessage` | `(delta, info, event)`: what is new; `info` has the whole `text` so far, `messageId`, `first` (the message's first chunk), `index` (which message in the turn), and `separator` |
+| `onMessageEnd`, `onThoughtEnd`, `onUserMessageEnd` | `(text, info, event)`: the message stopped, with its final text; `info` has `messageId`, `index` and `complete`. See [Whole messages](#whole-messages) |
 | `onToolCall` | `(toolCall, { created }, event)`: a snapshot, each time it changes |
 | `onPlan` | `(entries, event)` |
 | `onUsage` | `({ used, size, cost }, event)` |
@@ -45,6 +46,21 @@ onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
 ```
 
 For messages streamed one after another, which is what agents do, the concatenated stream is exactly `result.text`.
+
+## Whole messages
+
+When you want each message once it is finished (to log it, store it, or swap streamed text for rendered markdown), use the end handlers:
+
+```ts
+onMessageEnd: (text, { index, complete }) => transcript.push({ index, text, complete }),
+```
+
+ACP has no "message finished" signal, so Subspace infers one. A message ends when other text, a tool call, a plan, a permission question or a terminal comes after it, or when the turn ends. Usage, state and title updates do not end it. The end handler always runs before `turn.done` settles.
+
+- `text` is the final text, even when a v2 agent rewrote the whole message instead of adding to it. A stream of deltas can't show a rewrite; the end can.
+- `complete` is false when the turn was cancelled, failed or stopped for any reason other than `end_turn` while the message was still open.
+- If an agent goes back to the same message after something else, it ends again, with the longer text. This is rare; agents usually start a new message.
+- History replayed by `loadSession` has no end events; group it by `messageId`.
 
 ## Defaults for every turn
 

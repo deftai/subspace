@@ -82,14 +82,17 @@ test('v1 and v2 give the same events for the same agent', async () => {
   assert.deepEqual(runs[0], runs[1]);
   assert.deepEqual(runs[0], [
     'thought: "Looking at the file." => "Looking at the file."',
+    'thought_end',
     'message: "I will read " => "I will read "',
     'message: "the file." => "I will read the file."',
+    'message_end',
     'tool new: Read README.md [pending] content=0',
     'tool upd: Read README.md [in_progress] content=0',
     'permission: Read README.md -> allowed',
     'tool upd: Read README.md [completed] content=1',
     'plan: Summarize',
     'message: "It says hello." => "It says hello."',
+    'message_end',
   ]);
 });
 

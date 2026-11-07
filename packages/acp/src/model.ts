@@ -103,6 +103,16 @@ export type TurnEvent =
   | { type: 'thought'; messageId: string; delta: string; text: string }
   /** The user's own message, as the agent echoes it (v2) or replays it on load. */
   | { type: 'user_message'; messageId: string; delta: string; text: string }
+  /**
+   * A message of that kind stopped: something else came after it, or the turn
+   * ended. `text` is its final text. ACP has no end signal, so this is
+   * inferred; if an agent later continues the same message, it ends again,
+   * with the longer text. `complete` is false when the turn ended early
+   * (cancelled, failed, or any stop but `end_turn`) while it was open.
+   */
+  | { type: 'message_end'; messageId: string; text: string; complete: boolean }
+  | { type: 'thought_end'; messageId: string; text: string; complete: boolean }
+  | { type: 'user_message_end'; messageId: string; text: string; complete: boolean }
   /** Session title or update time changed. Also kept on `session.info`. */
   | { type: 'session_info'; title?: string; updatedAt?: string }
   /**

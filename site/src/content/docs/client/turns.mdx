@@ -21,6 +21,7 @@ The same on v1 and v2.
 |---|---|
 | `message`, `thought` | Agent text. `delta` is what is new; `text` is the whole message so far. |
 | `user_message` | The user's message, as the agent echoes it (v2) or replays it on load. |
+| `message_end`, `thought_end`, `user_message_end` | That message stopped: something else came after it, or the turn ended. `text` is its final text; `complete` is false if the turn ended early. See [Whole messages](../handlers/#whole-messages). |
 | `tool_call` | A tool call was created or changed. `toolCall` is a snapshot: `title`, `kind`, `status`, `content`, `locations`, `rawInput`, `rawOutput`, and `cancellable` (v2). |
 | `permission` | The agent asked; `request` and `outcome` say what and how it was answered. |
 | `plan` | The agent's plan entries. |

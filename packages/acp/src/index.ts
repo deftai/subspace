@@ -53,7 +53,7 @@ export {
 } from './model-agent.ts';
 export { checkToolInput, tool, toolInputSchema, toolOutputText, type ToolContext, type ToolDefinition, type ToolSet } from './tools.ts';
 export { connectSession, openSession, type ConnectedSession, type ConnectSessionOptions, type SessionSetup } from './open.ts';
-export { type TextInfo, type TurnHandlers } from './handlers.ts';
+export { type TextEndInfo, type TextInfo, type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
 export {
   extensionNotification,

@@ -7,6 +7,8 @@
  *
  * - `done` settles only after the last event has been delivered, on v1 and v2.
  * - Iterate as many times as you like; each iterator starts from the first event.
+ * - Each message, thought and user message is followed by a `*_end` event
+ *   once something else arrives or the turn ends.
  * - `cancel()` tells the agent, answers its open permission questions with
  *   `cancelled`, and ends the turn if the agent does not confirm in time.
  */
@@ -18,6 +20,11 @@ export interface TurnView {
   text(): string;
   toolCalls(): ToolCall[];
 }
+
+type TextEvent = Extract<TurnEvent, { type: 'message' | 'thought' | 'user_message' }>;
+const isText = (event: TurnEvent): event is TextEvent => event.type === 'message' || event.type === 'thought' || event.type === 'user_message';
+/** What ends an open message: other text, or content. Usage, state, title and other notices do not. */
+const ends = (event: TurnEvent) => isText(event) || event.type === 'tool_call' || event.type === 'plan' || event.type === 'permission' || event.type === 'terminal';
 
 export class Turn implements AsyncIterable<TurnEvent> {
   readonly id: string;
@@ -37,6 +44,8 @@ export class Turn implements AsyncIterable<TurnEvent> {
   /** Events the observer has finished dispatching. */
   private dispatched = 0;
   private readonly progress = new Set<() => void>();
+  /** The message being streamed, as its latest event. */
+  private open?: TextEvent;
 
   /** @internal */
   constructor(id: string, onCancel: () => Promise<void>, view?: TurnView) {
@@ -96,13 +105,26 @@ export class Turn implements AsyncIterable<TurnEvent> {
   /** @internal */
   push(...events: TurnEvent[]): void {
     if (this.finished || events.length === 0) return;
-    this.events.push(...events);
+    for (const event of events) {
+      if (this.open && ends(event) && !(isText(event) && event.type === this.open.type && event.messageId === this.open.messageId)) this.close(true);
+      if (isText(event)) this.open = event;
+      this.events.push(event);
+    }
     this.wake();
+  }
+
+  /** End the open message, if any. */
+  private close(complete: boolean): void {
+    const open = this.open;
+    if (!open) return;
+    this.open = undefined;
+    this.events.push({ type: `${open.type}_end`, messageId: open.messageId, text: open.text, complete });
   }
 
   /** @internal */
   finish(result: TurnResult): void {
     if (this.finished) return;
+    this.close(result.stopReason === 'end_turn' && !result.cancelled);
     this.finished = { ok: true, result };
     this.wake();
     this.settle(() => this.resolveDone(result));
@@ -111,6 +133,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
   /** @internal */
   fail(error: unknown): void {
     if (this.finished) return;
+    this.close(false);
     this.finished = { ok: false, error };
     this.wake();
     this.settle(() => this.rejectDone(error));
