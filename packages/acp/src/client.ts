@@ -208,7 +208,7 @@ export class Session {
   readonly created: Record<string, unknown>;
 
   private active?: ActiveTurn;
-  private readonly listeners = new Set<(event: TurnEvent) => void>();
+  private readonly listeners = new Set<(event: TurnEvent, raw: unknown) => void>();
   private currentModes?: SessionModes;
 
   /** @internal */
@@ -251,8 +251,8 @@ export class Session {
     return this.active !== undefined;
   }
 
-  /** Updates that arrive between turns (available commands, config options, ...). */
-  onIdleUpdate(listener: (event: TurnEvent) => void): () => void {
+  /** Updates that arrive between turns (available commands, config options, ...), with the raw update. */
+  onIdleUpdate(listener: (event: TurnEvent, raw: unknown) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -316,7 +316,7 @@ export class Session {
     const active = this.active;
     if (!active) {
       const { events } = new TurnProjection(`${this.id}#idle`).apply(update);
-      for (const event of events) for (const listener of this.listeners) listener(event);
+      for (const event of events) for (const listener of this.listeners) listener(event, update);
       return;
     }
     const { events, state } = active.projection.apply(update);
