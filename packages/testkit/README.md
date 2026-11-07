@@ -51,3 +51,4 @@ ONLY=initialize.version,session.new,session.unknown node --conditions=source scr
 - Codex, like Grok, ends a turn whose write was rejected with `stopReason: "cancelled"` though the client did not cancel, and leaves the tool call `pending` (`codex-write-rejected`). `TurnResult.refused` counts refused requests, and `turnEnd(result)` gives `refused` for such a turn rather than `cancelled`. Its reject option is named `cancel` (kind `reject_once`).
 - Both send `_auth/status_update` with the signed-in account's email, organization and plan; the recorder redacts it.
 - Both confirm a cancel mid-stream with `stopReason: "cancelled"`; neither turn is forced (`claude-cancel`, `codex-cancel`).
+- `checkAgent` (`scripts/check-claude-codex.sh`, Claude in `default`, Codex in `read-only`): all of the first 7 checks pass for both, on protocol v2 (2026-11-07). The auth, config and delete checks came later and have not been run against them yet.

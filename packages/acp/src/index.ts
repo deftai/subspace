@@ -36,6 +36,8 @@ export { decide, resolveDecision, type PermissionDecision, type PermissionHandle
 export { TurnProjection } from './projection.ts';
 export { turnEnd, type TurnEnd } from './model.ts';
 export { validateElicitation } from './elicitation.ts';
+export { type AuthMethod } from './auth.ts';
+export { configOptionsFrom, type ConfigChoice, type ConfigOption } from './config.ts';
 export type {
   ContentBlock,
   Exhaustion,

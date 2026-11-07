@@ -76,7 +76,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 
 - **Record and replay** in the kernel trace format. A replayed agent remaps ids both ways, matches the client's calls by method, and fails with expected vs got instead of hanging.
 - **Faults:** banner lines, odd and coalesced chunks, delay, disconnect after N messages, close mid-turn.
-- **Conformance:** `checkAgent` (7 checks) passes against `serveAgent` and official-SDK agents, v1 and v2, and catches a broken agent. `checkClient` (4 checks) passes against `AcpClient`, v1 and v2, and catches a careless official-SDK client.
+- **Conformance:** `checkAgent` (10 checks) passes against `serveAgent` and official-SDK agents, v1 and v2, and catches a broken agent. `checkClient` (4 checks) passes against `AcpClient`, v1 and v2, and catches a careless official-SDK client.
 - **Quirks corpus:** three real Grok traces (plain, write rejected, cancel) replay to `AcpClient` with the same `TurnResult` as live.
 - **Live `checkAgent` against Grok:** initialize, session/new and cancel pass. An unknown session is answered `-32602`, not `-32002`.
 
@@ -209,6 +209,9 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - queued prompts (`{ queue }`); cancelling a queued prompt means it is never sent;
    - typed extensions (`extensionRequest`, `extensionNotification`, `handle`): names start with `_`, and optional validators check params where they arrive and results where they return;
    - `onElicitationComplete`.
+   - logging in: `client.authMethods` (one shape for v1 and v2), `client.authenticate(id)` (v1 `authenticate`, v2 `auth/login`), `client.logout()`, and `terminalAuth` to advertise that the app can run a `terminal` login method;
+   - `client.deleteSession(id)` (`session/delete`);
+   - config options: `session.configOptions`, `session.setConfigOption(id, value)` for select and on/off options, and `session.model` / `session.setModel()` (the option with category `model`). Values the agent did not offer are refused before any request.
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
 5. **Testkit (`packages/testkit`, merged, first cut done, 33 tests):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;

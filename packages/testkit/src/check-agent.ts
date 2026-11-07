@@ -9,7 +9,7 @@
  * are options, so a real agent can be steered into each situation.
  */
 import { cancelRequest, ErrorCode, RpcError, RpcPeer, type Channel } from '@deft-subspace/kernel';
-import { modesFrom } from '@deft-subspace/acp';
+import { configOptionsFrom, modesFrom } from '@deft-subspace/acp';
 import { runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
 
 export interface CheckAgentOptions {
@@ -41,7 +41,10 @@ export interface CheckAgentOptions {
 
 export const AGENT_CHECKS = {
   'initialize.version': 'initialize answers with a protocol version we speak (1 or 2)',
+  'auth.methods': 'initialize lists login methods well formed (an id, a name, ids unique; v2: a type)',
   'session.new': 'session/new returns a sessionId',
+  'config.set-current': 'setting a select config option to its current value answers with the full option list',
+  'session.delete': 'session/delete removes a session (when the agent offers it)',
   'prompt.ends': 'a prompt ends (v1: prompt response, v2: idle state)',
   'prompt.updates-before-end': 'updates arrive before the end, none after',
   'cancel.ends-cancelled': 'session/cancel ends the turn with stopReason "cancelled" in time',
@@ -145,6 +148,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   peer.start();
 
   let protocol: 1 | 2 | undefined;
+  let initAnswer: Record<string, unknown> = {};
   const asked = options.protocol ?? 2;
   try {
     const init = (await within(
@@ -160,6 +164,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
     if (init !== TIMED_OUT) {
       const v = Number(init?.protocolVersion);
       if (v === 1 || v === 2) protocol = v;
+      initAnswer = init;
       await check('initialize.version', async () => ({
         pass: protocol !== undefined && protocol <= asked,
         detail: `asked v${asked}, agent chose ${String(init?.protocolVersion)}`,
@@ -176,9 +181,33 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   }
   const v = protocol;
 
+  await check('auth.methods', async () => {
+    const raw = initAnswer.authMethods;
+    if (raw === undefined) return { pass: true, detail: 'no authMethods (no login needed)' };
+    if (!Array.isArray(raw)) return { pass: false, detail: `authMethods is ${JSON.stringify(raw)}, not a list` };
+    const problems: string[] = [];
+    const ids = new Set<string>();
+    for (const [i, m] of raw.entries()) {
+      const method = (m ?? {}) as Record<string, unknown>;
+      const id = v === 2 ? method.methodId : method.id;
+      if (typeof id !== 'string' || !id) problems.push(`#${i} has no ${v === 2 ? 'methodId' : 'id'}`);
+      else if (ids.has(id)) problems.push(`${id} is listed twice`);
+      else ids.add(id);
+      if (typeof method.name !== 'string') problems.push(`#${i} has no name`);
+      if (v === 2 && typeof method.type !== 'string') problems.push(`#${i} has no type`);
+      // We advertised no terminal login, so none may be offered.
+      if (method.type === 'terminal') problems.push(`#${i} is a terminal method, which this client did not advertise`);
+    }
+    const kinds = raw.map((m) => String((m as Record<string, unknown>)?.type ?? 'agent'));
+    return { pass: problems.length === 0, detail: problems.join('; ') || `${raw.length} method(s): ${kinds.join(', ') || 'none'}` };
+  });
+
+  /** What each session/new answered, by session id. */
+  const created = new Map<string, Record<string, unknown>>();
   const newSession = async (): Promise<string> => {
     const result = (await peer.request('session/new', { cwd, mcpServers: [] }, { timeoutMs: 60_000 })) as { sessionId?: unknown };
     if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new Error(`session/new returned ${JSON.stringify(result)}`);
+    created.set(result.sessionId, result as Record<string, unknown>);
     if (options.mode) await switchMode(result.sessionId, result as Record<string, unknown>, options.mode);
     return result.sessionId;
   };
@@ -218,6 +247,41 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   await check('session.new', async () => {
     sessionId = await newSession();
     return { pass: true, detail: `sessionId ${sessionId}` };
+  });
+
+  if (sessionId) {
+    const answer = created.get(sessionId) ?? {};
+    await check('config.set-current', async () => {
+      const options = configOptionsFrom(answer.configOptions) ?? [];
+      // A select other than the mode (the mode check already switches that), else the mode.
+      const target =
+        options.find((o) => o.type === 'select' && o.category !== 'mode' && typeof o.currentValue === 'string') ??
+        options.find((o) => o.type === 'select' && typeof o.currentValue === 'string');
+      if (!target) return { pass: true, skipped: true, detail: `no select config option (${options.length} option(s))` };
+      const value = target.currentValue as string;
+      const params = { sessionId, configId: target.id, value, ...(v === 2 ? { type: 'id' } : {}) };
+      const result = (await peer.request('session/set_config_option', params, { timeoutMs: 30_000 })) as Record<string, unknown> | null;
+      const after = configOptionsFrom(result?.configOptions);
+      if (!after) return { pass: false, detail: `answered ${JSON.stringify(result)}, with no configOptions` };
+      const now = after.find((o) => o.id === target.id);
+      return {
+        pass: now?.currentValue === value,
+        detail: `${target.id} = ${JSON.stringify(value)}: answered ${after.length} option(s), ${target.id} now ${JSON.stringify(now?.currentValue)}`,
+      };
+    });
+  }
+
+  await check('session.delete', async () => {
+    const caps = (initAnswer.capabilities ?? initAnswer.agentCapabilities ?? {}) as Record<string, unknown>;
+    const session = (v === 2 ? caps.session : caps.sessionCapabilities) as Record<string, unknown> | undefined;
+    if (!session?.delete) return { pass: true, skipped: true, detail: 'the agent does not offer session/delete' };
+    const id = await newSession();
+    await peer.request('session/delete', { sessionId: id }, { timeoutMs: 30_000 });
+    const listed = v === 2 || !!session.list;
+    if (!listed) return { pass: true, detail: `deleted ${id}; no session/list to confirm` };
+    const list = (await peer.request('session/list', { cwd }, { timeoutMs: 30_000 })) as { sessions?: Array<{ sessionId?: string }> };
+    const still = (list?.sessions ?? []).some((s) => s.sessionId === id);
+    return { pass: !still, detail: still ? `${id} is still in session/list` : `deleted ${id}; gone from session/list` };
   });
 
   if (sessionId && (wanted('prompt.ends') || wanted('prompt.updates-before-end'))) {

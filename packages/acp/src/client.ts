@@ -31,7 +31,9 @@ import type {
   v1,
   v2,
 } from './model.ts';
+import { authMethodNames, authMethodsFrom, canLogout, type AuthMethod } from './auth.ts';
 import { agentSupport, CapabilityError, type AgentSupport } from './capabilities.ts';
+import { configOptionsFrom, configParams, type ConfigOption } from './config.ts';
 import {
   callExtension,
   registerExtensions,
@@ -111,6 +113,12 @@ export interface ClientOptions {
   elicitation?: ElicitationHandler;
   /** Which elicitation modes to advertise with `elicitation`. Default both. Requests in other modes are declined. */
   elicitationModes?: Array<'form' | 'url'>;
+  /**
+   * The app can run the agent again in a terminal for the user to log in
+   * (`terminal` login methods, with their `args` and `env`). Default false:
+   * agents then list only methods they handle themselves.
+   */
+  terminalAuth?: boolean;
   timeouts?: {
     /** initialize. Default 60 s (agents often install on first run). */
     initializeMs?: number;
@@ -118,6 +126,8 @@ export interface ClientOptions {
     sessionMs?: number;
     /** How long a cancelled turn may take to confirm before it is ended here. Default 10 s. */
     cancelGraceMs?: number;
+    /** authenticate / auth/login. Default 5 min (the user may be logging in in a browser). */
+    authMs?: number;
   };
   /** Limits for every turn, unless a prompt sets its own. Default: none. */
   limits?: TurnLimits;
@@ -154,6 +164,8 @@ export class AcpClient {
   readonly capabilities: Record<string, unknown>;
   /** What the agent can do, the same shape for v1 and v2. */
   readonly supports: AgentSupport;
+  /** How the agent lets you log in (`initialize`'s `authMethods`). Empty if it needs no login. */
+  readonly authMethods: readonly AuthMethod[];
 
   private readonly options: ClientOptions;
   private readonly sessions = new Map<string, Session>();
@@ -169,6 +181,7 @@ export class AcpClient {
     this.agent = { name: info.name, title: info.title, version: info.version };
     this.capabilities = (init.capabilities ?? init.agentCapabilities ?? {}) as Record<string, unknown>;
     this.supports = agentSupport(protocol, this.capabilities);
+    this.authMethods = authMethodsFrom(init);
     // In v2 a running turn has no request in flight, so the connection closing
     // must end it explicitly.
     void peer.closed.then((info) => {
@@ -266,6 +279,11 @@ export class AcpClient {
     const v1Capabilities: v1.ClientCapabilities = {
       fs: { readTextFile: !!options.files, writeTextFile: !!options.files },
       terminal: !!options.terminals,
+      ...(options.terminalAuth ? { auth: { terminal: true } } : {}),
+      ...(elicitation ? { elicitation } : {}),
+    };
+    const v2Capabilities: v2.ClientCapabilities = {
+      ...(options.terminalAuth ? { auth: { terminal: {} } } : {}),
       ...(elicitation ? { elicitation } : {}),
     };
     // One request both generations understand: v2 fields plus their v1 names.
@@ -275,7 +293,7 @@ export class AcpClient {
         : {
             protocolVersion: 2,
             info: { name, version },
-            capabilities: (elicitation ? { elicitation } : {}) satisfies v2.ClientCapabilities,
+            capabilities: v2Capabilities,
             clientInfo: { name, version },
             clientCapabilities: v1Capabilities,
           };
@@ -365,6 +383,43 @@ export class AcpClient {
       sessions: sessions as Array<{ sessionId: string; cwd: string; title?: string; updatedAt?: string }>,
       ...(typeof result?.nextCursor === 'string' ? { nextCursor: result.nextCursor } : {}),
     };
+  }
+
+  /**
+   * Log in with one of the agent's `authMethods` (v1 `authenticate`, v2
+   * `auth/login`). For an `agent` method the agent does the work, which can
+   * mean waiting for the user in a browser. Throws for a method it did not list.
+   */
+  async authenticate(methodId: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<void> {
+    if (!this.authMethods.some((m) => m.id === methodId)) {
+      throw new Error(`The agent offers no login method "${methodId}" (offered: ${this.authMethods.map((m) => m.id).join(', ') || 'none'})`);
+    }
+    await this.peer.request(authMethodNames(this.protocol).login, { methodId }, {
+      timeoutMs: options.timeoutMs ?? this.options.timeouts?.authMs ?? 300_000,
+      signal: options.signal,
+    });
+  }
+
+  /** Log out (v1 `logout`, if the agent offers it; v2 `auth/logout`). */
+  async logout(options: { timeoutMs?: number } = {}): Promise<void> {
+    if (!canLogout(this.protocol, this.capabilities, [...this.authMethods])) throw new CapabilityError('logout', 'agent');
+    await this.peer.request(authMethodNames(this.protocol).logout, {}, { timeoutMs: options.timeoutMs ?? 30_000 });
+  }
+
+  /** Whether `logout()` can be called. */
+  get canLogout(): boolean {
+    return canLogout(this.protocol, this.capabilities, [...this.authMethods]);
+  }
+
+  /**
+   * Delete a session from the agent's history (`session/delete`). An open
+   * session with that id is closed here first (a running turn is cancelled).
+   */
+  async deleteSession(sessionId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    if (!this.supports.deleteSession) throw new CapabilityError('session/delete', 'agent');
+    const open = this.sessions.get(sessionId);
+    if (open) await open.shutDown();
+    await this.peer.request('session/delete', { sessionId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
   /** Call one of the agent's vendor extension requests. */
@@ -484,6 +539,7 @@ export class Session {
   /** Recent updates between turns, replayed to listeners added later. */
   private readonly idleHistory: Array<{ event: TurnEvent; raw: unknown }> = [];
   private currentModes?: SessionModes;
+  private currentConfig: ConfigOption[] = [];
 
   /** @internal */
   constructor(client: AcpClient, id: string, created: Record<string, unknown>) {
@@ -491,6 +547,7 @@ export class Session {
     this.id = id;
     this.created = created;
     this.currentModes = modesFrom(created);
+    this.currentConfig = configOptionsFrom(created.configOptions) ?? [];
   }
 
   /** @internal Take in a load or resume answer (modes, config options). */
@@ -498,6 +555,7 @@ export class Session {
     if (!result || typeof result !== 'object') return;
     this.created = result as Record<string, unknown>;
     this.currentModes = modesFrom(this.created) ?? this.currentModes;
+    this.currentConfig = configOptionsFrom(this.created.configOptions) ?? this.currentConfig;
   }
 
   /**
@@ -506,12 +564,7 @@ export class Session {
    * asked). The session is forgotten here either way.
    */
   async close(): Promise<void> {
-    for (const queued of this.queued.splice(0)) queued.active.turn.finish(this.notSent());
-    if (this.active) {
-      const turn = this.active.turn;
-      await this.cancel();
-      await turn.done.catch(() => {});
-    }
+    await this.shutDown();
     try {
       if (this.client.supports.closeSession) {
         await this.client.peer.request('session/close', { sessionId: this.id }, { timeoutMs: 10_000 });
@@ -521,6 +574,17 @@ export class Session {
     } finally {
       this.client.forget(this.id);
     }
+  }
+
+  /** @internal Stop queued and running turns and forget the session here, without telling the agent. */
+  async shutDown(): Promise<void> {
+    for (const queued of this.queued.splice(0)) queued.active.turn.finish(this.notSent());
+    if (this.active) {
+      const turn = this.active.turn;
+      await this.cancel();
+      await turn.done.catch(() => {});
+    }
+    this.client.forget(this.id);
   }
 
   /** The modes the agent offers and the current one, whichever way it offers them. Absent if none. */
@@ -549,6 +613,55 @@ export class Session {
         : { sessionId: this.id, configId: modes.configId, value: modeId };
     const result = (await this.client.peer.request('session/set_config_option', params, options)) as Record<string, unknown> | null;
     this.currentModes = (result && modesFromConfig(result.configOptions)) ?? { ...modes, current: modeId };
+    this.currentConfig = configOptionsFrom(result?.configOptions) ?? this.withValue(modes.configId!, modeId);
+  }
+
+  /**
+   * The agent's config options for this session (model, reasoning effort,
+   * mode, on/off switches), kept current from its answers and
+   * `config_option_update`s. Empty if it offers none.
+   */
+  get configOptions(): readonly ConfigOption[] {
+    return this.currentConfig;
+  }
+
+  /** One config option, by id. */
+  configOption(id: string): ConfigOption | undefined {
+    return this.currentConfig.find((o) => o.id === id);
+  }
+
+  /**
+   * Set a config option (`session/set_config_option`): a choice's value for a
+   * select option, true or false for an on/off one. Throws, without asking
+   * the agent, for an option or value it did not offer.
+   */
+  async setConfigOption(id: string, value: string | boolean, options: { timeoutMs?: number } = {}): Promise<void> {
+    const option = this.configOption(id);
+    if (!option) {
+      throw new Error(`The agent offers no config option "${id}" (offered: ${this.currentConfig.map((o) => o.id).join(', ') || 'none'})`);
+    }
+    const built = configParams(this.client.protocol, this.id, option, value);
+    if ('problem' in built) throw new Error(built.problem);
+    const result = (await this.client.peer.request('session/set_config_option', built.params, options)) as Record<string, unknown> | null;
+    this.currentConfig = configOptionsFrom(result?.configOptions) ?? this.withValue(id, value);
+    this.currentModes = modesFromConfig(result?.configOptions) ?? this.currentModes;
+    if (this.currentModes?.via === 'config' && this.currentModes.configId === id && typeof value === 'string') this.currentModes.current = value;
+  }
+
+  /** The model option (category `model`, a select), if the agent offers one. */
+  get model(): (ConfigOption & { type: 'select' }) | undefined {
+    return this.currentConfig.find((o): o is ConfigOption & { type: 'select' } => o.category === 'model' && o.type === 'select');
+  }
+
+  /** Choose a model: sets the option with category `model`. */
+  async setModel(value: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    const model = this.model;
+    if (!model) throw new Error('The agent offers no model choice');
+    await this.setConfigOption(model.id, value, options);
+  }
+
+  private withValue(id: string, value: unknown): ConfigOption[] {
+    return this.currentConfig.map((o) => (o.id === id ? ({ ...o, currentValue: value } as ConfigOption) : o));
   }
 
   get busy(): boolean {
@@ -754,6 +867,8 @@ export class Session {
     } else if (u.sessionUpdate === 'config_option_update') {
       const modes = modesFromConfig(u.configOptions);
       if (modes) this.currentModes = modes;
+      const config = configOptionsFrom(u.configOptions);
+      if (config) this.currentConfig = config;
     }
   }
 
