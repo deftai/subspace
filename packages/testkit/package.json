@@ -1,0 +1,43 @@
+{
+  "name": "@deft-subspace/acp-testkit",
+  "version": "0.0.0-experiment",
+  "description": "Test ACP agents and clients: record and replay traces, inject faults, run conformance checks, and keep a corpus of real agents' quirks.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "source": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "corpus"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts",
+    "record": "node --conditions=source scripts/record.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/kernel": "workspace:*",
+    "@deft-subspace/acp": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "zod": "^4.1.0"
+  }
+}
