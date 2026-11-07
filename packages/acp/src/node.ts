@@ -237,3 +237,6 @@ export function workspaceTerminals(
 }
 
 export { AGENT_PRESETS, run, serveStdio, start, type AgentName, type AgentPreset, type StartedAgent, type StartOptions } from './start.ts';
+
+// Everything in @deft-subspace/acp too, so a Node program needs one import.
+export * from './index.ts';
