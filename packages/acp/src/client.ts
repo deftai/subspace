@@ -645,11 +645,6 @@ interface ActiveTurn {
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
-const unrefTimer = (handle: ReturnType<typeof setTimeout>) => {
-  (handle as { unref?: () => void }).unref?.();
-  return handle;
-};
-
 export class Session {
   readonly id: string;
   readonly client: AcpClient;
@@ -952,7 +947,7 @@ export class Session {
     const { maxDurationMs } = active.limits;
     if (maxDurationMs !== undefined) {
       active.timers.push(
-        unrefTimer(setTimeout(() => this.exhaust(active, { limit: 'duration', max: maxDurationMs, value: maxDurationMs }), maxDurationMs))
+        setTimeout(() => this.exhaust(active, { limit: 'duration', max: maxDurationMs, value: maxDurationMs }), maxDurationMs)
       );
     }
     this.restartIdle(active);
@@ -1006,7 +1001,6 @@ export class Session {
       active.turn.push(...active.projection.failOpenToolCalls((call) => this.isBackground(call)));
       this.end(active, 'cancelled', undefined, true);
     }, this.client.cancelGraceMs);
-    (handle as { unref?: () => void }).unref?.();
     void active.turn.done.finally(() => clearTimeout(handle)).catch(() => {});
   }
 
@@ -1022,9 +1016,7 @@ export class Session {
     const { idleMs } = active.limits;
     if (idleMs === undefined || active.exhausted) return;
     if (active.idleTimer) clearTimeout(active.idleTimer);
-    active.idleTimer = unrefTimer(
-      setTimeout(() => this.exhaust(active, { limit: 'idle', max: idleMs, value: idleMs }), idleMs)
-    );
+    active.idleTimer = setTimeout(() => this.exhaust(active, { limit: 'idle', max: idleMs, value: idleMs }), idleMs);
   }
 
   private stopTimers(active: ActiveTurn): void {

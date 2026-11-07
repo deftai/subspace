@@ -31,6 +31,7 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
   - A timeout is not reported as an abort (MCP's bug #2165).
   - A late answer is reported, never delivered.
 - **Timeouts are tested with a manual clock,** with no real waiting, and no timer is left behind.
+- **A deadline keeps the process alive until it fires or is cleared** (request timeouts, turn limits, the cancel grace). Earlier they were unref'd, so with nothing else pending (an in-process agent, a script) Node exited before the timeout was reported (exit 13, unsettled top-level await). `test/deadlines.test.ts` runs that case in a child process.
 - **Inbound handlers run concurrently,** so a handler waiting on a call back to the other side doesn't block anything. Notifications keep arrival order.
 - **Malformed messages:**
   - when the id can be recovered, the reply is `InvalidRequest`;

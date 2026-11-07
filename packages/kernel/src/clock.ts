@@ -10,11 +10,9 @@ export interface Clock {
 
 export const systemClock: Clock = {
   now: () => Date.now(),
-  setTimeout: (callback, ms) => {
-    const handle = setTimeout(callback, ms);
-    // A pending deadline must not keep a process alive on its own.
-    (handle as { unref?: () => void }).unref?.();
-    return handle;
-  },
+  // A deadline keeps the process alive until it fires or is cleared: someone is
+  // waiting on it, and with nothing else pending (an in-process agent, a test)
+  // Node would otherwise exit before the timeout is ever reported.
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
