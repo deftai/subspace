@@ -15,6 +15,8 @@ subspace trace run.jsonl                          # an HTML viewer for a trace (
 subspace run "hello" -- node my-agent.js          # any agent: its command after --
 ```
 
+`subspace --help` lists the commands, and `subspace <command> --help` (or `subspace help <command>`) shows a command's options; `--version` prints the version.
+
 ## Quick checks and debugging
 
 `run` takes more than one prompt, run in order in one session: `--prompt` (repeat it), `--prompts-file <file>` (one per line; blank lines and `#` comments skipped; `-` for stdin) or `--stdin`.

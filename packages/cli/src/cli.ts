@@ -41,41 +41,127 @@ export interface Io {
 
 const defaultIo: Io = { out: (t) => process.stdout.write(t), err: (t) => process.stderr.write(t) };
 
-const USAGE = `Usage: subspace <command> [options]
+const AGENTS_NOTE = `<agent> is one of ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after -- (the prompt goes before it):
+  subspace run "hello" -- node my-agent.js`;
 
-Commands:
-  run <agent> <prompt>   Run one prompt and print the reply
-  chat <agent>           Talk to an agent, turn after turn (Ctrl-C cancels a turn; again to quit)
-  agents                 List the known agents and whether they are installed
-  check <agent>          Run the conformance checks against an agent (known quirks waived; --strict to not)
-  test <file...>         Run scenario files (--update snapshots, --junit <file>, --artifacts <dir>, --json)
-  trace <file>           Write an HTML viewer for a trace (--summary for text)
-
-<agent> is one of ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after -- (the prompt goes before it):
-  subspace run "hello" -- node my-agent.js
-
-Options for run:
-  --prompt <text>        A prompt (repeat for several, run in order in one session)
-  --prompts-file <file>  Prompts, one per line (blank lines and # comments skipped; - for stdin)
-  --stdin                Prompts from stdin, one per line
-  --expect-contains <t>  Exit 4 unless the session's text contains this (repeatable)
-  --expect-not-contains <t>  Exit 4 if it does (repeatable)
-  --expect-end <end>     Exit 4 unless every turn ended so: completed, refused, cancelled, limit, error
-  --expect-stop-reason <r>   Exit 4 unless every turn's stop reason is this
-  --timeout <seconds>    Cancel a turn that runs longer
-  --raw                  Print every JSON-RPC message to stderr (-> sent, <- received)
-
-Options for run and chat:
-  --env KEY=VALUE        An environment variable for the agent (repeatable)
-  --cwd <dir>            The agent's folder (default: here)
+const SESSION_OPTIONS = `  --cwd <dir>            The agent's folder (default: here)
   --mode <mode>          A session mode (default: the agent's ask-first mode); --mode none keeps its own
   --yes                  Allow everything the agent asks
   --read-only            Allow reads, refuse everything else
                          (default: allow reads, ask about the rest in the terminal)
-  --trace <file>         Record the connection
-  --json                 run: print the result as JSON
-  --quiet                No thoughts, tool lines or notices
+  --env KEY=VALUE        An environment variable for the agent (repeatable)
+  --trace <file>         Record the connection (view it with subspace trace)
+  --quiet                No thoughts, tool lines or notices`;
+
+const USAGE = `Usage: subspace <command> [options]
+
+Commands:
+  run <agent> <prompt>   Run prompts and print the replies; quick checks with --expect-*
+  chat <agent>           Talk to an agent, turn after turn (Ctrl-C cancels a turn; again to quit)
+  test <file...>         Run scenario files: expectations, snapshots, CI reports
+  check <agent>          Run the conformance checks against an agent
+  agents                 List the known agents and whether they are installed
+  trace <file>           Write an HTML viewer for a trace (--summary for text)
+  help [command]         This help, or a command's
+
+${AGENTS_NOTE}
+
+Run subspace <command> --help for its options. --version prints the version.
 `;
+
+const HELP: Record<string, string> = {
+  run: `Usage: subspace run <agent> [prompt] [options]
+
+Runs prompts in one session, rendering the turn as it streams. Exit codes: 0 every
+turn completed, 3 the agent stopped after a refusal, 130 cancelled or a limit, 4 an
+--expect-* check failed, 1 an error (the worst turn decides).
+
+Prompts:
+  --prompt <text>        A prompt (repeat for several, run in order)
+  --prompts-file <file>  Prompts, one per line (blank lines and # comments skipped; - for stdin)
+  --stdin                Prompts from stdin, one per line
+
+Checks:
+  --expect-contains <t>  Exit 4 unless the session's text contains this (repeatable)
+  --expect-not-contains <t>  Exit 4 if it does (repeatable)
+  --expect-end <end>     Exit 4 unless every turn ended so: completed, refused, cancelled, limit, error
+  --expect-stop-reason <r>   Exit 4 unless every turn's stop reason is this
+
+Output and limits:
+  --json                 Print the result (or results) as JSON instead of rendering
+  --raw                  Print every JSON-RPC message to stderr (-> sent, <- received)
+  --timeout <seconds>    Cancel a turn that runs longer
+
+Session:
+${SESSION_OPTIONS}
+
+${AGENTS_NOTE}
+
+Examples:
+  subspace run claude "Summarize README.md"
+  subspace run grok --prompt "My name is Ada." --prompt "What is my name?" --expect-contains Ada
+  subspace run "hello" --raw -- node my-agent.js
+`,
+  chat: `Usage: subspace chat <agent> [options]
+
+Talk to an agent, turn after turn. /exit (or Ctrl-D) quits; Ctrl-C cancels the running
+turn, and quits when nothing is running. Permission questions are asked inline.
+
+Session:
+${SESSION_OPTIONS}
+
+${AGENTS_NOTE}
+`,
+  test: `Usage: subspace test <file...> [options]
+
+Runs scenario files (JSON: one scenario, a list, or { "scenarios": [...] }; or modules
+exporting them). Each scenario runs in a fresh temporary workspace. Exits 1 if any failed.
+
+  --update               Write regression snapshots instead of comparing with them
+  --junit <file>         Also write JUnit XML (a test case per turn)
+  --artifacts <dir>      Where failure bundles go (default: the temp folder)
+  --json                 Print the reports as JSON
+
+The scenario format: the Testing page of the Subspace docs.
+`,
+  check: `Usage: subspace check <agent> [options]
+
+Runs the ACP conformance checks against an agent. Known quirks of real agents are
+waived (shown as WAIVE). Exits 1 if any check failed.
+
+  --only <ids>           Only these checks (comma-separated)
+  --mode <mode>          Switch each session to this mode first (default: the agent's ask-first mode)
+  --cwd <dir>            The agent's folder (default: a temporary one)
+  --strict               Do not waive known quirks
+
+${AGENTS_NOTE.replace('subspace run "hello" -- node my-agent.js', 'subspace check -- node my-agent.js')}
+`,
+  agents: `Usage: subspace agents
+
+Lists the known agents, what each one is, and whether its command is installed
+(logins are checked when an agent starts).
+`,
+  trace: `Usage: subspace trace <trace.jsonl> [options]
+
+Writes a standalone HTML viewer for a trace (from --trace, start({ trace }) or a
+scenario's failure bundle) and prints its path.
+
+  -o, --out <file>       Where to write the viewer (default: next to the trace)
+  --summary              Print a text summary instead
+  --title <text>         The page title
+`,
+};
+HELP.help = USAGE;
+
+/** The version, from this package's package.json. */
+function version(): string {
+  try {
+    return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }).version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 
 interface Parsed {
   command?: string;
@@ -338,6 +424,20 @@ async function testCommand(parsed: Parsed, io: Io): Promise<number> {
 
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
   const parsed = parse(argv);
+  if (parsed.flags.version || parsed.flags.v) {
+    io.out(`subspace ${version()}\n`);
+    return 0;
+  }
+  // subspace --help, subspace <command> --help, subspace help [command]
+  if (parsed.flags.help || parsed.flags.h || parsed.command === 'help') {
+    const topic = parsed.command === 'help' ? parsed.positional[0] : parsed.command;
+    if (topic && !HELP[topic]) {
+      io.err(`Unknown command "${topic}".\n\n${USAGE}`);
+      return 2;
+    }
+    io.out(topic ? HELP[topic]! : USAGE);
+    return 0;
+  }
   try {
     switch (parsed.command) {
       case 'run':
@@ -353,15 +453,16 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
       case 'trace':
         return await traceMain(argv.slice(1), io);
       case undefined:
-      case 'help':
-        io.out(USAGE);
-        return parsed.command ? 0 : 2;
+        // No command at all: the usage, as an error (a script called it wrong).
+        io.err(USAGE);
+        return 2;
       default:
         throw new UsageError(`Unknown command "${parsed.command}".`);
     }
   } catch (error) {
     if (error instanceof UsageError) {
-      io.err(`${error.message}\n\n${USAGE}`);
+      const help = parsed.command && HELP[parsed.command] ? `Run subspace ${parsed.command} --help for its options.` : USAGE;
+      io.err(`${error.message}\n\n${help}\n`);
       return 2;
     }
     io.err(`${error instanceof Error ? error.message : String(error)}\n`);

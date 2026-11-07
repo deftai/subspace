@@ -118,3 +118,26 @@ test('run: several prompts in one session, inline expectations (exit 4), --raw, 
   assert.match(raw.err, /^<- \{"jsonrpc":"2.0","method":"session\/update"/m);
   assert.equal((await cli('run', 'x', '--env', 'NOEQUALS', ...agent)).code, 2);
 });
+
+test('help: --help, -h and help exit 0; a command has its own help; --version; usage errors exit 2', async () => {
+  for (const argv of [['--help'], ['-h'], ['help']]) {
+    const r = await cli(...argv);
+    assert.equal(r.code, 0);
+    assert.match(r.out, /^Usage: subspace <command> \[options\]/);
+  }
+  for (const command of ['run', 'chat', 'test', 'check', 'agents', 'trace']) {
+    for (const argv of [[command, '--help'], ['help', command]]) {
+      const r = await cli(...argv);
+      assert.equal(r.code, 0, argv.join(' '));
+      assert.match(r.out, new RegExp(`^Usage: subspace ${command}`), argv.join(' '));
+    }
+  }
+  assert.match((await cli('run', '--help')).out, /--expect-contains/);
+  assert.match((await cli('--version')).out, /^subspace \d/);
+  const unknown = await cli('help', 'nope');
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.err, /Unknown command "nope"/);
+  const missing = await cli('run');
+  assert.equal(missing.code, 2);
+  assert.match(missing.err, /Run subspace run --help for its options/);
+});
