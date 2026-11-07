@@ -18,12 +18,13 @@ const files = readdirSync(dir).filter((f) => f.endsWith('.trace.jsonl')).sort();
 interface Meta {
   prompt: string;
   permissions: PermissionPolicy;
+  mode?: string;
   cancelAfterMs?: number;
   protocol: 1 | 2;
   expected: NormalizedTurn;
 }
 
-/** Replay one corpus trace the way it was recorded: same prompt and policy, cancel after the first message if it was. */
+/** Replay one corpus trace the way it was recorded: same mode, prompt and policy, cancel after the first message if it was. */
 async function replayCorpus(file: string) {
   const records = await loadTrace(join(dir, file));
   const meta = (records[0] as TraceHeader).meta as unknown as Meta;
@@ -31,6 +32,7 @@ async function replayCorpus(file: string) {
   const replay = replayAgent(agentEnd, records);
   const client = await AcpClient.connect(clientEnd, { permissions: meta.permissions });
   const session = await client.newSession({ cwd: '/workspace' });
+  if (meta.mode) await session.setMode(meta.mode);
   const turn = session.prompt(meta.prompt);
   for await (const event of turn) {
     if (event.type === 'message' && meta.cancelAfterMs !== undefined) void turn.cancel();
@@ -41,8 +43,9 @@ async function replayCorpus(file: string) {
   return { meta, result, protocol: client.protocol };
 }
 
-test('the corpus has the Grok traces', () => {
-  for (const name of ['grok-plain', 'grok-write-rejected', 'grok-cancel']) assert.ok(files.includes(`${name}.trace.jsonl`), name);
+test('the corpus has the Grok, Claude and Codex traces', () => {
+  for (const agent of ['grok', 'claude', 'codex'])
+    for (const name of [`${agent}-plain`, `${agent}-write-rejected`, `${agent}-cancel`]) assert.ok(files.includes(`${name}.trace.jsonl`), name);
 });
 
 for (const file of files) {
@@ -71,3 +74,24 @@ test('Grok plain turn: v1, end_turn, the exact text', async () => {
   assert.equal(protocol, 1);
   assert.deepEqual([result.stopReason, result.text], ['end_turn', 'SUBSPACE_OK']);
 });
+
+test('quirk: Codex, too, ends a turn whose write was rejected with stopReason "cancelled", and leaves the tool call pending', async () => {
+  const { result } = await replayCorpus('codex-write-rejected.trace.jsonl');
+  assert.equal(result.stopReason, 'cancelled');
+  assert.equal(result.cancelled, false, 'not cancelled from this side');
+  assert.deepEqual(result.toolCalls.map((c) => [c.kind, c.status]), [['edit', 'pending']]);
+});
+
+test('Claude ends a turn whose write was rejected normally, with the tool call failed', async () => {
+  const { result, protocol } = await replayCorpus('claude-write-rejected.trace.jsonl');
+  assert.equal(protocol, 2);
+  assert.equal(result.stopReason, 'end_turn');
+  assert.deepEqual(result.toolCalls.map((c) => [c.kind, c.status]), [['edit', 'failed']]);
+});
+
+for (const agent of ['claude', 'codex']) {
+  test(`${agent} confirms a cancel mid-stream; the turn is not forced`, async () => {
+    const { result } = await replayCorpus(`${agent}-cancel.trace.jsonl`);
+    assert.deepEqual([result.stopReason, result.cancelled, result.forced], ['cancelled', true, false]);
+  });
+}

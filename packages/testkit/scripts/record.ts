@@ -19,7 +19,7 @@
  */
 import { mkdtemp, realpath } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { normalizeTurn, redactKeys, replaceStrings } from '@deft-subspace/acp-testkit';
 import { recordAgent, saveTrace } from '@deft-subspace/acp-testkit/node';
 
@@ -36,6 +36,8 @@ const paths = replaceStrings([
   [await realpath(cwd), '/workspace'],
   [cwd, '/workspace'],
   [homedir(), '~'],
+  // Agents also name the workspace by its folder alone (Claude: "allow all edits in deft-testkit-XXXXXX/").
+  [basename(cwd), 'workspace'],
 ]);
 // Machine identity some agents send (Grok: in initialize's _meta).
 const identity = redactKeys(['hostname', 'agentId', 'agentInstanceId']);
