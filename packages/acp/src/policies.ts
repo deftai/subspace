@@ -122,5 +122,9 @@ export function firstOf(...rules: Array<PermissionRule | PermissionDecision>): P
   };
 }
 
-/** Reads, searches and fetches yes; everything else no. */
-export const readOnly: PermissionHandler = firstOf(allow({ kinds: READ_KINDS }), 'reject');
+/**
+ * Reads, searches and fetches yes; no opinion on the rest. On its own (as
+ * `onPermission`) the rest is rejected; first in `firstOf(readOnly, ask)` the
+ * rest goes on to `ask`.
+ */
+export const readOnly: PermissionRule = allow({ kinds: READ_KINDS });

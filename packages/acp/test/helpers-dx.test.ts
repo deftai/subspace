@@ -15,6 +15,7 @@ import {
   AcpClient,
   allow,
   allowInside,
+  decide,
   firstOf,
   readOnly,
   reject,
@@ -36,7 +37,16 @@ const signal = new AbortController().signal;
 
 test('permission rules: readOnly, allow/reject matches, allowInside, firstOf ordering and fallback', async () => {
   assert.equal(await readOnly(request({ kind: 'read' }), signal), 'allow');
-  assert.equal(await readOnly(request({ kind: 'edit' }), signal), 'reject');
+  // On its own, readOnly has no opinion on the rest, which rejects (decide() fails closed)...
+  assert.equal(await readOnly(request({ kind: 'edit' }), signal), undefined);
+  const offered = { ...request({ kind: 'edit' }), options: [{ optionId: 'yes', name: 'Yes', kind: 'allow_once' }, { optionId: 'no', name: 'No', kind: 'reject_once' }] } as PermissionRequest;
+  assert.deepEqual(await decide(readOnly, offered, signal), { outcome: 'selected', optionId: 'no', allowed: false });
+  // ...and first in a list, the rest goes on (this was a bug: firstOf(readOnly, ask) never asked).
+  let asked = 0;
+  const ask = () => (asked++, 'allow' as const);
+  assert.equal(await firstOf(readOnly, ask)(request({ kind: 'edit' }), signal), 'allow');
+  assert.equal(await firstOf(readOnly, ask)(request({ kind: 'read' }), signal), 'allow');
+  assert.equal(asked, 1);
 
   const policy = firstOf(
     reject({ commands: /rm -rf/ }),
@@ -123,4 +133,28 @@ test('start({ trace }) records the connection; errors say what to do next', asyn
     ),
     /needs a login\. Run `agent login`/
   );
+});
+
+test('a permission question waits until what the agent said before it has been handled', async () => {
+  const log: string[] = [];
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, {
+    name: 'order',
+    async prompt(turn) {
+      await turn.say('Found 2 logs.');
+      await turn.tool({ title: 'Delete them', kind: 'delete', ask: true }, () => 'x').catch(() => {});
+    },
+  });
+  const client = await AcpClient.connect(clientEnd, {
+    // A slow renderer: each piece of text takes a while to show.
+    onMessage: async (delta: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      log.push(`said ${delta}`);
+    },
+    onToolCall: (call: { title: string }) => void log.push(`tool ${call.title}`),
+    onPermission: (request) => (log.push(`asked ${request.title}`), 'reject'),
+  });
+  const session = await client.newSession({ cwd: '/w' });
+  await session.prompt('go').done;
+  assert.deepEqual(log.slice(0, 3), ['said Found 2 logs.', 'tool Delete them', 'asked Delete them']);
 });

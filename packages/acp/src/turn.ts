@@ -34,6 +34,9 @@ export class Turn implements AsyncIterable<TurnEvent> {
   /** Runs the turn's handlers; `done` waits for it. */
   private observer?: Promise<void>;
   private handlerFailed?: { error: unknown };
+  /** Events the observer has finished dispatching. */
+  private dispatched = 0;
+  private readonly progress = new Set<() => void>();
 
   /** @internal */
   constructor(id: string, onCancel: () => Promise<void>, view?: TurnView) {
@@ -123,7 +126,11 @@ export class Turn implements AsyncIterable<TurnEvent> {
     this.observer = (async () => {
       try {
         const text = new TextTracker();
-        for await (const event of this) await dispatch(event, handlers, text);
+        for await (const event of this) {
+          await dispatch(event, handlers, text);
+          this.dispatched++;
+          for (const notify of [...this.progress]) notify();
+        }
       } catch (error) {
         // The turn's own failure ends the loop too; only a handler's error is kept.
         if (this.finished?.ok !== false || this.finished.error !== error) {
@@ -132,6 +139,31 @@ export class Turn implements AsyncIterable<TurnEvent> {
         }
       }
     })();
+  }
+
+  /**
+   * @internal Wait until the handlers have run for every event so far (at most
+   * `maxMs`), so that a question to the user comes after what the agent said
+   * before asking it.
+   */
+  async caughtUp(maxMs = 1000): Promise<void> {
+    if (!this.observer || this.finished) return;
+    const target = this.events.length;
+    if (this.dispatched >= target) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, maxMs);
+      function done() {
+        clearTimeout(timer);
+        resolve();
+      }
+      const check = () => {
+        if (this.dispatched >= target || this.finished) {
+          this.progress.delete(check);
+          done();
+        }
+      };
+      this.progress.add(check);
+    });
   }
 
   private settle(complete: () => void): void {

@@ -383,7 +383,10 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
       void running.cancel();
       io.err('\n(cancelling; Ctrl-C again to quit)\n');
       running = undefined;
-    } else rl.close();
+    } else {
+      io.err('\n');
+      rl.close();
+    }
   });
   try {
     started = await start(startTarget(agent), { ...startOptions(parsed, io, onPermission), catalog: catalogOf(parsed), handleSignals: false });
@@ -411,18 +414,25 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
 /** A y / n / always question through an existing line reader. */
 function askVia(rl: Interface): PermissionHandler {
   const always = new Set<string>();
-  return (request) => {
+  return (request, signal) => {
     const kind = request.toolCall?.kind ?? 'other';
     if (always.has(kind)) return 'allow';
-    return new Promise((resolve) =>
-      rl.question(`? Allow ${request.title}? [y]es / [n]o / [a]lways for ${kind} tools: `, (answer) => {
+    return new Promise((resolve) => {
+      // A cancelled turn takes its question back, so the next line goes to the chat.
+      const onAbort = () => {
+        rl.write(null, { ctrl: true, name: 'u' }); // clear what was typed
+        resolve('cancelled');
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      rl.question(`? Allow ${request.title}? [y]es / [n]o / [a]lways for ${kind} tools: `, { signal }, (answer) => {
+        signal.removeEventListener('abort', onAbort);
         const a = answer.trim().toLowerCase();
         if (a === 'a' || a === 'always') {
           always.add(kind);
           resolve('allow_always');
         } else resolve(a === 'y' || a === 'yes' ? 'allow' : 'reject');
-      })
-    );
+      });
+    });
   };
 }
 

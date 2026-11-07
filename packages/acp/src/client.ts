@@ -1119,6 +1119,8 @@ export class Session {
     const projection = active.projection;
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
+    // What the agent said before asking is shown before the question.
+    await active.turn.caughtUp();
     const outcome = await decide(active.permissions ?? policy, request, combined);
     if ((outcome.outcome === 'cancelled' || !outcome.allowed) && !active.cancelController.signal.aborted) active.refused++;
     active?.turn.push({ type: 'permission', request, outcome });

@@ -29,11 +29,15 @@ export type PermissionDecision =
  */
 export type PermissionPolicy = 'allow' | 'reject' | PermissionHandler;
 
-/** Decide one request. `signal` fires if the turn is cancelled while you decide. */
+/**
+ * Decide one request. `signal` fires if the turn is cancelled while you decide.
+ * No decision (undefined) rejects, so a rule such as `readOnly` or
+ * `allow({...})` is also a handler, and can open a `firstOf()` list.
+ */
 export type PermissionHandler = (
   request: PermissionRequest,
   signal: AbortSignal
-) => PermissionDecision | Promise<PermissionDecision>;
+) => PermissionDecision | undefined | Promise<PermissionDecision | undefined>;
 
 const ALLOW = ['allow_once', 'allow_always'];
 
@@ -48,7 +52,7 @@ function pick(options: PermissionOption[], kinds: string[]): PermissionOption | 
 }
 
 /** Turn a decision into an outcome the agent accepts. Never selects an option the agent did not offer. */
-export function resolveDecision(decision: PermissionDecision, options: PermissionOption[]): PermissionOutcome {
+export function resolveDecision(decision: PermissionDecision | undefined, options: PermissionOption[]): PermissionOutcome {
   const selected = (option: PermissionOption | undefined): PermissionOutcome =>
     option ? { outcome: 'selected', optionId: option.optionId, allowed: isAllow(option) } : reject();
   const reject = (): PermissionOutcome => {
