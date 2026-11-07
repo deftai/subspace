@@ -48,4 +48,6 @@ For messages streamed one after another, which is what agents do, the concatenat
 
 ## Defaults for every turn
 
-The client option `handlers` (and flat handler options on `start()`) apply to every turn. A prompt's own handlers replace them one by one: a prompt with only `onMessage` keeps the default `onToolCall`.
+Handler options given when connecting apply to every turn: flat on `AcpClient.connect`, `connectSession` and `start()`, or under `handlers`. A prompt's own handlers replace them one by one: a prompt with only `onMessage` keeps the default `onToolCall`.
+
+An `onQuestion` given when connecting also tells the agent it may ask form questions, so you do not need a separate `elicitation` option.

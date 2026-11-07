@@ -15,9 +15,9 @@ serveAgent(agentEnd, {
   },
 });
 
+// Handler options on connect are defaults for every turn; a prompt's own replace them one by one.
 const client = await AcpClient.connect(clientEnd, {
-  // Defaults for every turn; a prompt's own handlers replace them one by one.
-  handlers: { onThought: (delta) => console.log(`(thinking) ${delta}`) },
+  onThought: (delta) => console.log(`(thinking) ${delta}`),
 });
 const session = await client.newSession({ cwd: process.cwd() });
 const result = await session.prompt('Are the tests passing?', {

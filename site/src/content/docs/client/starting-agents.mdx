@@ -37,6 +37,22 @@ Or pass `{ command, args, mode }` for any other agent. `AGENT_PRESETS` has the t
 
 `run(agent, prompt, options)` is `start()`, one `run()`, and `close()`. It takes the same options, plus `limits`.
 
+## A connection you already have
+
+`connectSession(channel, options)` is `start()` for any channel: a socket, a pipe, an in-process agent. It connects, opens a ready session (logging in once if needed, switching to `mode` if offered), and gives the same `run`, `prompt` and `close`. It needs a permission answer too, and `cwd` defaults to `process.cwd()` where there is one.
+
+```ts
+import { connectSession } from '@deft-subspace/acp';
+
+const { run, close } = await connectSession(channel, {
+  cwd: '/work',
+  onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject'),
+  onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
+});
+await run('What does this repo do?');
+await close();
+```
+
 ## Options
 
 Everything `connectAgent` takes (timeouts, `env`, `onStderr`, ...), plus `extraArgs` (after the preset's), `mode`, `session: { mcpServers, additionalDirectories }`, `files: false` to serve no files, and any [handler](../handlers/) as a default for every turn.

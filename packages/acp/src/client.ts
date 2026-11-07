@@ -102,7 +102,12 @@ export type ElicitationHandler = (
   signal: AbortSignal
 ) => ElicitationResponse | Promise<ElicitationResponse>;
 
-export interface ClientOptions {
+/**
+ * Connection options. Handler options (`onMessage`, `onToolCall`,
+ * `onPermission`, `onQuestion`, ...) may be given flat here, as defaults for
+ * every turn, or under `handlers`.
+ */
+export interface ClientOptions extends TurnHandlers {
   name?: string;
   version?: string;
   /** `'auto'` asks for v2 and accepts v1. Default `'auto'`. */
@@ -210,6 +215,13 @@ export class AcpClient {
 
   /** Connect over a channel of JSON-RPC messages (use `ndjson()` for bytes). */
   static async connect(channel: Channel<unknown>, options: ClientOptions = {}): Promise<AcpClient> {
+    // Flat handler options and `handlers` are one set of defaults for every turn.
+    const handlers = mergeHandlers(options.handlers, options);
+    options = { ...options, ...(handlers ? { handlers } : {}) };
+    // An onQuestion is no use unless the agent is told it may ask: advertise forms (others declined).
+    if (handlers?.onQuestion && !options.elicitation) {
+      options = { ...options, elicitation: () => ({ action: 'decline' }), elicitationModes: options.elicitationModes ?? ['form'] };
+    }
     const peer = new RpcPeer(channel, {
       name: options.name ?? 'acp-client',
       ...cancelRequest,

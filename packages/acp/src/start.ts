@@ -29,10 +29,11 @@
  * ask before writing and running, and a silent refusal surprises everyone.
  */
 import { Readable, Writable } from 'node:stream';
-import { ErrorCode, ndjson, RpcError, type RpcPeer } from '@deft-subspace/kernel';
+import { ndjson, type RpcPeer } from '@deft-subspace/kernel';
 import { serveAgent, type AgentOptions } from './agent.ts';
 import type { ElicitationHandler, PromptOptions, Session, SessionMcpServers } from './client.ts';
 import { mergeHandlers, type TurnHandlers } from './handlers.ts';
+import { openSession, requirePermissionAnswer } from './open.ts';
 import type { ContentBlock, TurnResult } from './model.ts';
 import type { PermissionPolicy } from './permissions.ts';
 import { connectAgent, type ConnectAgentOptions, type ConnectedAgent } from './node.ts';
@@ -113,12 +114,7 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
   const preset: Omit<AgentPreset, 'description'> = typeof agent === 'string' ? AGENT_PRESETS[agent] : agent;
   if (!preset) throw new TypeError(`Unknown agent "${String(agent)}". Known: ${Object.keys(AGENT_PRESETS).join(', ')}, or pass { command, args }.`);
   const handlers = mergeHandlers(options.handlers, options);
-  if (!options.permissions && !handlers?.onPermission) {
-    throw new TypeError(
-      "start() needs an answer for the agent's permission questions: pass onPermission: (request) => 'allow' or 'reject', " +
-        "or permissions: 'reject' to refuse everything ('allow' to allow everything)."
-    );
-  }
+  requirePermissionAnswer(options, 'start()');
   const cwd = options.cwd ?? process.cwd();
   const { extraArgs, mode: modeOption, session: sessionOptions, handleSignals, files, ...rest } = options;
   // Advertise form questions so a turn's onQuestion can answer them; decline otherwise.
@@ -137,22 +133,14 @@ export async function start(agent: AgentName | (Omit<AgentPreset, 'description'>
   let modeWarning: string | undefined;
 
   const open = async (extra: StartOptions['session'] = sessionOptions): Promise<Session> => {
-    const params = { cwd, ...(extra?.mcpServers ? { mcpServers: extra.mcpServers } : {}), ...(extra?.additionalDirectories ? { additionalDirectories: extra.additionalDirectories } : {}) };
-    let session: Session;
-    try {
-      session = await connected.client.newSession(params);
-    } catch (error) {
-      // Not logged in, and only one way to log in that the agent handles itself: use it, once.
-      const methods = connected.client.authMethods.filter((m) => m.type === 'agent');
-      if (!(RpcError.is(error) && error.code === ErrorCode.AuthRequired && methods.length === 1)) throw error;
-      await connected.client.authenticate(methods[0]!.id);
-      session = await connected.client.newSession(params);
-    }
-    if (mode) {
-      if (session.modes?.available.some((m) => m.id === mode)) await session.setMode(mode);
-      else modeWarning = `The agent offers no mode "${mode}" (offered: ${session.modes?.available.map((m) => m.id).join(', ') || 'none'}); it runs in its own.`;
-    }
-    return session;
+    const opened = await openSession(connected.client, {
+      cwd,
+      ...(extra?.mcpServers ? { mcpServers: extra.mcpServers } : {}),
+      ...(extra?.additionalDirectories ? { additionalDirectories: extra.additionalDirectories } : {}),
+      ...(mode ? { mode } : {}),
+    });
+    if (opened.modeWarning) modeWarning = opened.modeWarning;
+    return opened.session;
   };
 
   let session: Session;

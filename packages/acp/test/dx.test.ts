@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { channelPair } from '@deft-subspace/kernel';
-import { AcpClient, PermissionDenied, serveAgent, type TurnEvent } from '@deft-subspace/acp';
+import { AcpClient, connectSession, PermissionDenied, serveAgent, type TurnEvent } from '@deft-subspace/acp';
 import { run, start } from '@deft-subspace/acp/node';
 
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
@@ -209,4 +209,35 @@ test('streaming separator + delta reproduces result.text across messages (v1 and
     assert.deepEqual(firsts, [[0, true], [1, true], [1, false], [2, true]]);
     await client.close();
   }
+});
+
+test('connect: flat handler options are defaults for every turn; a flat onQuestion advertises form questions', async () => {
+  const log: string[] = [];
+  const client = await AcpClient.connect(pair(), {
+    onMessage: (delta) => void log.push(delta),
+    onPermission: () => 'allow',
+    onQuestion: () => ({ action: 'accept', content: { name: 'Grace' } }),
+  });
+  const session = await client.newSession({ cwd: '/w' });
+  assert.equal((await session.prompt('tool').done).text, 'Hello world (allowed)');
+  assert.equal((await session.prompt('question').done).text, 'Hello world Grace');
+  assert.deepEqual(log.slice(0, 3), ['Hello ', 'world', ' (allowed)']);
+  await client.close();
+});
+
+test('connectSession(): a ready session over any channel; needs a permission answer; closes everything', async () => {
+  await assert.rejects(connectSession(pair(), { cwd: '/w' }), /connectSession\(\) needs an answer/);
+  let streamed = '';
+  const connected = await connectSession(pair(), {
+    cwd: '/w',
+    mode: 'plan',
+    onPermission: () => 'reject',
+    onMessage: (delta, { separator }) => void (streamed += separator + delta),
+  });
+  assert.match(connected.modeWarning ?? '', /no mode "plan"/);
+  const result = await connected.run('tool');
+  assert.equal(result.text, 'Hello world (refused)');
+  assert.equal(streamed, result.text);
+  await connected.close();
+  await assert.rejects(connected.session.prompt('again').done);
 });
