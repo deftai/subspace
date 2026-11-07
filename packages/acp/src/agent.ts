@@ -249,7 +249,10 @@ class TurnWriter {
     signal: AbortSignal
   ): Promise<{ outcome: 'selected'; optionId: string; allowed: boolean } | { outcome: 'cancelled'; allowed: false }> {
     const options = request.options ?? DEFAULT_OPTIONS;
-    const toolCall = { toolCallId: request.toolCallId ?? `permission-${randomUUID().slice(0, 8)}`, title: request.title };
+    // An existing tool call is referred to by id only, so its own title stays.
+    const toolCall = request.toolCallId
+      ? { toolCallId: request.toolCallId }
+      : { toolCallId: `permission-${randomUUID().slice(0, 8)}`, title: request.title };
     const params =
       this.protocol === 2
         ? { sessionId: this.sessionId, title: request.title, subject: { type: 'tool_call', toolCall }, options }

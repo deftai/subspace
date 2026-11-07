@@ -8,6 +8,10 @@ import type { PermissionOption, PermissionOutcome, PermissionRequest } from './m
  * - `'allow_always'` / `'reject_always'`: prefer the always option.
  * - `{ optionId }`: exactly that option. It must be one the agent offered.
  * - `'cancelled'`: answer cancelled.
+ *
+ * Any other string is a rejection. (The type accepts any string because
+ * TypeScript widens literals returned from `async` functions; unknown values
+ * fail closed at run time instead.)
  */
 export type PermissionDecision =
   | 'allow'
@@ -15,17 +19,21 @@ export type PermissionDecision =
   | 'reject'
   | 'reject_always'
   | 'cancelled'
-  | { optionId: string };
+  | { optionId: string }
+  | (string & {});
 
 /**
  * A fixed answer, or a function deciding each request. Anything that goes
  * wrong while deciding (a throw, an unknown option id) becomes a rejection:
  * permissions fail closed.
  */
-export type PermissionPolicy =
-  | 'allow'
-  | 'reject'
-  | ((request: PermissionRequest, signal: AbortSignal) => PermissionDecision | Promise<PermissionDecision>);
+export type PermissionPolicy = 'allow' | 'reject' | PermissionHandler;
+
+/** Decide one request. `signal` fires if the turn is cancelled while you decide. */
+export type PermissionHandler = (
+  request: PermissionRequest,
+  signal: AbortSignal
+) => PermissionDecision | Promise<PermissionDecision>;
 
 const ALLOW = ['allow_once', 'allow_always'];
 
