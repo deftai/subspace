@@ -3,8 +3,9 @@
  *
  * v1 sends a tool call once (`tool_call`) and then partial updates; v2 sends
  * every change as an upsert (`tool_call_update`) plus appended content chunks.
- * v1 message ids are optional; when missing, text between two tool calls is
- * one message. Either way the app gets the same events.
+ * v1 message ids are optional; when missing, text between two pieces of
+ * content (a tool call, a plan, a terminal) is one message. Notices, usage,
+ * state and title updates do not split it. Either way the app gets the same events.
  */
 import type { BackgroundItem, PlanEntry, StopReason, ToolCall, TurnEvent } from './model.ts';
 import { Terminals } from './terminals.ts';
@@ -84,14 +85,17 @@ export class TurnProjection {
       case 'tool_call_content_chunk':
         return { events: this.toolChunk(update) };
       case 'plan':
+        this.lastKind = 'other';
         return { events: [{ type: 'plan', entries: (update.entries as PlanEntry[]) ?? [] }] };
       case 'plan_update': {
+        this.lastKind = 'other';
         const plan = update.plan;
         const entries = isRecord(plan) && Array.isArray(plan.entries) ? (plan.entries as PlanEntry[]) : [];
         return { events: [{ type: 'plan', entries }] };
       }
       case 'terminal_update':
       case 'terminal_output_chunk': {
+        this.lastKind = 'other';
         const applied = this.terminals.apply(update);
         if (!applied) return { events: [] };
         const { terminal, appended, replaced } = applied;
@@ -110,7 +114,7 @@ export class TurnProjection {
         return { events: [{ type: 'state', state, ...(background ? { background } : {}) }], state: change };
       }
       default:
-        this.lastKind = 'other';
+        // A notice (available commands, mode, config, vendor updates) is not content: it does not split a message.
         return { events: [{ type: 'update', sessionUpdate: kind, update }] };
     }
   }

@@ -16,12 +16,13 @@ const chunk = (sessionUpdate: string, text: string, messageId?: string) => ({ se
 const shape = (events: readonly TurnEvent[]) =>
   events.map((e) => ('delta' in e ? `${e.type} ${e.delta}` : e.type.endsWith('_end') && 'text' in e ? `${e.type} ${JSON.stringify(e.text)}${'complete' in e && !e.complete ? ' incomplete' : ''}` : e.type));
 
-test('a message ends when a tool call, other text or the end of the turn comes; usage and title updates do not end it', () => {
+test('a message ends when a tool call, other text or the end of the turn comes; usage, title updates and notices do not end it', () => {
   const { turn } = fed([
     chunk('agent_thought_chunk', 'Hmm.'),
     chunk('agent_message_chunk', 'Let me '),
     { sessionUpdate: 'usage_update', used: 1, size: 10 },
     { sessionUpdate: 'session_info_update', title: 'Looking' },
+    { sessionUpdate: 'available_commands_update', availableCommands: [] },
     chunk('agent_message_chunk', 'look.'),
     { sessionUpdate: 'tool_call', toolCallId: 'c', title: 'Read', status: 'pending' },
     chunk('agent_message_chunk', 'Done.'),
@@ -33,6 +34,7 @@ test('a message ends when a tool call, other text or the end of the turn comes; 
     'message Let me ',
     'usage',
     'session_info',
+    'update',
     'message look.',
     'message_end "Let me look."',
     'tool_call',
@@ -106,3 +108,20 @@ for (const protocol of [1, 2] as const) {
     await client.close();
   });
 }
+
+test('without message ids, a notice between chunks keeps one message; a plan or terminal splits it, like a tool call', () => {
+  const { turn, projection } = fed([
+    chunk('agent_message_chunk', 'Let me '),
+    { sessionUpdate: 'available_commands_update', availableCommands: [] },
+    { sessionUpdate: 'current_mode_update', currentModeId: 'plan' },
+    chunk('agent_message_chunk', 'look.'),
+    { sessionUpdate: 'plan', entries: [{ content: 'Look', status: 'pending' }] },
+    chunk('agent_message_chunk', 'Planned.'),
+  ]);
+  turn.finish(result());
+  assert.equal(projection.text, 'Let me look.\n\nPlanned.');
+  assert.deepEqual(
+    turn.history.flatMap((e) => (e.type === 'message_end' ? [e.text] : [])),
+    ['Let me look.', 'Planned.']
+  );
+});

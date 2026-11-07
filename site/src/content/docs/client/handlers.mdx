@@ -60,6 +60,7 @@ ACP has no "message finished" signal, so Subspace infers one. A message ends whe
 - `text` is the final text, even when a v2 agent rewrote the whole message instead of adding to it. A stream of deltas can't show a rewrite; the end can.
 - `complete` is false when the turn was cancelled, failed or stopped for any reason other than `end_turn` while the message was still open.
 - If an agent goes back to the same message after something else, it ends again, with the longer text. This is rare; agents usually start a new message.
+- Some v1 agents send no message ids. Subspace then treats the text between two pieces of content (a tool call, a plan, a terminal) as one message; notices in between don't split it.
 - History replayed by `loadSession` has no end events; group it by `messageId`.
 
 ## Defaults for every turn
