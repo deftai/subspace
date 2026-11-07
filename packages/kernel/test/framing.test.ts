@@ -84,3 +84,21 @@ test('encoder writes one line per value and escapes newlines inside strings', as
   for await (const chunk of writer) text += new TextDecoder().decode(chunk);
   assert.equal(text, '{"text":"a\\nb"}\n0\n');
 });
+
+test('encoder drops an unserializable value instead of breaking the stream', async () => {
+  const errors: unknown[] = [];
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  const out = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ a: 1 });
+      controller.enqueue(cycle);
+      controller.enqueue({ b: 2 });
+      controller.close();
+    },
+  }).pipeThrough(ndjsonEncoder({ onError: (e) => errors.push(e) }));
+  let text = '';
+  for await (const chunk of out) text += new TextDecoder().decode(chunk);
+  assert.equal(text, '{"a":1}\n{"b":2}\n');
+  assert.equal(errors.length, 1);
+});
