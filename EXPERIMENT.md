@@ -98,8 +98,12 @@ The operator ran this one.
 
 **Results:**
 - All 1220 Bridge tests pass, and `mcp-front`'s pass 10 runs out of 10.
-- The live check against Grok passes 8 of 8 through `bridge mcp`.
-- The Claude and Codex live checks start through `npx`, so the operator runs them.
+- The live check (`pnpm test:live`) passes 8 of 8 against each of the three real agents:
+  - Grok, run by us;
+  - Claude (`claude-agent-acp` 0.101.0, mode `default`), run by the operator;
+  - Codex (`codex-acp` 2.5.0, mode `read-only`), run by the operator.
+- The eight checks are: a plain reply, asking before a write, writing after approval, tool details in `get_output`, asking before a delete, a denied delete keeping the file, cancel, and the session being usable after cancel.
+- The live check doesn't report the protocol each agent used. Claude's adapter chose v2 in the direct run, so its mode was probably set through a v2 config option. Adding `protocol` to the session report would confirm it.
 
 **What Bridge needed added:**
 - session modes as one API over v1 modes and v2 config options;
@@ -150,7 +154,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
 
 ## Not done yet (next steps, if this direction holds)
 
-1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). Remaining: the Claude and Codex live runs, and Bridge's request handling on `serveAgent`.
+1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). Remaining: Bridge's request handling on `serveAgent`, and reporting the protocol in `bridge mcp`'s session report.
 2. **Agent side:**
    - `session/load` and `session/resume`;
    - several turns queued per session;
