@@ -68,6 +68,21 @@ export interface ToolCallHandle {
   detach(): Promise<void>;
 }
 
+/**
+ * Thrown by `turn.tool()` when the user refused a tool that asked first.
+ * A prompt handler that lets it escape ends the turn `end_turn`: the agent
+ * stopped because it was not allowed, which is not an error.
+ */
+export class PermissionDenied extends Error {
+  readonly title: string;
+
+  constructor(title: string) {
+    super(`Not allowed: ${title}`);
+    this.name = 'PermissionDenied';
+    this.title = title;
+  }
+}
+
 /** v2: a terminal the agent runs and shows the client (display only). */
 export interface TerminalDisplay {
   readonly id: string;
@@ -119,6 +134,16 @@ export interface AgentTurn {
   say(text: string): Promise<void>;
   think(text: string): Promise<void>;
   toolCall(init: ToolCallInit & { id?: string }): Promise<ToolCallHandle>;
+  /**
+   * Run a tool as one step: show the tool call, ask first if `ask` is set
+   * (`true`, or the question to ask), run `run`, and complete it with what
+   * `run` returns (a string becomes text content) or fail it if `run` throws.
+   * A refusal throws `PermissionDenied`; let it escape to end the turn.
+   *
+   *   const files = await turn.tool({ title: 'List files', kind: 'read' }, () => readdir(cwd));
+   *   await turn.tool({ title: 'Delete build/', kind: 'delete', ask: true }, () => rm('build', { recursive: true }));
+   */
+  tool<T>(init: string | (ToolCallInit & { id?: string; ask?: boolean | string }), run: (call: ToolCallHandle) => T | Promise<T>): Promise<T>;
   plan(entries: Array<{ content: string; priority?: string; status?: string }>): Promise<void>;
   /**
    * Send a tool call update you already have in ACP shape (e.g. from a model
@@ -408,12 +433,16 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
       try {
         stop = (await options.prompt(turn.api)) ?? 'end_turn';
       } catch (error) {
-        if (!signal.aborted) {
+        if (signal.aborted) {
+          stop = 'cancelled';
+        } else if (error instanceof PermissionDenied) {
+          // The agent stopped because the user said no: a normal end.
+          stop = 'end_turn';
+        } else {
           if (protocol === 1) throw error;
           await turn.idle('error', { message: error instanceof Error ? error.message : String(error) });
           return 'error';
         }
-        stop = 'cancelled';
       } finally {
         session.controller = undefined;
         release();
@@ -496,6 +525,7 @@ class TurnWriter {
       say: (t) => this.chunk('agent_message_chunk', t),
       think: (t) => this.chunk('agent_thought_chunk', t),
       toolCall: (init) => this.toolCall(init),
+      tool: (init, run) => this.tool(init, run),
       showTerminal: (init) => this.showTerminal(init),
       plan: (entries) =>
         this.update(
@@ -641,6 +671,33 @@ class TurnWriter {
         if (work && this.protocol === 2) await this.work!.detach(work);
       },
     };
+  }
+
+  private async tool<T>(
+    init: string | (ToolCallInit & { id?: string; ask?: boolean | string }),
+    run: (call: ToolCallHandle) => T | Promise<T>
+  ): Promise<T> {
+    const { ask, ...fields } = typeof init === 'string' ? { title: init, ask: undefined } : init;
+    const text = (t: string): ToolCallContent[] => [{ type: 'content', content: { type: 'text', text: t } } as ToolCallContent];
+    const call = await this.toolCall({ ...fields, status: ask ? 'pending' : 'in_progress' });
+    if (ask) {
+      const answer = await this.permission({ title: typeof ask === 'string' ? ask : fields.title, toolCallId: call.id }, this.signal);
+      if (!answer.allowed) {
+        await call.fail({ content: text(answer.outcome === 'cancelled' ? 'Cancelled' : 'Not allowed') });
+        throw new PermissionDenied(fields.title);
+      }
+      await call.update({ status: 'in_progress' });
+    }
+    try {
+      const result = await run(call);
+      await call.complete(typeof result === 'string' ? { content: text(result) } : result === undefined ? {} : { rawOutput: result });
+      return result;
+    } catch (error) {
+      // v1 has no cancelled status.
+      if (call.signal.aborted && this.protocol === 2) await call.cancelled();
+      else await call.fail({ content: text(error instanceof Error ? error.message : String(error)) });
+      throw error;
+    }
   }
 
   private async toolUpdate(id: string, fields: Record<string, unknown>): Promise<void> {

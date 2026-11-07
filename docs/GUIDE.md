@@ -42,6 +42,22 @@ To use the packages from another project before they are published, link them. p
 
 Run `pnpm run build` in Subspace after pulling, so the linked `dist/` is current. Inside the repo, tests and examples run the TypeScript sources directly: `node --conditions=source file.ts` (Node 22.19 or later).
 
+## The quick way
+
+```ts
+import { run, start } from '@deft-subspace/acp/node';
+
+// Start a known agent in its ask-first mode, in this folder, with a session ready.
+const agent = await start('claude', { onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject') });
+await agent.run('Summarize README.md', { onMessage: (delta) => process.stdout.write(delta) });
+await agent.close();
+
+// Or: start, one prompt, stop.
+const { text } = await run('codex', 'What does this repo do?', { permissions: 'reject' });
+```
+
+`start()` requires a permission answer. Handler options (`onMessage`, `onToolCall`, `onPermission`, `onQuestion`, `onEvent`, ...) work on any turn, also with `session.prompt()`. On the agent side, `serveStdio(options)` serves on stdio and `turn.tool(init, run)` runs a tool as one step. The rest of this guide is the model underneath.
+
 ## A first turn
 
 Start a real agent and send it a prompt:

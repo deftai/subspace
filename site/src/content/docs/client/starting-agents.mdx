@@ -1,0 +1,42 @@
+---
+title: Starting agents
+description: start() and run() - known agents, sensible defaults, and what they do for you.
+---
+
+import Example from '../../../components/Example.astro';
+import firstTurn from '../../../../../examples/first-turn.ts?raw';
+
+<Example file="first-turn.ts" ts={firstTurn} />
+
+## Known agents
+
+| Name | Starts | Mode it switches to |
+|---|---|---|
+| `claude` | `npx -y @agentclientprotocol/claude-agent-acp` | `default` (asks first) |
+| `codex` | `npx -y @agentclientprotocol/codex-acp` | `read-only` (asks first; acts once allowed) |
+| `grok` | `grok --permission-mode default agent stdio` | (asks first through its flag) |
+| `gemini` | `gemini --experimental-acp` | |
+| `opencode` | `opencode acp` | |
+
+Or pass `{ command, args, mode }` for any other agent. `AGENT_PRESETS` has the table. Adapters run through `npx`, so the first start may take a while to download them.
+
+## What `start()` does for you
+
+- **Asks-first modes.** In their starting modes Claude and Codex write and run without asking, so your permission answers would never be consulted. `start()` switches them; `mode` picks another, and `mode: false` keeps the agent's own. A mode the agent does not offer is a warning (`agent.modeWarning`), not a failure.
+- **One folder.** `cwd` (default `process.cwd()`) is the agent's working directory, the workspace its file requests are confined to, and the session's cwd.
+- **A session, ready.** `agent.session`, `agent.run(prompt, handlers)` and `agent.prompt(prompt, handlers)`; `agent.newSession()` opens more, in the same mode.
+- **Login when needed.** If opening the session fails because the agent needs a login and it offers exactly one method it handles itself, that method is used, once.
+- **Questions.** Form questions from the agent are advertised; a turn's `onQuestion` answers them, and without one they are declined.
+- **Clean exits.** Ctrl-C cancels the running turn and stops the agent's process group before exiting (`handleSignals: false` to opt out). `agent.close()`, or `await using agent = await start(...)` on Node 24 and later.
+
+## Permissions are required
+
+`start()` throws unless you say how to answer permission questions: `onPermission: (request) => ...`, or a fixed `permissions: 'allow'` or `'reject'`. Agents ask before writing files and running commands, and a silent refusal is the most confusing first experience there is.
+
+## `run()`
+
+`run(agent, prompt, options)` is `start()`, one `run()`, and `close()`. It takes the same options, plus `limits`.
+
+## Options
+
+Everything `connectAgent` takes (timeouts, `env`, `onStderr`, ...), plus `extraArgs` (after the preset's), `mode`, `session: { mcpServers, additionalDirectories }`, `files: false` to serve no files, and any [handler](../handlers/) as a default for every turn.

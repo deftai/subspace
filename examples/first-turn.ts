@@ -1,24 +1,20 @@
 /**
- * A first turn with a real agent: start it, open a session, stream the reply.
+ * A first turn with a real agent: start Claude (in its ask-first mode),
+ * stream the reply, decide its permission questions.
  * @typecheck-only (starts Claude's ACP adapter through npx)
  */
-import { connectAgent } from '@deft-subspace/acp/node';
+import { start } from '@deft-subspace/acp/node';
 
-const { client, close } = await connectAgent('npx', {
-  args: ['-y', '@agentclientprotocol/claude-agent-acp'],
-  cwd: process.cwd(),
-  workspace: process.cwd(), // serve the agent's file reads, confined here
+const agent = await start('claude', {
+  // Required: how to answer the agent's permission questions. Here: reads yes, everything else no.
+  onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject'),
 });
 try {
-  console.log(`${client.agent.name} speaks ACP v${client.protocol}`);
-  const session = await client.newSession({ cwd: process.cwd() });
-  const turn = session.prompt('Summarize README.md in one sentence.');
-  for await (const event of turn) {
-    if (event.type === 'message') process.stdout.write(event.delta);
-    if (event.type === 'tool_call') console.log(`\n[${event.toolCall.title}: ${event.toolCall.status}]`);
-  }
-  const result = await turn.done;
+  const result = await agent.run('Summarize README.md in one sentence.', {
+    onMessage: (delta) => process.stdout.write(delta),
+    onToolCall: (call, { created }) => created && console.log(`\n[${call.title}]`),
+  });
   console.log(`\n${result.stopReason}, ${result.toolCalls.length} tool call(s)`);
 } finally {
-  await close(); // closes the connection and stops the agent's process group
+  await agent.close(); // or: await using agent = await start(...)  (Node 24+)
 }

@@ -7,11 +7,13 @@ export {
   type ElicitationRequest,
   type ElicitationResponse,
   type FileHandlers,
+  type PromptOptions,
   type SessionLocator,
   type SessionMcpServers,
   type TerminalHandlers,
 } from './client.ts';
 export {
+  PermissionDenied,
   serveAgent,
   type AgentOptions,
   type AgentTurn,
@@ -23,6 +25,7 @@ export {
   type ToolCallInit,
 } from './agent.ts';
 export { Turn } from './turn.ts';
+export { type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';
 export {
   extensionNotification,

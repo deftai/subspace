@@ -10,6 +10,7 @@
  * either way (`client.protocol` says which one is in use).
  */
 import { validateElicitation } from './elicitation.ts';
+import { mergeHandlers, observes, type TurnHandlers } from './handlers.ts';
 import {
   cancelRequest,
   LocalError,
@@ -134,6 +135,8 @@ export interface ClientOptions {
   };
   /** Limits for every turn, unless a prompt sets its own. Default: none. */
   limits?: TurnLimits;
+  /** Handlers for every turn (see `TurnHandlers`); a prompt's own replace them one by one. */
+  handlers?: TurnHandlers;
   /** Queue a prompt sent while a turn is running, instead of throwing. Per prompt: `{ queue }`. Default false. */
   queuePrompts?: boolean;
   /** Handlers for the agent's vendor extension methods (see `extensionRequest`, `handle`). */
@@ -146,6 +149,9 @@ export interface ClientOptions {
 }
 
 /** Which existing session to open, and where. */
+/** Options for one prompt: limits, queueing, and handlers for this turn. */
+export type PromptOptions = { limits?: TurnLimits; queue?: boolean } & TurnHandlers;
+
 /** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
 export type SessionMcpServers = ReadonlyArray<McpServer | McpRegistration>;
 
@@ -264,7 +270,9 @@ export class AcpClient {
         };
         if (!(options.elicitationModes ?? ['form', 'url']).includes(request.mode as 'form')) return { action: 'decline' };
         try {
-          const answer = await handler(request, context.signal);
+          // The running turn's onQuestion, if it has one, else the client's.
+          const perTurn = request.sessionId ? client?.questionHandlerFor(request.sessionId) : undefined;
+          const answer = await (perTurn ?? handler)(request, context.signal);
           if (answer?.action === 'accept') {
             // A form answer must fit the form; one that does not is not sent.
             if (request.mode === 'form' && validateElicitation(request.requestedSchema, answer.content).length) return { action: 'decline' };
@@ -497,6 +505,17 @@ export class AcpClient {
   }
 
   /** @internal */
+  /** @internal */
+  get defaultHandlers(): TurnHandlers | undefined {
+    return this.options.handlers;
+  }
+
+  /** @internal The running turn's question handler in a session, if any. */
+  questionHandlerFor(sessionId: string): ElicitationHandler | undefined {
+    return this.sessions.get(sessionId)?.questionHandler;
+  }
+
+  /** @internal */
   get defaultLimits(): TurnLimits | undefined {
     return this.options.limits;
   }
@@ -524,13 +543,16 @@ export class AcpClient {
     const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
     const session = this.sessions.get(sessionId);
     if (!session) throw RpcError.notFound(`Unknown session ${sessionId}`);
-    return session.permission(params, signal, this.options.permissions ?? 'reject');
+    return session.permission(params, signal, this.options.handlers?.onPermission ?? this.options.permissions ?? 'reject');
   }
 }
 
 interface ActiveTurn {
   turn: Turn;
   projection: TurnProjection;
+  /** This turn's own answers (prompt handlers), over the client's. */
+  permissions?: PermissionPolicy;
+  question?: ElicitationHandler;
   promptAnswered: boolean;
   idle?: { stopReason: string; error?: unknown };
   cancelController: AbortController;
@@ -766,7 +788,12 @@ export class Session {
    * Content the agent cannot take (an image it did not offer to accept, for
    * example) throws a `CapabilityError`.
    */
-  prompt(input: string | ContentBlock | ContentBlock[], options: { limits?: TurnLimits; queue?: boolean } = {}): Turn {
+  /**
+   * Send a prompt. Iterate the turn for its events, or pass handlers
+   * (`onMessage`, `onToolCall`, `onPermission`, ...; see `TurnHandlers`):
+   * `turn.done` then settles after they ran.
+   */
+  prompt(input: string | ContentBlock | ContentBlock[], options: PromptOptions = {}): Turn {
     const blocks: ContentBlock[] =
       typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
     this.checkContent(blocks);
@@ -788,9 +815,18 @@ export class Session {
       text: () => projection.text,
       toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
     });
+    const handlers = mergeHandlers(this.client.defaultHandlers, options);
+    if (handlers?.onPermission) active.permissions = handlers.onPermission;
+    if (handlers?.onQuestion) active.question = handlers.onQuestion;
+    if (observes(handlers)) active.turn.observe(handlers!);
     if (this.active) this.queued.push({ active, blocks });
     else this.begin(active, blocks);
     return active.turn;
+  }
+
+  /** @internal The running turn's onQuestion. */
+  get questionHandler(): ElicitationHandler | undefined {
+    return this.active?.question;
   }
 
   /** Prompts waiting to start. */
@@ -979,7 +1015,7 @@ export class Session {
     const projection = active.projection;
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
-    const outcome = await decide(policy, request, combined);
+    const outcome = await decide(active.permissions ?? policy, request, combined);
     if ((outcome.outcome === 'cancelled' || !outcome.allowed) && !active.cancelController.signal.aborted) active.refused++;
     active?.turn.push({ type: 'permission', request, outcome });
     if (outcome.outcome === 'cancelled') return { outcome: { outcome: 'cancelled' } };

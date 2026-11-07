@@ -10,6 +10,7 @@
  * - `cancel()` tells the agent, answers its open permission questions with
  *   `cancelled`, and ends the turn if the agent does not confirm in time.
  */
+import { dispatch, type TurnHandlers } from './handlers.ts';
 import type { ToolCall, TurnEvent, TurnResult } from './model.ts';
 
 /** @internal What the turn knows so far, for `text` and `toolCalls`. */
@@ -30,6 +31,9 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private readonly onCancel: () => Promise<void>;
   private readonly view?: TurnView;
   private cancelling?: Promise<void>;
+  /** Runs the turn's handlers; `done` waits for it. */
+  private observer?: Promise<void>;
+  private handlerFailed?: { error: unknown };
 
   /** @internal */
   constructor(id: string, onCancel: () => Promise<void>, view?: TurnView) {
@@ -98,7 +102,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
     if (this.finished) return;
     this.finished = { ok: true, result };
     this.wake();
-    this.resolveDone(result);
+    this.settle(() => this.resolveDone(result));
   }
 
   /** @internal */
@@ -106,7 +110,32 @@ export class Turn implements AsyncIterable<TurnEvent> {
     if (this.finished) return;
     this.finished = { ok: false, error };
     this.wake();
-    this.rejectDone(error);
+    this.settle(() => this.rejectDone(error));
+  }
+
+  /**
+   * @internal Run `handlers` for every event, in order, one at a time. `done`
+   * settles after the last one ran; a handler that throws cancels the turn,
+   * and `done` rejects with its error.
+   */
+  observe(handlers: TurnHandlers): void {
+    if (this.observer) return;
+    this.observer = (async () => {
+      try {
+        for await (const event of this) await dispatch(event, handlers);
+      } catch (error) {
+        // The turn's own failure ends the loop too; only a handler's error is kept.
+        if (this.finished?.ok !== false || this.finished.error !== error) {
+          this.handlerFailed = { error };
+          void this.cancel();
+        }
+      }
+    })();
+  }
+
+  private settle(complete: () => void): void {
+    if (!this.observer) return complete();
+    void this.observer.then(() => (this.handlerFailed ? this.rejectDone(this.handlerFailed.error) : complete()));
   }
 
   private wake(): void {

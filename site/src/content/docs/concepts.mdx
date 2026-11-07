@@ -5,6 +5,10 @@ description: Connections, sessions, turns, events and results, and how one model
 
 ACP connects a **client** (an editor, a terminal, an orchestrator) to an **agent** (a coding agent) over JSON-RPC, usually on the agent's stdio. Subspace gives each side a small model of it.
 
+## Three layers
+
+`start()` and `run()` start known agents with sensible defaults; handler options run on any turn; underneath is the model below, for full control. See [Getting started](../getting-started/).
+
 ## The client side
 
 - **`AcpClient`**: one connection. It sends `initialize`, records what the agent offers in `client.supports` (one shape for v1 and v2), and answers the agent's requests: permission questions, elicitation, files and terminals (v1), and MCP-over-ACP.

@@ -41,7 +41,7 @@ export default defineConfig({
         { label: 'Start', items: ['getting-started', 'concepts'] },
         {
           label: 'Clients',
-          items: ['client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
+          items: ['client/starting-agents', 'client/handlers', 'client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
         },
         { label: 'Agents', items: ['agents/writing-an-agent', 'agents/extensions'] },
         { label: 'MCP', items: ['mcp/servers', 'mcp/over-acp'] },

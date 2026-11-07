@@ -8,7 +8,9 @@ import agent from '../../../../../examples/agent-stdio.ts?raw';
 
 <Example file="agent-stdio.ts" ts={agent} />
 
-`serveAgent` answers `initialize`, `session/new`, `session/prompt`, `session/cancel` and `session/close`, and calls your `prompt` handler once per turn. Return a stop reason (default `end_turn`), or `'cancelled'` once `turn.signal` fires.
+`serveStdio(options)` (from `./node`) serves the agent on stdin and stdout, and sends `console.log` to stderr so a stray log line cannot corrupt the protocol. Use `serveAgent(channel, options)` for any other channel.
+
+The library answers `initialize`, `session/new`, `session/prompt`, `session/cancel` and `session/close`, and calls your `prompt` handler once per turn. Return a stop reason (default `end_turn`), or `'cancelled'` once `turn.signal` fires.
 
 ## What the library does for you
 
@@ -22,7 +24,8 @@ import agent from '../../../../../examples/agent-stdio.ts?raw';
 | Call | Does |
 |---|---|
 | `say(text)`, `think(text)` | Stream agent text, or thoughts. |
-| `toolCall({ title, kind, status, rawInput })` | Show a tool call; the handle has `update`, `complete`, `fail`, `cancelled`, and `signal`. |
+| `tool(init, run)` | One step: show the tool call, ask first if `ask` is set, run `run`, complete it with the result (a string becomes text) or fail it if `run` throws. A refusal throws `PermissionDenied`; let it escape and the turn ends normally. |
+| `toolCall({ title, kind, status, rawInput })` | Show a tool call yourself; the handle has `update`, `complete`, `fail`, `cancelled`, `detach` and `signal`. |
 | `requestPermission({ title, toolCallId })` | Ask the user; `allowed` is false for rejections and when the turn was cancelled. |
 | `elicit({ message, requestedSchema })` | Ask the user a question through the client. |
 | `plan(entries)` | Show a plan. |

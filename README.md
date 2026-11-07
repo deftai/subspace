@@ -10,19 +10,17 @@ A TypeScript library for the [Agent Client Protocol](https://agentclientprotocol
 - **Tested against real agents:** Grok Build, the Claude and Codex ACP adapters, and agents and clients built with the official `@agentclientprotocol/sdk`.
 
 ```ts
-import { connectAgent } from '@deft-subspace/acp/node';
+import { start } from '@deft-subspace/acp/node';
 
-const { client, close } = await connectAgent('npx', {
-  args: ['-y', '@agentclientprotocol/claude-agent-acp'],
-  cwd: process.cwd(),
-  workspace: process.cwd(),
-});
-const session = await client.newSession({ cwd: process.cwd() });
-for await (const event of session.prompt('What does this repo do?')) {
-  if (event.type === 'message') process.stdout.write(event.delta);
+const agent = await start('claude', { onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject') });
+try {
+  await agent.run('What does this repo do?', { onMessage: (delta) => process.stdout.write(delta) });
+} finally {
+  await agent.close();
 }
-await close();
 ```
+
+Or in one line: `await run('codex', 'What does this repo do?', { permissions: 'reject' })`. Underneath are `AcpClient`, `Session` and `Turn` (async-iterable events and an awaitable result) for full control, and `serveAgent` / `serveStdio` for writing agents.
 
 ## Packages
 

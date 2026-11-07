@@ -1,0 +1,41 @@
+---
+title: Handlers
+description: Handler options on any turn - callbacks per event kind instead of a for-await loop.
+---
+
+import Example from '../../../components/Example.astro';
+import handlers from '../../../../../examples/handlers.ts?raw';
+
+Every turn takes handler options. They work with `start()`, and with `session.prompt()` on any client:
+
+<Example file="handlers.ts" ts={handlers} />
+
+## How they run
+
+- In event order, one at a time. An async handler is awaited before the next event.
+- `turn.done` settles after every handler has run, so `await prompt(...).done` means the turn is over and you have seen all of it.
+- A handler that throws cancels the turn, and `done` rejects with its error.
+- Handlers and `for await` mix: the turn is still async-iterable.
+
+## The handlers
+
+| Handler | Called with |
+|---|---|
+| `onMessage`, `onThought`, `onUserMessage` | `(delta, text, event)`: what is new, and the whole message so far |
+| `onToolCall` | `(toolCall, { created }, event)`: a snapshot, each time it changes |
+| `onPlan` | `(entries, event)` |
+| `onUsage` | `({ used, size, cost }, event)` |
+| `onTerminal` | `(event)`: an agent terminal changed (v2) |
+| `onState` | `(state, background, event)` (v2) |
+| `onPermissionAnswered` | `(event)`: a permission question was answered |
+| `onLimit` | `(event)`: a turn limit fired |
+| `onEvent` | `(event)`: every event, after its own handler |
+
+Two handlers answer rather than observe:
+
+- `onPermission(request, signal)` answers this turn's permission questions, in place of the client's `permissions`.
+- `onQuestion(request, signal)` answers this turn's questions to the user, in place of the client's `elicitation`. The client must advertise elicitation: `start()` does; with `AcpClient.connect`, pass an `elicitation` option.
+
+## Defaults for every turn
+
+The client option `handlers` (and flat handler options on `start()`) apply to every turn. A prompt's own handlers replace them one by one: a prompt with only `onMessage` keeps the default `onToolCall`.

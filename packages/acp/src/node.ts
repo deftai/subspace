@@ -235,3 +235,5 @@ export function workspaceTerminals(
     },
   };
 }
+
+export { AGENT_PRESETS, run, serveStdio, start, type AgentName, type AgentPreset, type StartedAgent, type StartOptions } from './start.ts';
