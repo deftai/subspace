@@ -3,6 +3,7 @@ export { systemClock, type Clock } from './clock.ts';
 export { ErrorCode, LocalError, RpcError, type LocalErrorKind } from './errors.ts';
 export { ndjson, ndjsonDecoder, ndjsonEncoder, type FramingDiagnostic, type NdjsonOptions } from './framing.ts';
 export {
+  cancelRequest,
   RpcPeer,
   type Call,
   type CloseInfo,

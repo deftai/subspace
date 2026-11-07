@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  cancelRequest,
   channelPair,
   ErrorCode,
   LocalError,
@@ -12,10 +13,6 @@ import {
 } from '@deft-subspace/kernel';
 import { manualClock, tick } from '@deft-subspace/kernel/testing';
 
-const cancelRequest = {
-  cancelOutbound: { method: '$/cancel_request', params: (requestId: unknown) => ({ requestId }) },
-  cancelInbound: { method: '$/cancel_request', id: (p: { requestId?: string | number }) => p?.requestId },
-} satisfies RpcPeerOptions;
 
 function pair(a: RpcPeerOptions = {}, b: RpcPeerOptions = {}) {
   const [left, right] = channelPair<unknown>();

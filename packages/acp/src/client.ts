@@ -10,6 +10,7 @@
  * either way (`client.protocol` says which one is in use).
  */
 import {
+  cancelRequest,
   LocalError,
   RpcError,
   RpcPeer,
@@ -57,8 +58,6 @@ export interface AgentInfo {
   version?: string;
 }
 
-const CANCEL_REQUEST = '$/cancel_request';
-
 export class AcpClient {
   readonly peer: RpcPeer;
   readonly protocol: ProtocolVersion;
@@ -95,8 +94,7 @@ export class AcpClient {
   static async connect(channel: Channel<unknown>, options: ClientOptions = {}): Promise<AcpClient> {
     const peer = new RpcPeer(channel, {
       name: options.name ?? 'acp-client',
-      cancelOutbound: { method: CANCEL_REQUEST, params: (requestId) => ({ requestId }) },
-      cancelInbound: { method: CANCEL_REQUEST, id: (p: { requestId?: string | number }) => p?.requestId },
+      ...cancelRequest,
       tap: options.tap,
       onDiagnostic: options.onDiagnostic,
     });
@@ -105,7 +103,7 @@ export class AcpClient {
     peer.onNotification('session/update', (params: { sessionId?: string; update?: unknown }) => {
       client?.routeUpdate(params);
     });
-    peer.onRequest('session/request_permission', (params, context) => {
+    peer.onRequest<Record<string, unknown>>('session/request_permission', (params, context) => {
       if (!client) throw RpcError.internal('Not initialized');
       return client.handlePermission(params, context.signal);
     });
