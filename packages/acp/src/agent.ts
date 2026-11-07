@@ -32,6 +32,8 @@ import {
   type ExtensionNotification,
   type ExtensionRequest,
 } from './extensions.ts';
+import { McpCaller, type McpServerClient } from './mcp-caller.ts';
+import { parseMcpServers, type McpServer } from './mcp.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
 
 export interface ToolCallInit {
@@ -60,6 +62,14 @@ export interface AgentTurn {
   readonly clientCapabilities: Record<string, unknown>;
   /** The same, as one shape for v1 and v2. */
   readonly clientSupports: ClientSupport;
+  /** The session's MCP servers, typed (from session/new, load or resume). */
+  readonly mcpServers: readonly McpServer[];
+  /**
+   * A server the client serves over this connection (`acp` in `mcpServers`),
+   * by name: `listTools()`, `callTool()`, `request()`. Calls are cancelled
+   * with the turn. Throws if the session has no `acp` server of that name.
+   */
+  mcp(name: string): McpServerClient;
   /** Read a file through the client (v1 `fs/read_text_file`). Throws a `CapabilityError` if it offers none. */
   readFile(path: string, options?: { line?: number; limit?: number }): Promise<string>;
   /** Write a file through the client (v1 `fs/write_text_file`). Throws a `CapabilityError` if it offers none. */
@@ -136,9 +146,18 @@ export interface AgentOptions {
   protocols?: ProtocolVersion[];
   /** Extra fields for initialize's capabilities (v1 `agentCapabilities`, v2 `capabilities`). */
   capabilities?: Record<string, unknown>;
+  /**
+   * MCP server transports to advertise. `acp` (servers the client serves over
+   * this connection) is handled here: use `turn.mcp(name)`. For the others the
+   * agent connects itself. v1 always takes stdio. Default: none (v1: stdio).
+   */
+  mcpTransports?: Array<'stdio' | 'http' | 'sse' | 'acp'>;
   newSession?(request: {
     cwd: string;
+    /** As sent. */
     mcpServers: unknown[];
+    /** The same, typed; entries of unknown transports left out. */
+    servers: McpServer[];
     /** session/new's params as sent. */
     params: Record<string, unknown>;
   }): Promise<{ sessionId?: string } | void> | { sessionId?: string } | void;
@@ -156,6 +175,7 @@ export interface AgentOptions {
     sessionId: string;
     cwd: string;
     mcpServers: unknown[];
+    servers: McpServer[];
     params: Record<string, unknown>;
     replay?: ReplayWriter;
   }): Promise<void | Record<string, unknown>> | void | Record<string, unknown>;
@@ -182,9 +202,16 @@ interface AgentSession {
   waiting: Set<AbortController>;
   /** Settles when the last queued turn ends. */
   tail: Promise<void>;
+  servers: McpServer[];
 }
 
-const newSession = (id: string): AgentSession => ({ id, waiting: new Set(), tail: Promise.resolve() });
+const newSession = (id: string, servers: McpServer[] = []): AgentSession => ({ id, waiting: new Set(), tail: Promise.resolve(), servers });
+
+/** initialize's MCP capability, in each protocol's spelling. */
+function mcpCapabilities(protocol: ProtocolVersion, transports: AgentOptions['mcpTransports'] = []): Record<string, unknown> {
+  if (protocol === 2) return Object.fromEntries(transports.filter((t) => t !== 'sse').map((t) => [t, {}]));
+  return Object.fromEntries(transports.filter((t) => t !== 'stdio').map((t) => [t, true]));
+}
 
 export function serveAgent(channel: Channel<unknown>, options: AgentOptions): RpcPeer {
   const accepted = options.protocols ?? [1, 2];
@@ -197,6 +224,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     ...options.peer,
     ...cancelRequest,
   });
+  const mcpCaller = new McpCaller(peer, { name: options.name, version: options.version ?? '0.0.0' });
 
   peer.onRequest('initialize', (params: { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown }) => {
     const asked = Number(params?.protocolVersion);
@@ -205,18 +233,24 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
     clientCapabilities = caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {};
     const info = { name: options.name, version: options.version ?? '0.0.0' };
-    return protocol === 2
-      ? { protocolVersion: 2, info, capabilities: { ...options.capabilities }, authMethods: [] }
-      : {
-          protocolVersion: 1,
-          agentInfo: info,
-          agentCapabilities: {
-            loadSession: !!options.loadSession,
-            sessionCapabilities: { close: {}, ...(options.loadSession ? { resume: {} } : {}) },
-            ...options.capabilities,
-          },
-          authMethods: [],
-        };
+    const mcp = mcpCapabilities(protocol, options.mcpTransports);
+    const extra = options.capabilities ?? {};
+    if (protocol === 2) {
+      const session = { ...((extra.session as Record<string, unknown> | undefined) ?? {}) };
+      if (Object.keys(mcp).length) session.mcp = { ...mcp, ...((session.mcp as Record<string, unknown> | undefined) ?? {}) };
+      return { protocolVersion: 2, info, capabilities: { ...extra, ...(Object.keys(session).length ? { session } : {}) }, authMethods: [] };
+    }
+    return {
+      protocolVersion: 1,
+      agentInfo: info,
+      agentCapabilities: {
+        loadSession: !!options.loadSession,
+        sessionCapabilities: { close: {}, ...(options.loadSession ? { resume: {} } : {}) },
+        ...(Object.keys(mcp).length ? { mcpCapabilities: mcp } : {}),
+        ...extra,
+      },
+      authMethods: [],
+    };
   });
 
   for (const [method, handler] of Object.entries(options.methods ?? {})) peer.onRequest(method, handler);
@@ -224,9 +258,11 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
 
   peer.onRequest('session/new', async (params: { cwd?: string; mcpServers?: unknown[] } & Record<string, unknown>) => {
     if (typeof params?.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
-    const created = await options.newSession?.({ cwd: params.cwd, mcpServers: params.mcpServers ?? [], params });
+    const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
+    const { servers } = parseMcpServers(mcpServers);
+    const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
     const id = (created && created.sessionId) || randomUUID();
-    sessions.set(id, newSession(id));
+    sessions.set(id, newSession(id, servers));
     return { sessionId: id };
   });
 
@@ -237,16 +273,21 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
       if (typeof params.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
       const id = params.sessionId;
       const writer = replay
-        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities).api
+        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller).api
         : undefined;
+      const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
+      const { servers } = parseMcpServers(mcpServers);
       const result = await load({
         sessionId: id,
         cwd: params.cwd,
-        mcpServers: Array.isArray(params.mcpServers) ? params.mcpServers : [],
+        mcpServers,
+        servers,
         params,
         ...(writer ? { replay: writer } : {}),
       });
-      if (!sessions.has(id)) sessions.set(id, newSession(id));
+      const existing = sessions.get(id);
+      if (existing) existing.servers = servers;
+      else sessions.set(id, newSession(id, servers));
       return result ?? {};
     };
     peer.onRequest<Record<string, unknown>>('session/load', (params) => open(params, true));
@@ -279,7 +320,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, peer.signal]);
-    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities);
+    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller);
     // Wait for the turn ahead (if any), in order.
     const ahead = session.tail;
     let release!: () => void;
@@ -350,7 +391,9 @@ class TurnWriter {
     protocol: ProtocolVersion,
     prompt: ContentBlock[],
     signal: AbortSignal,
-    clientCapabilities: Record<string, unknown>
+    clientCapabilities: Record<string, unknown>,
+    servers: McpServer[],
+    mcpCaller: McpCaller
   ) {
     this.peer = peer;
     this.sessionId = sessionId;
@@ -365,6 +408,15 @@ class TurnWriter {
       protocol,
       clientCapabilities,
       clientSupports: supports,
+      mcpServers: servers,
+      mcp: (name) => {
+        const server = servers.find((s): s is McpServer & { type: 'acp' } => s.type === 'acp' && s.name === name);
+        if (!server) {
+          const offered = servers.filter((s) => s.type === 'acp').map((s) => s.name);
+          throw new Error(`The session has no acp MCP server "${name}" (acp servers: ${offered.join(', ') || 'none'})`);
+        }
+        return mcpCaller.server(server, { signal });
+      },
       prompt,
       text,
       signal,

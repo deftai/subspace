@@ -42,6 +42,7 @@ export {
   MCP_PROTOCOL_VERSION,
   McpBindingError,
   mcpServersParam,
+  parseMcpServers,
   type McpOperationContext,
   type McpOutcome,
   type McpRegistration,
@@ -49,6 +50,7 @@ export {
   type McpServer,
   type ServeMcpOptions,
 } from './mcp.ts';
+export { McpError, type McpCallOptions, type McpServerClient, type McpTool } from './mcp-caller.ts';
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
 export { configOptionsFrom, type ConfigChoice, type ConfigOption } from './config.ts';
 export type {

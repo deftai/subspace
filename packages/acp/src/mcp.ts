@@ -255,3 +255,39 @@ export class McpProvider {
     return outcome;
   }
 }
+
+const record = (list: unknown): Record<string, string> => {
+  // v1 and v2 send name/value lists; accept a plain object too.
+  if (Array.isArray(list)) {
+    return Object.fromEntries(list.filter(isRecord).filter((e) => typeof e.name === 'string').map((e) => [e.name as string, String(e.value ?? '')]));
+  }
+  return isRecord(list) ? Object.fromEntries(Object.entries(list).map(([k, v]) => [k, String(v)])) : {};
+};
+
+/**
+ * The agent side of `mcpServersParam`: a session's `mcpServers` as sent (v1
+ * or v2), typed. Entries of a transport this side does not know, or missing
+ * required fields, are left out and returned in `unknown`.
+ */
+export function parseMcpServers(raw: unknown): { servers: McpServer[]; unknown: unknown[] } {
+  const servers: McpServer[] = [];
+  const unknown: unknown[] = [];
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (!isRecord(entry) || typeof entry.name !== 'string') {
+      unknown.push(entry);
+      continue;
+    }
+    const { name } = entry;
+    const type = entry.type ?? (typeof entry.command === 'string' ? 'stdio' : undefined);
+    if (type === 'stdio' && typeof entry.command === 'string') {
+      servers.push({ type, name, command: entry.command, args: Array.isArray(entry.args) ? entry.args.map(String) : [], env: record(entry.env) });
+    } else if ((type === 'http' || type === 'sse') && typeof entry.url === 'string') {
+      servers.push({ type, name, url: entry.url, headers: record(entry.headers) });
+    } else if (type === 'acp' && typeof entry.serverId === 'string') {
+      servers.push({ type, name, serverId: entry.serverId });
+    } else {
+      unknown.push(entry);
+    }
+  }
+  return { servers, unknown };
+}

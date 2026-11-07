@@ -196,6 +196,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - prompt queueing (`queuePrompts`): prompts run in order, and `session/cancel` cancels the queued ones too;
    - `turn.clientSupports`, plus `turn.readFile()`, `turn.writeFile()` and `turn.completeElicitation()`;
    - typed extensions (`extensions`, `turn.call()`, `turn.notify()`).
+   - MCP servers: `mcpTransports` advertises the transports the agent takes (v1 `mcpCapabilities`, v2 `session.mcp`; a v2 agent no longer implies stdio). Session hooks get `servers`, typed, and turns `turn.mcpServers`. `turn.mcp(name)` calls an `acp` server the client serves: `listTools()` (following pages), `callTool()`, `discover()`, `request()`. Each call is one stateless MCP 2026-07-28 request with its own metadata; progress goes to the call's `onNotification`; inner errors throw `McpError`; cancelling the turn cancels its calls (`$/cancel_request`). Tested against our `serveMcp()` (v1 and v2) and the official SDK's `McpOverAcpProvider`. Still to do: a real MCP client for the agent's stdio and http servers.
 3. **Client side:** done:
    - `client.loadSession()` returns the replayed events, using v1 load or v2 resume from the start;
    - `client.resumeSession()` and `session.close()`;
