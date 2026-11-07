@@ -5,13 +5,31 @@
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
-  "engines": { "node": ">=22.19" },
-  "exports": {
-    ".": { "source": "./src/index.ts", "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./node": { "source": "./src/node.ts", "types": "./dist/node.d.ts", "default": "./dist/node.js" },
-    "./testing": { "source": "./src/testing.ts", "types": "./dist/testing.d.ts", "default": "./dist/testing.js" }
+  "engines": {
+    "node": ">=22.19"
   },
-  "files": ["dist", "src"],
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "source": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./testing": {
+      "source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
