@@ -10,7 +10,13 @@
  * - `cancel()` tells the agent, answers its open permission questions with
  *   `cancelled`, and ends the turn if the agent does not confirm in time.
  */
-import type { TurnEvent, TurnResult } from './model.ts';
+import type { ToolCall, TurnEvent, TurnResult } from './model.ts';
+
+/** @internal What the turn knows so far, for `text` and `toolCalls`. */
+export interface TurnView {
+  text(): string;
+  toolCalls(): ToolCall[];
+}
 
 export class Turn implements AsyncIterable<TurnEvent> {
   readonly id: string;
@@ -22,12 +28,14 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private resolveDone!: (result: TurnResult) => void;
   private rejectDone!: (error: unknown) => void;
   private readonly onCancel: () => Promise<void>;
+  private readonly view?: TurnView;
   private cancelling?: Promise<void>;
 
   /** @internal */
-  constructor(id: string, onCancel: () => Promise<void>) {
+  constructor(id: string, onCancel: () => Promise<void>, view?: TurnView) {
     this.id = id;
     this.onCancel = onCancel;
+    this.view = view;
     this.done = new Promise<TurnResult>((resolve, reject) => {
       this.resolveDone = resolve;
       this.rejectDone = reject;
@@ -43,6 +51,16 @@ export class Turn implements AsyncIterable<TurnEvent> {
   /** Events so far. */
   get history(): readonly TurnEvent[] {
     return this.events;
+  }
+
+  /** Agent message text so far (the whole turn's, once done). */
+  get text(): string {
+    return this.finished?.ok ? this.finished.result.text : (this.view?.text() ?? '');
+  }
+
+  /** Tool calls so far, each with every update merged in. */
+  get toolCalls(): ToolCall[] {
+    return this.finished?.ok ? this.finished.result.toolCalls : (this.view?.toolCalls() ?? []);
   }
 
   /** Ask the agent to stop. Resolves once the request is sent; await `done` for the end. */

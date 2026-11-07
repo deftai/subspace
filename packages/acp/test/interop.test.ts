@@ -108,3 +108,122 @@ test('a v1-only official agent accepts our v2-first initialize and we fall back 
   assert.equal(client.protocol, 1);
   await client.close();
 });
+
+test('modes, v1 style: modes from session/new, set_mode, current_mode_update', async () => {
+  const link = byteLink();
+  const calls: unknown[] = [];
+  officialV1
+    .agent({ name: 'moded-v1' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({
+      sessionId: 's',
+      modes: {
+        currentModeId: 'auto',
+        availableModes: [
+          { id: 'auto', name: 'Auto' },
+          { id: 'default', name: 'Ask first' },
+        ],
+      },
+    }))
+    .onRequest('session/set_mode', async ({ params, client }) => {
+      calls.push(params);
+      await client.notify('session/update', { sessionId: 's', update: { sessionUpdate: 'current_mode_update', currentModeId: params.modeId } });
+      return {};
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/tmp' });
+  assert.equal(session.modes?.via, 'modes');
+  assert.equal(session.modes?.current, 'auto');
+  assert.deepEqual(session.modes?.available.map((m) => m.id), ['auto', 'default']);
+  await session.setMode('default');
+  assert.equal(session.modes?.current, 'default');
+  assert.deepEqual(calls, [{ sessionId: 's', modeId: 'default' }]);
+  await assert.rejects(session.setMode('yolo'), /offers no mode "yolo".*auto, default/);
+  await client.close();
+});
+
+test('modes, v2 style: a config option with category mode, set_config_option', async () => {
+  const link = byteLink();
+  const calls: unknown[] = [];
+  const configOptions = (current: string) => [
+    {
+      type: 'select' as const,
+      configId: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      currentValue: current,
+      options: [
+        { value: 'read-only', name: 'Read only' },
+        { value: 'agent', name: 'Agent' },
+      ],
+    },
+  ];
+  officialV2
+    .agent({ name: 'moded-v2' })
+    .onRequest('initialize', () => ({ protocolVersion: 2, info: { name: 'moded-v2', version: '1' }, capabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's2', configOptions: configOptions('agent') }))
+    .onRequest('session/set_config_option', ({ params }) => {
+      calls.push(params);
+      return { configOptions: configOptions(String(params.value)) };
+    })
+    .connect(officialV2.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  assert.equal(client.protocol, 2);
+  const session = await client.newSession({ cwd: '/tmp' });
+  assert.deepEqual({ via: session.modes?.via, current: session.modes?.current }, { via: 'config', current: 'agent' });
+  await session.setMode('read-only');
+  assert.equal(session.modes?.current, 'read-only');
+  assert.deepEqual(calls, [{ sessionId: 's2', configId: 'mode', type: 'id', value: 'read-only' }]);
+  await client.close();
+});
+
+test('turn.text and turn.toolCalls show progress during the turn', async () => {
+  const link = byteLink();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  officialV1
+    .agent({ name: 'progress' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's' }))
+    .onRequest('session/prompt', async ({ client }) => {
+      await client.notify('session/update', { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Working' } } });
+      await client.notify('session/update', { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 't', title: 'Build', status: 'in_progress' } });
+      await gate;
+      return { stopReason: 'end_turn' };
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/tmp' });
+  const turn = session.prompt('go');
+  for await (const event of turn) if (event.type === 'tool_call') break;
+  assert.equal(turn.text, 'Working');
+  assert.deepEqual(turn.toolCalls.map((c) => [c.title, c.status]), [['Build', 'in_progress']]);
+  release();
+  await turn.done;
+  await client.close();
+});
+
+test('a permission request when no turn is running is cancelled, whatever the policy', async () => {
+  const link = byteLink();
+  let answer: unknown;
+  officialV1
+    .agent({ name: 'eager' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', async ({ client }) => {
+      setTimeout(async () => {
+        answer = await client.request('session/request_permission', {
+          sessionId: 's',
+          toolCall: { toolCallId: 'x', title: 'rm -rf' },
+          options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }],
+        });
+      }, 10);
+      return { sessionId: 's' };
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client, { permissions: 'allow' });
+  await client.newSession({ cwd: '/tmp' });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(answer, { outcome: { outcome: 'cancelled' } });
+  await client.close();
+});
