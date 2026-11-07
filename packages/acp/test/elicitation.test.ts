@@ -70,3 +70,26 @@ for (const protocol of [1, 2] as const) {
     await client.close();
   });
 }
+
+test('elicitationModes: only the listed modes are advertised; others are declined unasked', async () => {
+  const link = byteLink();
+  let seen: unknown;
+  const asked: string[] = [];
+  serveAgent(link.agent, {
+    name: 'asker',
+    protocols: [2],
+    prompt: async (turn) => {
+      seen = turn.clientSupports.elicitation;
+      asked.push((await turn.elicit({ message: 'name?', requestedSchema: { type: 'object', properties: { n: { type: 'string' } } } })).action);
+      return 'end_turn';
+    },
+  });
+  const client = await AcpClient.connect(link.client, {
+    elicitationModes: ['form'],
+    elicitation: () => ({ action: 'accept', content: { n: 'x' } }),
+  });
+  await (await client.newSession({ cwd: '/w' })).prompt('go').done;
+  assert.deepEqual(seen, { form: true, url: false });
+  assert.deepEqual(asked, ['accept']);
+  await client.close();
+});

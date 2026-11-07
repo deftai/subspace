@@ -109,6 +109,8 @@ export interface ClientOptions {
   terminals?: TerminalHandlers;
   /** Answer the agent's questions to the user (`elicitation/create`). Without this, none are advertised. */
   elicitation?: ElicitationHandler;
+  /** Which elicitation modes to advertise with `elicitation`. Default both. Requests in other modes are declined. */
+  elicitationModes?: Array<'form' | 'url'>;
   timeouts?: {
     /** initialize. Default 60 s (agents often install on first run). */
     initializeMs?: number;
@@ -239,6 +241,7 @@ export class AcpClient {
           ...(typeof p?.url === 'string' ? { url: p.url } : {}),
           ...(typeof p?.elicitationId === 'string' ? { elicitationId: p.elicitationId } : {}),
         };
+        if (!(options.elicitationModes ?? ['form', 'url']).includes(request.mode as 'form')) return { action: 'decline' };
         try {
           const answer = await handler(request, context.signal);
           if (answer?.action === 'accept') {
@@ -258,7 +261,8 @@ export class AcpClient {
     const wanted = options.protocol ?? 'auto';
     const name = options.name ?? 'deft-subspace';
     const version = options.version ?? '0.0.0';
-    const elicitation = options.elicitation ? { form: {}, url: {} } : undefined;
+    const modes = options.elicitationModes ?? ['form', 'url'];
+    const elicitation = options.elicitation && modes.length ? Object.fromEntries(modes.map((m) => [m, {}])) : undefined;
     const v1Capabilities: v1.ClientCapabilities = {
       fs: { readTextFile: !!options.files, writeTextFile: !!options.files },
       terminal: !!options.terminals,
