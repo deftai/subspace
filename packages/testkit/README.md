@@ -12,7 +12,7 @@ Test ACP agents and clients. Everything uses the kernel's trace format (`@deft-s
 
 ## Recording more of the corpus
 
-`scripts/record.ts` runs one turn against a real agent and saves `corpus/<name>.trace.jsonl`. The temp workspace and the home directory are replaced with `/workspace` and `~`. Check a new trace for anything private before committing it.
+`scripts/record-claude-codex.sh` records all six Claude and Codex traces in one go (pass `claude` or `codex` for one agent). `scripts/record.ts` runs one turn against a real agent and saves `corpus/<name>.trace.jsonl`. The temp workspace and the home directory are replaced with `/workspace` and `~`. Check a new trace for anything private before committing it.
 
 ```bash
 cd packages/testkit
