@@ -15,14 +15,14 @@
  *     permissions: askTheUser,
  *   });
  */
-import { channelPair } from '@deft-subspace/kernel';
+import { channelPair, type Channel } from '@deft-subspace/kernel';
 import { AcpClient, serveAgent, type PermissionHandler, type ProtocolVersion } from '@deft-subspace/acp';
 
 // ---------------------------------------------------------------------------
 // 1. An agent. One handler; the library speaks v1 or v2 on the wire for it.
 // ---------------------------------------------------------------------------
 
-function startAgent(channel: ReturnType<typeof channelPair<unknown>>[1], protocol: ProtocolVersion) {
+function startAgent(channel: Channel<unknown>, protocol: ProtocolVersion) {
   serveAgent(channel, {
     name: 'demo-agent',
     version: '0.1.0',
