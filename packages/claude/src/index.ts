@@ -108,7 +108,8 @@ class ClaudeConversation implements ModelConversation {
       } catch (error) {
         if (stream.signal.aborted) return { stopReason: 'cancelled', toolCalls: [] };
         // A tool input that could not be parsed at all (eager streaming): re-issue, a few times.
-        if (error instanceof Anthropic.APIError || jsonRetries++ >= 2) throw error;
+        if (error instanceof Anthropic.APIError) throw new Error(apiErrorMessage(error), { cause: error });
+        if (jsonRetries++ >= 2) throw error;
         continue;
       }
       // Append-only history: the whole assistant turn, thinking blocks included.
@@ -124,6 +125,15 @@ class ClaudeConversation implements ModelConversation {
       return { stopReason: message.stop_reason ?? 'end_turn', toolCalls: toolUses.map((t) => ({ id: t.id, name: t.name, input: t.input })) };
     }
   }
+}
+
+/** One line for a failed API request: status, the API's own message, a hint for a login problem, the request id. */
+export function apiErrorMessage(error: InstanceType<typeof Anthropic.APIError>): string {
+  const body = error.error as { error?: { message?: string } } | undefined;
+  const detail = body?.error?.message ?? error.message;
+  const hint = error.status === 401 ? ' (check ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or `ant auth login`)' : '';
+  const id = error.requestID ? ` [${error.requestID}]` : '';
+  return `Claude API${error.status ? ` ${error.status}` : ''}: ${detail}${hint}${id}`;
 }
 
 /** A Claude model for `modelAgent()`. */

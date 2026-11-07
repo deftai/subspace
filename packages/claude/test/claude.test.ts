@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 import { channelPair } from '@deft-subspace/kernel';
 import { AcpClient, modelAgent, serveAgent, tool } from '@deft-subspace/acp';
 import { claude, claudeContent } from '@deft-subspace/claude';
@@ -125,5 +125,34 @@ test('end to end: modelAgent with claude() and an ACP client', async () => {
   assert.equal(result.text, 'Looking.\n\nThere is one file.');
   assert.deepEqual(thoughts, ['Check the files.']);
   assert.deepEqual(result.toolCalls.map((c) => [c.title, c.status]), [['listFiles', 'completed']]);
+  await client.close();
+});
+
+test('an API error ends the turn with one readable line: status, message, login hint, request id', async () => {
+  const body = { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } };
+  const failing = {
+    beta: {
+      messages: {
+        stream: () => ({
+          on() {
+            return this;
+          },
+          async finalMessage() {
+            throw Anthropic.APIError.generate(401, body, undefined, new Headers({ 'request-id': 'req_1' }));
+          },
+        }),
+      },
+    },
+  } as unknown as Anthropic;
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, modelAgent({ name: 'claude-helper', model: claude({ client: failing }) }));
+  const client = await AcpClient.connect(clientEnd, { onPermission: 'allow' });
+  const session = await client.newSession({ cwd: '/repo' });
+  const result = await session.prompt('hello').done;
+  assert.equal(result.stopReason, 'error');
+  assert.equal(
+    (result.error as { message: string }).message,
+    'Claude API 401: invalid x-api-key (check ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or `ant auth login`) [req_1]'
+  );
   await client.close();
 });

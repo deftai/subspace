@@ -166,3 +166,9 @@ test('agents: an agent of your own in subspace.toml, details with quirks, waiver
   assert.equal(bad.code, 2);
   assert.match(bad.err, /subspace\.toml: agents\.tidy\.comand is not a known field/);
 });
+
+test('run: a turn that ends with an error says why on stderr and exits 1', async () => {
+  const failed = await cli('run', 'fail out of credits', '--quiet', ...agent);
+  assert.equal(failed.code, 1);
+  assert.match(failed.err, /^error: out of credits$/m);
+});

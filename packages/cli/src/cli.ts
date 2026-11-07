@@ -327,6 +327,15 @@ async function promptsOf(parsed: Parsed): Promise<string[]> {
   return prompts;
 }
 
+/** The error an `error` stop carried, as one line (the agent's message, or the value itself). */
+export function turnError(result: TurnResult): string | undefined {
+  if (turnEnd(result) !== 'error') return undefined;
+  const error = result.error as { message?: unknown } | string | undefined;
+  if (typeof error === 'string') return error;
+  if (error && typeof error.message === 'string') return error.message;
+  return error === undefined ? 'the agent ended the turn with an error' : JSON.stringify(error);
+}
+
 const exitFor = (end: string) => (end === 'completed' ? 0 : end === 'refused' ? 3 : end === 'cancelled' || end === 'limit' ? 130 : 1);
 
 async function runCommand(parsed: Parsed, io: Io): Promise<number> {
@@ -340,8 +349,11 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
     if (started.modeWarning && !parsed.flags.quiet) io.err(`${started.modeWarning}\n`);
     for (const [i, prompt] of prompts.entries()) {
       if (prompts.length > 1 && !parsed.flags.json && !parsed.flags.quiet) io.out(`${i ? '\n' : ''}> ${prompt}\n`);
-      results.push(await started.run(prompt, timeout ? { timeoutMs: timeout } : {}));
+      const result = await started.run(prompt, timeout ? { timeoutMs: timeout } : {});
+      results.push(result);
       if (!parsed.flags.json) io.out('\n');
+      const error = turnError(result);
+      if (error && !parsed.flags.json) io.err(`error: ${error}\n`);
     }
   } finally {
     await started.close();
@@ -398,7 +410,13 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
       if (text) {
         const turn = started.prompt(text);
         running = turn;
-        await turn.done.catch((error: unknown) => io.err(`\n${error instanceof Error ? error.message : String(error)}\n`));
+        await turn.done.then(
+          (result) => {
+            const error = turnError(result);
+            if (error) io.err(`\nerror: ${error}\n`);
+          },
+          (error: unknown) => io.err(`\n${error instanceof Error ? error.message : String(error)}\n`)
+        );
         running = undefined;
         io.out('\n');
       }
