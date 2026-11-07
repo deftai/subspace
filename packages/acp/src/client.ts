@@ -20,6 +20,7 @@ import {
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
 import type {
+  BackgroundItem,
   ContentBlock,
   Exhaustion,
   PermissionRequest,
@@ -43,7 +44,7 @@ import {
 } from './extensions.ts';
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
-import { TurnProjection } from './projection.ts';
+import { backgroundOf, TurnProjection } from './projection.ts';
 import { McpProvider, mcpServersParam, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
 import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
@@ -542,6 +543,9 @@ interface ActiveTurn {
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
+/** A background item's id field (the union's unknown kinds hide the named ones from narrowing). */
+const field = (item: BackgroundItem, name: 'toolCallId' | 'terminalId'): unknown => (item as Record<string, unknown>)[name];
+
 const unrefTimer = (handle: ReturnType<typeof setTimeout>) => {
   (handle as { unref?: () => void }).unref?.();
   return handle;
@@ -570,6 +574,9 @@ export class Session {
   private readonly idleHistory: Array<{ event: TurnEvent; raw: unknown }> = [];
   private currentModes?: SessionModes;
   private currentConfig: ConfigOption[] = [];
+  /** Tool calls of earlier turns (and between turns), kept so later updates to background work patch them. */
+  private readonly idleProjection: TurnProjection;
+  private currentBackground?: BackgroundItem[];
 
   /** @internal */
   constructor(client: AcpClient, id: string, created: Record<string, unknown>) {
@@ -578,6 +585,52 @@ export class Session {
     this.created = created;
     this.currentModes = modesFrom(created);
     this.currentConfig = configOptionsFrom(created.configOptions) ?? [];
+    this.idleProjection = new TurnProjection(`${id}#idle`, this.terminals);
+  }
+
+  /**
+   * v2: the work the agent says runs in the background (terminals, tool calls,
+   * subagents), from its latest state update. Undefined when it does not
+   * report it, which means unknown, not "nothing".
+   */
+  get background(): readonly BackgroundItem[] | undefined {
+    return this.currentBackground;
+  }
+
+  /** Tool calls of earlier turns, and of work between turns, by id (background work lives here). */
+  get toolCalls(): ReadonlyMap<string, Readonly<ToolCall>> {
+    return this.idleProjection.toolCalls;
+  }
+
+  /**
+   * v2: stop one tool call (`tool_call/cancel`), without cancelling the turn.
+   * Only for a tool call that advertises it (`cancellable`). Resolves when the
+   * agent has accepted; it confirms with a final status on the tool call.
+   */
+  async cancelToolCall(toolCallId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    const call = this.active?.projection.toolCalls.get(toolCallId) ?? this.idleProjection.toolCalls.get(toolCallId);
+    if (this.client.protocol !== 2 || !call?.cancellable) throw new CapabilityError(`cancelling tool call ${toolCallId}`, 'agent');
+    await this.client.peer.request('tool_call/cancel', { sessionId: this.id, toolCallId }, { timeoutMs: options.timeoutMs ?? 30_000 });
+  }
+
+  /**
+   * v2: stop the process behind one of the agent's terminals (`terminal/cancel`).
+   * Only for a terminal that advertises it. The agent confirms with its exit status;
+   * the output stays.
+   */
+  async cancelTerminal(terminalId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    if (this.client.protocol !== 2 || !this.terminals.get(terminalId)?.cancellable) {
+      throw new CapabilityError(`cancelling terminal ${terminalId}`, 'agent');
+    }
+    await this.client.peer.request('terminal/cancel', { sessionId: this.id, terminalId }, { timeoutMs: options.timeoutMs ?? 30_000 });
+  }
+
+  /** Whether a tool call is background work: listed, or showing a listed terminal. */
+  private isBackground(call: Pick<ToolCall, 'id' | 'content'>): boolean {
+    const list = this.currentBackground ?? [];
+    if (list.some((item) => item.type === 'tool_call' && field(item, 'toolCallId') === call.id)) return true;
+    const terminals = new Set(list.filter((item) => item.type === 'terminal').map((item) => field(item, 'terminalId')));
+    return call.content.some((c) => c.type === 'terminal' && terminals.has((c as { terminalId?: string }).terminalId as string));
   }
 
   /** @internal Take in a load or resume answer (modes, config options). */
@@ -812,7 +865,8 @@ export class Session {
     await this.client.peer.notify('session/cancel', { sessionId: this.id }).catch(() => {});
     const handle = setTimeout(() => {
       if (this.active !== active) return;
-      active.turn.push(...active.projection.failOpenToolCalls());
+      // Background work is not the turn's: session/cancel does not stop it.
+      active.turn.push(...active.projection.failOpenToolCalls((call) => this.isBackground(call)));
       this.end(active, 'cancelled', undefined, true);
     }, this.client.cancelGraceMs);
     (handle as { unref?: () => void }).unref?.();
@@ -851,8 +905,9 @@ export class Session {
   receive(update: unknown): void {
     this.trackModes(update);
     const active = this.active;
-    if (!active) {
-      const { events } = new TurnProjection(`${this.id}#idle`, this.terminals).apply(update);
+    // Updates to tool calls of earlier turns (background work) are not this turn's.
+    if (!active || this.ofEarlierTurn(update)) {
+      const { events } = this.idleProjection.apply(update);
       for (const event of events) {
         this.idleHistory.push({ event, raw: update });
         if (this.idleHistory.length > 50) this.idleHistory.shift();
@@ -885,9 +940,18 @@ export class Session {
     }
   }
 
+  private ofEarlierTurn(update: unknown): boolean {
+    const u = update as { sessionUpdate?: unknown; toolCallId?: unknown } | null;
+    if (!u || typeof u.toolCallId !== 'string') return false;
+    if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update' && u.sessionUpdate !== 'tool_call_content_chunk') return false;
+    return this.idleProjection.toolCalls.has(u.toolCallId) && !this.active?.projection.toolCalls.has(u.toolCallId);
+  }
+
   private trackModes(update: unknown): void {
     if (typeof update !== 'object' || update === null) return;
     const u = update as Record<string, unknown>;
+    // Every state snapshot replaces the background list; one without it makes it unknown.
+    if (u.sessionUpdate === 'state_update') this.currentBackground = backgroundOf(u);
     if (u.sessionUpdate === 'session_info_update') {
       if (typeof u.title === 'string') this.info.title = u.title;
       if (typeof u.updatedAt === 'string') this.info.updatedAt = u.updatedAt;
@@ -905,9 +969,17 @@ export class Session {
   /** @internal */
   async permission(params: Record<string, unknown>, signal: AbortSignal, policy: PermissionPolicy): Promise<v1.RequestPermissionResponse> {
     const active = this.active;
+    // A question about listed background work stands on its own: not tied to a turn or its cancel.
+    if (this.aboutBackground(params)) {
+      const request = this.permissionRequest(params, this.idleProjection);
+      const outcome = await decide(policy, request, signal);
+      for (const listener of this.listeners) listener({ type: 'permission', request, outcome }, params);
+      if (outcome.outcome === 'cancelled') return { outcome: { outcome: 'cancelled' } };
+      return { outcome: { outcome: 'selected', optionId: outcome.optionId } };
+    }
     // No turn is running, or it is being cancelled: nobody asked for this. Fail closed.
     if (!active || active.cancelController.signal.aborted) return { outcome: { outcome: 'cancelled' } };
-    const projection = active?.projection ?? new TurnProjection(`${this.id}#idle`, this.terminals);
+    const projection = active.projection;
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
     const outcome = await decide(policy, request, combined);
@@ -915,6 +987,20 @@ export class Session {
     active?.turn.push({ type: 'permission', request, outcome });
     if (outcome.outcome === 'cancelled') return { outcome: { outcome: 'cancelled' } };
     return { outcome: { outcome: 'selected', optionId: outcome.optionId } };
+  }
+
+  /** v2: a permission question whose subject is listed background work (by tool call or terminal). */
+  private aboutBackground(params: Record<string, unknown>): boolean {
+    const list = this.currentBackground;
+    if (this.client.protocol !== 2 || !list?.length) return false;
+    const subject = params.subject as Record<string, unknown> | undefined;
+    const toolCallId = (subject?.toolCall as { toolCallId?: unknown } | undefined)?.toolCallId ?? subject?.toolCallId;
+    const terminalId = subject?.terminalId;
+    return list.some(
+      (item) =>
+        (item.type === 'tool_call' && field(item, 'toolCallId') === toolCallId) ||
+        (item.type === 'terminal' && field(item, 'terminalId') === terminalId)
+    );
   }
 
   private permissionRequest(params: Record<string, unknown>, projection: TurnProjection): PermissionRequest {
@@ -944,6 +1030,8 @@ export class Session {
   private end(active: ActiveTurn, stopReason: string, error?: unknown, forced?: boolean): void {
     if (this.active !== active) return;
     this.active = undefined;
+    // Later updates to this turn's tool calls (background work) patch them here.
+    for (const [id, call] of active.projection.toolCalls) this.idleProjection.toolCalls.set(id, call);
     this.stopTimers(active);
     queueMicrotask(() => this.startNext());
     const cancelled = active.cancelController.signal.aborted;

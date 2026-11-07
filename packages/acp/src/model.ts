@@ -16,7 +16,8 @@ export type ProtocolVersion = 1 | 2;
 /** A prompt content block. Text, images, resources: the same in v1 and v2. */
 export type ContentBlock = v1.ContentBlock | v2.ContentBlock;
 export type ToolCallContent = v1.ToolCallContent | v2.ToolCallContent;
-export type ToolCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+/** v2 adds `paused` (started, suspended until resumed) and `cancelled` (background work stopped). */
+export type ToolCallStatus = 'pending' | 'in_progress' | 'paused' | 'completed' | 'failed' | 'cancelled';
 export type PermissionOption = v1.PermissionOption | v2.PermissionOption;
 
 /** Why a turn ended. `error` is v2's, and also what a failed v1 turn becomes. */
@@ -33,7 +34,19 @@ export interface ToolCall {
   locations: unknown[];
   rawInput?: unknown;
   rawOutput?: unknown;
+  /** v2: the agent lets the client cancel this tool call alone (`session.cancelToolCall()`). */
+  cancellable?: boolean;
 }
+
+/**
+ * v2: work running independently of the session's foreground work, as the
+ * agent lists it on state updates. Unknown kinds are kept (they still count).
+ */
+export type BackgroundItem =
+  | { type: 'terminal'; terminalId: string }
+  | { type: 'tool_call'; toolCallId: string }
+  | { type: 'subagent'; sessionId: string }
+  | { type: string; [key: string]: unknown };
 
 export interface PlanEntry {
   content: string;
@@ -106,8 +119,11 @@ export type TurnEvent =
    * replaced by a snapshot (redraw from `terminal.output`).
    */
   | { type: 'terminal'; terminal: Readonly<TerminalState>; appended?: Uint8Array; replaced: boolean }
-  /** v2 only: the agent's run state. */
-  | { type: 'state'; state: string }
+  /**
+   * v2 only: the agent's run state. `background` is the work running in the
+   * background at that moment (a snapshot); absent when the agent does not report it.
+   */
+  | { type: 'state'; state: string; background?: BackgroundItem[] }
   /** A turn limit was reached; the turn is being cancelled. */
   | ({ type: 'exhausted' } & Exhaustion)
   /** Anything else, unchanged (available commands, config options, notices, ...). */

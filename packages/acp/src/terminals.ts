@@ -30,6 +30,8 @@ export interface TerminalState {
   output: Uint8Array;
   /** Present once the command has exited. */
   exitStatus?: TerminalExit;
+  /** The agent lets the client stop it (`session.cancelTerminal()`). */
+  cancellable?: boolean;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -117,7 +119,12 @@ export class Terminals {
           }
         : undefined;
     }
-    for (const key of ['command', 'cwd', 'size', 'exitStatus'] as const) if (terminal[key] === undefined) delete terminal[key];
+    // capabilities: null clears, an object replaces.
+    if ('capabilities' in update) {
+      const caps = update.capabilities;
+      terminal.cancellable = isRecord(caps) && caps.cancel !== undefined && caps.cancel !== null ? true : undefined;
+    }
+    for (const key of ['command', 'cwd', 'size', 'exitStatus', 'cancellable'] as const) if (terminal[key] === undefined) delete terminal[key];
     return { terminal, replaced };
   }
 

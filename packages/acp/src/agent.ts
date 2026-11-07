@@ -32,6 +32,7 @@ import {
   type ExtensionNotification,
   type ExtensionRequest,
 } from './extensions.ts';
+import { base64, SessionWork } from './background.ts';
 import { McpCaller, type McpServerClient } from './mcp-caller.ts';
 import { parseMcpServers, type McpServer } from './mcp.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
@@ -43,13 +44,43 @@ export interface ToolCallInit {
   content?: ToolCallContent[];
   locations?: unknown[];
   rawInput?: unknown;
+  /** v2: let the client cancel this tool call alone (`tool_call/cancel`); watch `handle.signal`. */
+  cancellable?: boolean;
 }
 
 export interface ToolCallHandle {
   readonly id: string;
-  update(fields: Partial<ToolCallInit> & { rawOutput?: unknown }): Promise<void>;
+  /**
+   * Fires when this tool call should stop: the turn is cancelled (unless it
+   * was detached), the client cancels it (if cancellable), or the session closes.
+   */
+  readonly signal: AbortSignal;
+  update(fields: Partial<Omit<ToolCallInit, 'cancellable'>> & { rawOutput?: unknown }): Promise<void>;
   complete(fields?: { content?: ToolCallContent[]; rawOutput?: unknown }): Promise<void>;
   fail(fields?: { content?: ToolCallContent[]; rawOutput?: unknown }): Promise<void>;
+  /** End it `cancelled` (e.g. after `signal` fired). */
+  cancelled(fields?: { content?: ToolCallContent[]; rawOutput?: unknown }): Promise<void>;
+  /**
+   * v2: keep it running in the background after the turn: listed on state
+   * updates, not stopped by `session/cancel`. Finish it with complete, fail or
+   * cancelled as usual. v1 has no background work: it is only no longer failed with the turn.
+   */
+  detach(): Promise<void>;
+}
+
+/** v2: a terminal the agent runs and shows the client (display only). */
+export interface TerminalDisplay {
+  readonly id: string;
+  /** Fires when the client cancels it (if cancellable), the turn is cancelled (unless detached), or the session closes. */
+  readonly signal: AbortSignal;
+  /** Append output (bytes, or text as UTF-8). */
+  write(data: string | Uint8Array): Promise<void>;
+  /** Replace all output so far. */
+  replace(data: string | Uint8Array): Promise<void>;
+  /** The process exited. */
+  exit(status?: { exitCode?: number; signal?: string }): Promise<void>;
+  /** Keep it running in the background after the turn (listed until it exits). */
+  detach(): Promise<void>;
 }
 
 /** Fields of a tool call update, in ACP's wire names (`toolCallId`, `rawInput`, ...). */
@@ -120,6 +151,19 @@ export interface AgentTurn {
     | { action: 'decline'; elicitationId?: string }
     | { action: 'cancel'; elicitationId?: string }
   >;
+  /**
+   * v2: show the client a terminal this agent runs (`terminal_update`,
+   * `terminal_output_chunk`). Refer to it from a tool call with content
+   * `{ type: 'terminal', terminalId: display.id }`. Throws on v1.
+   */
+  showTerminal(init: {
+    command?: string;
+    cwd?: string;
+    size?: { cols: number; rows: number };
+    /** Let the client stop it (`terminal/cancel`); watch `display.signal`. */
+    cancellable?: boolean;
+    id?: string;
+  }): Promise<TerminalDisplay>;
   /** Ask the user. `allowed` is false for rejections and when the turn was cancelled. */
   requestPermission(request: {
     title: string;
@@ -189,6 +233,7 @@ export interface AgentOptions {
 }
 
 const randomUUID = (): string => globalThis.crypto.randomUUID();
+const isFinal = (status: unknown) => status === 'completed' || status === 'failed' || status === 'cancelled';
 
 const DEFAULT_OPTIONS: PermissionOption[] = [
   { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
@@ -203,9 +248,9 @@ interface AgentSession {
   /** Settles when the last queued turn ends. */
   tail: Promise<void>;
   servers: McpServer[];
+  /** Background and cancellable work (v2). */
+  work: SessionWork;
 }
-
-const newSession = (id: string, servers: McpServer[] = []): AgentSession => ({ id, waiting: new Set(), tail: Promise.resolve(), servers });
 
 /** initialize's MCP capability, in each protocol's spelling. */
 function mcpCapabilities(protocol: ProtocolVersion, transports: AgentOptions['mcpTransports'] = []): Record<string, unknown> {
@@ -225,6 +270,13 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     ...cancelRequest,
   });
   const mcpCaller = new McpCaller(peer, { name: options.name, version: options.version ?? '0.0.0' });
+  const newSession = (id: string, servers: McpServer[] = []): AgentSession => ({
+    id,
+    waiting: new Set(),
+    tail: Promise.resolve(),
+    servers,
+    work: new SessionWork((update) => peer.notify('session/update', { sessionId: id, update })),
+  });
 
   peer.onRequest('initialize', (params: { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown }) => {
     const asked = Number(params?.protocolVersion);
@@ -273,7 +325,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
       if (typeof params.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
       const id = params.sessionId;
       const writer = replay
-        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller).api
+        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller, undefined).api
         : undefined;
       const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
       const { servers } = parseMcpServers(mcpServers);
@@ -301,10 +353,26 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
     session.controller?.abort(new Error('session closed'));
     for (const waiting of session.waiting) waiting.abort(new Error('session closed'));
+    // Closing stops background work too.
+    session.work.closeAll();
     sessions.delete(session.id);
     await options.closeSession?.(session.id);
     return {};
   });
+
+  // v2: stop one cancellable tool call or terminal (background work, or a step of the turn).
+  for (const [method, kind, key] of [
+    ['tool_call/cancel', 'tool_call', 'toolCallId'],
+    ['terminal/cancel', 'terminal', 'terminalId'],
+  ] as const) {
+    peer.onRequest(method, (params: Record<string, unknown>) => {
+      const session = typeof params?.sessionId === 'string' ? sessions.get(params.sessionId) : undefined;
+      if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
+      if (typeof params[key] !== 'string') throw RpcError.invalidParams(`${key} is required`);
+      session.work.cancel(kind, params[key] as string);
+      return {};
+    });
+  }
 
   peer.onNotification('session/cancel', (params: { sessionId?: string }) => {
     const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
@@ -320,7 +388,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, peer.signal]);
-    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller);
+    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller, session.work);
     // Wait for the turn ahead (if any), in order.
     const ahead = session.tail;
     let release!: () => void;
@@ -384,6 +452,8 @@ class TurnWriter {
   private readonly sessionId: string;
   private readonly protocol: ProtocolVersion;
   private readonly turnId = randomUUID().slice(0, 8);
+  private readonly work: SessionWork | undefined;
+  private readonly signal: AbortSignal;
 
   constructor(
     peer: RpcPeer,
@@ -393,11 +463,14 @@ class TurnWriter {
     signal: AbortSignal,
     clientCapabilities: Record<string, unknown>,
     servers: McpServer[],
-    mcpCaller: McpCaller
+    mcpCaller: McpCaller,
+    work: SessionWork | undefined
   ) {
     this.peer = peer;
     this.sessionId = sessionId;
     this.protocol = protocol;
+    this.work = work;
+    this.signal = signal;
     const text = prompt
       .map((b) => (b.type === 'text' ? (b as { text: string }).text : ''))
       .filter(Boolean)
@@ -423,6 +496,7 @@ class TurnWriter {
       say: (t) => this.chunk('agent_message_chunk', t),
       think: (t) => this.chunk('agent_thought_chunk', t),
       toolCall: (init) => this.toolCall(init),
+      showTerminal: (init) => this.showTerminal(init),
       plan: (entries) =>
         this.update(
           protocol === 2
@@ -434,7 +508,7 @@ class TurnWriter {
         this.lastWasText = false;
         const { toolCallId } = fields;
         if (options?.create) this.open.add(toolCallId);
-        if (fields.status === 'completed' || fields.status === 'failed') this.open.delete(toolCallId);
+        if (isFinal(fields.status)) this.open.delete(toolCallId);
         await this.update({
           ...fields,
           sessionUpdate: options?.create && protocol === 1 ? 'tool_call' : 'tool_call_update',
@@ -514,11 +588,13 @@ class TurnWriter {
   }
 
   state(state: 'running' | 'requires_action'): Promise<void> {
-    return this.update({ sessionUpdate: 'state_update', state });
+    if (this.work) this.work.state = state;
+    return this.update({ sessionUpdate: 'state_update', state, ...this.work?.fields() });
   }
 
   idle(stopReason: StopReason, error?: unknown): Promise<void> {
-    return this.update({ sessionUpdate: 'state_update', state: 'idle', stopReason, ...(error ? { error } : {}) });
+    if (this.work) this.work.state = 'idle';
+    return this.update({ sessionUpdate: 'state_update', state: 'idle', stopReason, ...(error ? { error } : {}), ...this.work?.fields() });
   }
 
   async failOpenToolCalls(): Promise<void> {
@@ -538,22 +614,67 @@ class TurnWriter {
   private async toolCall(init: ToolCallInit & { id?: string }): Promise<ToolCallHandle> {
     this.lastWasText = false;
     const id = init.id ?? `call-${randomUUID().slice(0, 8)}`;
-    const fields = { title: init.title, kind: init.kind ?? 'other', status: init.status ?? 'pending', content: init.content ?? [], locations: init.locations ?? [], ...(init.rawInput !== undefined ? { rawInput: init.rawInput } : {}) };
+    const cancellable = !!init.cancellable && this.protocol === 2 && !!this.work;
+    const fields = {
+      title: init.title,
+      kind: init.kind ?? 'other',
+      status: init.status ?? 'pending',
+      content: init.content ?? [],
+      locations: init.locations ?? [],
+      ...(init.rawInput !== undefined ? { rawInput: init.rawInput } : {}),
+      ...(cancellable ? { capabilities: { cancel: {} } } : {}),
+    };
     this.open.add(id);
+    const work = this.work?.add('tool_call', id, cancellable, this.signal);
     // v1 creates with tool_call; v2 has only the upsert.
     await this.update({ sessionUpdate: this.protocol === 1 ? 'tool_call' : 'tool_call_update', toolCallId: id, ...fields });
     return {
       id,
+      signal: work?.controller.signal ?? this.signal,
       update: (f) => this.toolUpdate(id, f),
       complete: (f) => this.toolUpdate(id, { ...f, status: 'completed' }),
       fail: (f) => this.toolUpdate(id, { ...f, status: 'failed' }),
+      cancelled: (f) => this.toolUpdate(id, { ...f, status: 'cancelled' }),
+      detach: async () => {
+        // No longer the turn's: not failed when it is cancelled.
+        this.open.delete(id);
+        if (work && this.protocol === 2) await this.work!.detach(work);
+      },
     };
   }
 
-  private toolUpdate(id: string, fields: Record<string, unknown>): Promise<void> {
+  private async toolUpdate(id: string, fields: Record<string, unknown>): Promise<void> {
     this.lastWasText = false;
-    if (fields.status === 'completed' || fields.status === 'failed') this.open.delete(id);
-    return this.update({ sessionUpdate: 'tool_call_update', toolCallId: id, ...fields });
+    const final = isFinal(fields.status);
+    if (final) this.open.delete(id);
+    const work = this.work?.get('tool_call', id);
+    // A finished tool call stops advertising cancel.
+    await this.update({ sessionUpdate: 'tool_call_update', toolCallId: id, ...fields, ...(final && work?.cancellable ? { capabilities: null } : {}) });
+    if (final && work) await this.work!.finish(work);
+  }
+
+  private async showTerminal(init: Parameters<AgentTurn['showTerminal']>[0]): Promise<TerminalDisplay> {
+    if (this.protocol !== 2 || !this.work) throw new CapabilityError('agent terminals (protocol v2)', 'client');
+    const id = init.id ?? `term-${randomUUID().slice(0, 8)}`;
+    const work = this.work.add('terminal', id, !!init.cancellable, this.signal);
+    const terminal = (fields: Record<string, unknown>) => this.update({ sessionUpdate: 'terminal_update', terminalId: id, ...fields });
+    await terminal({
+      ...(init.command !== undefined ? { command: init.command } : {}),
+      ...(init.cwd !== undefined ? { cwd: init.cwd } : {}),
+      ...(init.size ? { size: init.size } : {}),
+      ...(init.cancellable ? { capabilities: { cancel: {} } } : {}),
+    });
+    return {
+      id,
+      signal: work.controller.signal,
+      write: (data) => this.update({ sessionUpdate: 'terminal_output_chunk', terminalId: id, data: base64(data) }),
+      replace: (data) => terminal({ output: { data: base64(data) } }),
+      exit: async (status = {}) => {
+        await terminal({ exitStatus: status, ...(init.cancellable ? { capabilities: null } : {}) });
+        await this.work!.finish(work);
+      },
+      detach: () => this.work!.detach(work),
+    };
   }
 
   private async permission(

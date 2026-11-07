@@ -6,7 +6,7 @@
  * v1 message ids are optional; when missing, text between two tool calls is
  * one message. Either way the app gets the same events.
  */
-import type { PlanEntry, StopReason, ToolCall, TurnEvent } from './model.ts';
+import type { BackgroundItem, PlanEntry, StopReason, ToolCall, TurnEvent } from './model.ts';
 import { Terminals } from './terminals.ts';
 
 type Update = Record<string, unknown> & { sessionUpdate?: unknown };
@@ -23,10 +23,20 @@ export interface StateChange {
   state: string;
   stopReason?: StopReason;
   error?: unknown;
+  /** The background list on this snapshot; undefined when not reported (or malformed). */
+  background?: BackgroundItem[];
+}
+
+/** A state update's `background`: a list of items with a string type, else not reported. */
+export function backgroundOf(update: Record<string, unknown>): BackgroundItem[] | undefined {
+  const list = update.background;
+  if (!Array.isArray(list)) return undefined;
+  if (!list.every((item) => isRecord(item) && typeof item.type === 'string')) return undefined;
+  return list as BackgroundItem[];
 }
 
 export class TurnProjection {
-  readonly toolCalls = new Map<string, ToolCall>();
+  readonly toolCalls: Map<string, ToolCall>;
   private readonly messages = new Map<string, { kind: TextKind; text: string }>();
   private readonly messageOrder: string[] = [];
   private segment = 0;
@@ -35,9 +45,10 @@ export class TurnProjection {
   /** Agent terminals (v2), shared with the session so they outlive the turn. */
   readonly terminals: Terminals;
 
-  constructor(prefix: string, terminals: Terminals = new Terminals()) {
+  constructor(prefix: string, terminals: Terminals = new Terminals(), toolCalls: Map<string, ToolCall> = new Map()) {
     this.prefix = prefix;
     this.terminals = terminals;
+    this.toolCalls = toolCalls;
   }
 
   /** Apply one update. Returns the events it produced, and a state change if it was one. */
@@ -85,12 +96,13 @@ export class TurnProjection {
         return { events: [{ type: 'usage', used: Number(update.used), size: Number(update.size), cost: update.cost }] };
       case 'state_update': {
         const state = String(update.state);
-        const change: StateChange = { state };
+        const background = backgroundOf(update);
+        const change: StateChange = { state, ...(background ? { background } : {}) };
         if (state === 'idle') {
           change.stopReason = (update.stopReason as StopReason | null | undefined) ?? 'end_turn';
           if (update.error !== undefined) change.error = update.error;
         }
-        return { events: [{ type: 'state', state }], state: change };
+        return { events: [{ type: 'state', state, ...(background ? { background } : {}) }], state: change };
       }
       default:
         this.lastKind = 'other';
@@ -106,11 +118,11 @@ export class TurnProjection {
     return this.upsert(update, false).toolCall;
   }
 
-  /** Mark tool calls that never finished as failed, e.g. after a cancel. */
-  failOpenToolCalls(): TurnEvent[] {
+  /** Mark tool calls that never finished as failed, e.g. after a cancel. `keep` spares background work. */
+  failOpenToolCalls(keep: (call: ToolCall) => boolean = () => false): TurnEvent[] {
     const events: TurnEvent[] = [];
     for (const call of this.toolCalls.values()) {
-      if (call.status === 'pending' || call.status === 'in_progress') {
+      if ((call.status === 'pending' || call.status === 'in_progress' || call.status === 'paused') && !keep(call)) {
         call.status = 'failed';
         events.push({ type: 'tool_call', toolCall: { ...call }, created: false });
       }
@@ -201,6 +213,12 @@ export class TurnProjection {
     if (Array.isArray(update.locations)) call.locations = [...update.locations];
     if ('rawInput' in update && update.rawInput !== undefined) call.rawInput = update.rawInput;
     if ('rawOutput' in update && update.rawOutput !== undefined) call.rawOutput = update.rawOutput;
+    // v2 capabilities: null clears, an object replaces; `cancel` makes it cancellable.
+    if ('capabilities' in update) {
+      const caps = update.capabilities;
+      if (isRecord(caps) && caps.cancel !== undefined && caps.cancel !== null) call.cancellable = true;
+      else delete call.cancellable;
+    }
     return { toolCall: call, created };
   }
 }

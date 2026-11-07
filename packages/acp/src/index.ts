@@ -16,6 +16,7 @@ export {
   type AgentOptions,
   type AgentTurn,
   type ReplayWriter,
+  type TerminalDisplay,
   type TerminalHandle,
   type ToolCallFields,
   type ToolCallHandle,
@@ -54,6 +55,7 @@ export { McpError, type McpCallOptions, type McpServerClient, type McpTool } fro
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
 export { configOptionsFrom, type ConfigChoice, type ConfigOption } from './config.ts';
 export type {
+  BackgroundItem,
   ContentBlock,
   Exhaustion,
   PermissionOption,
