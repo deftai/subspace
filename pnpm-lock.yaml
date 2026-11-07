@@ -61,6 +61,16 @@ importers:
         specifier: workspace:*
         version: link:../subspace-foundation
 
+  packages/devtools:
+    dependencies:
+      '@deft-subspace/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+    devDependencies:
+      '@deft-subspace/acp':
+        specifier: workspace:*
+        version: link:../acp
+
   packages/kernel: {}
 
   packages/subspace-foundation: {}

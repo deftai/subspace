@@ -18,6 +18,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 |---|---|
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
+| `@deft-subspace/devtools` | `analyzeTrace` (requests paired with answers, turns, tool calls, permissions, cancels, problems) and `renderTraceHtml`, a self-contained browser viewer for kernel traces. CLI: `deft-subspace-trace`. |
 
 ## What the prototype shows
 
@@ -146,6 +147,8 @@ node --conditions=source packages/acp/examples/quickstart.ts
 pnpm proto:test        # kernel + acp
 pnpm proto:typecheck
 pnpm proto:build       # emits dist/ with .js imports
+node --conditions=source packages/devtools/examples/sample-trace.ts   # writes packages/devtools/samples/sample-v{1,2}.html
+node --conditions=source packages/devtools/src/cli.ts some.trace.jsonl [-o out.html] [--summary]
 node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
 PROMPT="Count to 400" CANCEL_AFTER_MS=300 node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
 ```

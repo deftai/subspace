@@ -1,0 +1,22 @@
+export {
+  analyzeTrace,
+  formatSummary,
+  readTrace,
+  type AnalyzeOptions,
+  type CancelInfo,
+  type Diagnostic,
+  type EventKind,
+  type JsonRpcId,
+  type PermissionInfo,
+  type PermissionResult,
+  type RequestInfo,
+  type RequestOutcome,
+  type SessionInfo,
+  type Side,
+  type ToolCallInfo,
+  type TraceAnalysis,
+  type TraceEvent,
+  type TurnInfo,
+  type TurnStatus,
+} from './analyze.ts';
+export { renderTraceHtml, scriptSafeJson, type RenderOptions } from './render.ts';

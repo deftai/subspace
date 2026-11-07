@@ -1,0 +1,39 @@
+{
+  "name": "@deft-subspace/devtools",
+  "version": "0.0.0-experiment",
+  "description": "See what an ACP connection did: a trace analyzer and a self-contained browser trace viewer for Subspace traces.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "deft-subspace-trace": "./bin/deft-subspace-trace.js"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts",
+    "sample": "node --conditions=source examples/sample-trace.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "@deft-subspace/acp": "workspace:*"
+  }
+}
