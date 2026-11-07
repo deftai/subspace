@@ -16,6 +16,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const textOf = (block: unknown): string =>
   isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? block.text : '';
 
+type TextKind = 'message' | 'thought' | 'user_message';
+
 export interface StateChange {
   state: string;
   stopReason?: StopReason;
@@ -24,7 +26,7 @@ export interface StateChange {
 
 export class TurnProjection {
   readonly toolCalls = new Map<string, ToolCall>();
-  private readonly messages = new Map<string, { kind: 'message' | 'thought'; text: string }>();
+  private readonly messages = new Map<string, { kind: TextKind; text: string }>();
   private readonly messageOrder: string[] = [];
   private segment = 0;
   private lastKind: 'text' | 'other' = 'other';
@@ -46,6 +48,16 @@ export class TurnProjection {
       case 'agent_message':
       case 'agent_thought':
         return { events: this.whole(kind === 'agent_message' ? 'message' : 'thought', update) };
+      case 'user_message_chunk':
+        return { events: this.chunk('user_message', update) };
+      case 'user_message':
+        return { events: this.whole('user_message', update) };
+      case 'session_info_update': {
+        const event: TurnEvent = { type: 'session_info' };
+        if (typeof update.title === 'string') event.title = update.title;
+        if (typeof update.updatedAt === 'string') event.updatedAt = update.updatedAt;
+        return { events: [event] };
+      }
       case 'tool_call':
       case 'tool_call_update':
         return { events: this.tool(update, kind === 'tool_call') };
@@ -110,13 +122,13 @@ export class TurnProjection {
     return out;
   }
 
-  private messageId(update: Update, kind: 'message' | 'thought'): string {
+  private messageId(update: Update, kind: TextKind): string {
     if (typeof update.messageId === 'string' && update.messageId) return update.messageId;
     if (this.lastKind !== 'text') this.segment++;
     return `${this.prefix}:${kind}:${this.segment}`;
   }
 
-  private chunk(kind: 'message' | 'thought', update: Update): TurnEvent[] {
+  private chunk(kind: TextKind, update: Update): TurnEvent[] {
     const delta = textOf(update.content);
     const messageId = this.messageId(update, kind);
     this.lastKind = 'text';
@@ -126,7 +138,7 @@ export class TurnProjection {
   }
 
   /** v2 whole-message upsert: report only what is new, so streamed text is never shown twice. */
-  private whole(kind: 'message' | 'thought', update: Update): TurnEvent[] {
+  private whole(kind: TextKind, update: Update): TurnEvent[] {
     const messageId = this.messageId(update, kind);
     this.lastKind = 'text';
     const text = Array.isArray(update.content) ? update.content.map(textOf).join('') : '';
@@ -136,7 +148,7 @@ export class TurnProjection {
     return delta ? [{ type: kind, messageId, delta, text }] : [];
   }
 
-  private message(id: string, kind: 'message' | 'thought') {
+  private message(id: string, kind: TextKind) {
     let message = this.messages.get(id);
     if (!message) {
       message = { kind, text: '' };

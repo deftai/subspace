@@ -86,6 +86,10 @@ export type TurnEvent =
   /** Agent text. `delta` is what is new; `text` is the whole message so far. */
   | { type: 'message'; messageId: string; delta: string; text: string }
   | { type: 'thought'; messageId: string; delta: string; text: string }
+  /** The user's own message, as the agent echoes it (v2) or replays it on load. */
+  | { type: 'user_message'; messageId: string; delta: string; text: string }
+  /** Session title or update time changed. Also kept on `session.info`. */
+  | { type: 'session_info'; title?: string; updatedAt?: string }
   /**
    * A tool call was created or changed. `toolCall` is a snapshot of its full
    * state at that moment; `turn.toolCalls` has the latest, which can already

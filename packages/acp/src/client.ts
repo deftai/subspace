@@ -40,6 +40,48 @@ export interface FileHandlers {
   writeTextFile(request: { path: string; content: string }): Promise<void>;
 }
 
+/**
+ * Terminals an agent may run (v1 `terminal/*`). See `workspaceTerminals()` in
+ * `@deft-subspace/acp/node`. v2 removed client terminals, so these are only
+ * offered to v1 agents.
+ */
+export interface TerminalHandlers {
+  create(request: v1.CreateTerminalRequest): Promise<{ terminalId: string }>;
+  output(request: { sessionId: string; terminalId: string }): Promise<{
+    output: string;
+    truncated: boolean;
+    exitStatus?: { exitCode?: number | null; signal?: string | null } | null;
+  }>;
+  waitForExit(request: { sessionId: string; terminalId: string }): Promise<{ exitCode?: number | null; signal?: string | null }>;
+  kill(request: { sessionId: string; terminalId: string }): Promise<void>;
+  release(request: { sessionId: string; terminalId: string }): Promise<void>;
+}
+
+/** What an agent asks the user for (`elicitation/create`): a form, or a URL to visit. */
+export interface ElicitationRequest {
+  sessionId?: string;
+  toolCallId?: string;
+  mode: 'form' | 'url' | (string & {});
+  message: string;
+  /** `form`: the JSON Schema of the answer. */
+  requestedSchema?: unknown;
+  /** `url`: where to send the user, and the id the agent completes it by. */
+  url?: string;
+  elicitationId?: string;
+  raw: unknown;
+}
+
+export type ElicitationResponse =
+  | { action: 'accept'; content?: Record<string, unknown> }
+  | { action: 'decline' }
+  | { action: 'cancel' };
+
+/** Answer an elicitation. Anything that goes wrong becomes `decline`. */
+export type ElicitationHandler = (
+  request: ElicitationRequest,
+  signal: AbortSignal
+) => ElicitationResponse | Promise<ElicitationResponse>;
+
 export interface ClientOptions {
   name?: string;
   version?: string;
@@ -49,6 +91,10 @@ export interface ClientOptions {
   permissions?: PermissionPolicy;
   /** Serve the agent's file requests (v1). Without this, the client advertises no file access. */
   files?: FileHandlers;
+  /** Run the agent's terminal commands (v1). Without this, the client advertises no terminal. */
+  terminals?: TerminalHandlers;
+  /** Answer the agent's questions to the user (`elicitation/create`). Without this, none are advertised. */
+  elicitation?: ElicitationHandler;
   timeouts?: {
     /** initialize. Default 60 s (agents often install on first run). */
     initializeMs?: number;
@@ -62,6 +108,14 @@ export interface ClientOptions {
   /** Sees every JSON-RPC message, both directions. */
   tap?: RpcPeerOptions['tap'];
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
+}
+
+/** Which existing session to open, and where. */
+export interface SessionLocator {
+  sessionId: string;
+  cwd: string;
+  mcpServers?: unknown[];
+  additionalDirectories?: string[];
 }
 
 export interface AgentInfo {
@@ -127,14 +181,53 @@ export class AcpClient {
         return {};
       });
     }
+    if (options.terminals) {
+      const t = options.terminals;
+      peer.onRequest('terminal/create', (p: v1.CreateTerminalRequest) => t.create(p));
+      peer.onRequest('terminal/output', (p: { sessionId: string; terminalId: string }) => t.output(p));
+      peer.onRequest('terminal/wait_for_exit', (p: { sessionId: string; terminalId: string }) => t.waitForExit(p));
+      peer.onRequest('terminal/kill', async (p: { sessionId: string; terminalId: string }) => {
+        await t.kill(p);
+        return {};
+      });
+      peer.onRequest('terminal/release', async (p: { sessionId: string; terminalId: string }) => {
+        await t.release(p);
+        return {};
+      });
+    }
+    if (options.elicitation) {
+      const handler = options.elicitation;
+      peer.onRequest<Record<string, unknown>>('elicitation/create', async (p, context) => {
+        const request: ElicitationRequest = {
+          mode: String(p?.mode ?? ''),
+          message: String(p?.message ?? ''),
+          raw: p,
+          ...(typeof p?.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p?.toolCallId === 'string' ? { toolCallId: p.toolCallId } : {}),
+          ...(p?.requestedSchema !== undefined ? { requestedSchema: p.requestedSchema } : {}),
+          ...(typeof p?.url === 'string' ? { url: p.url } : {}),
+          ...(typeof p?.elicitationId === 'string' ? { elicitationId: p.elicitationId } : {}),
+        };
+        try {
+          const answer = await handler(request, context.signal);
+          if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
+          if (answer?.action === 'cancel') return { action: 'cancel' };
+        } catch {
+          // Fail closed.
+        }
+        return { action: 'decline' };
+      });
+    }
     peer.start();
 
     const wanted = options.protocol ?? 'auto';
     const name = options.name ?? 'deft-subspace';
     const version = options.version ?? '0.0.0';
+    const elicitation = options.elicitation ? { form: {}, url: {} } : undefined;
     const v1Capabilities: v1.ClientCapabilities = {
       fs: { readTextFile: !!options.files, writeTextFile: !!options.files },
-      terminal: false,
+      terminal: !!options.terminals,
+      ...(elicitation ? { elicitation } : {}),
     };
     // One request both generations understand: v2 fields plus their v1 names.
     const params: Record<string, unknown> =
@@ -143,7 +236,7 @@ export class AcpClient {
         : {
             protocolVersion: 2,
             info: { name, version },
-            capabilities: {} satisfies v2.ClientCapabilities,
+            capabilities: (elicitation ? { elicitation } : {}) satisfies v2.ClientCapabilities,
             clientInfo: { name, version },
             clientCapabilities: v1Capabilities,
           };
@@ -178,6 +271,82 @@ export class AcpClient {
     this.early.delete(session.id);
     for (const update of early ?? []) session.receive(update);
     return session;
+  }
+
+  /**
+   * Open an existing session and replay its history: v1 `session/load`, v2
+   * `session/resume` from the start. The replayed updates come back as events,
+   * in order; the session then behaves like a new one.
+   */
+  async loadSession(request: SessionLocator): Promise<{ session: Session; replayed: TurnEvent[] }> {
+    if (this.protocol === 1 && !this.capabilities.loadSession) {
+      throw new Error('The agent does not offer session/load');
+    }
+    const session = this.register(request.sessionId);
+    const replayed: TurnEvent[] = [];
+    const stop = session.onIdleUpdate((event) => replayed.push(event));
+    try {
+      const result = await this.peer.request(
+        this.protocol === 1 ? 'session/load' : 'session/resume',
+        this.locator(request, this.protocol === 2 ? { replayFrom: { type: 'start' } } : {}),
+        { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 }
+      );
+      session.absorb(result);
+      return { session, replayed };
+    } catch (error) {
+      this.sessions.delete(request.sessionId);
+      throw error;
+    } finally {
+      stop();
+    }
+  }
+
+  /** Reopen an existing session without replaying its history (`session/resume`). */
+  async resumeSession(request: SessionLocator): Promise<Session> {
+    if (this.protocol === 1 && !this.sessionCapability('resume')) {
+      throw new Error('The agent does not offer session/resume');
+    }
+    const session = this.register(request.sessionId);
+    try {
+      session.absorb(
+        await this.peer.request('session/resume', this.locator(request), { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 })
+      );
+      return session;
+    } catch (error) {
+      this.sessions.delete(request.sessionId);
+      throw error;
+    }
+  }
+
+  /** @internal Whether a v1 agent advertised `sessionCapabilities.<name>`. v2 agents are asked directly. */
+  sessionCapability(name: string): boolean {
+    const caps = this.capabilities.sessionCapabilities;
+    return !!caps && typeof caps === 'object' && (caps as Record<string, unknown>)[name] != null;
+  }
+
+  /** @internal */
+  forget(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  private register(sessionId: string): Session {
+    if (this.sessions.has(sessionId)) throw new Error(`Session ${sessionId} is already open on this connection`);
+    const session = new Session(this, sessionId, {});
+    this.sessions.set(sessionId, session);
+    const early = this.early.get(sessionId);
+    this.early.delete(sessionId);
+    for (const update of early ?? []) session.receive(update);
+    return session;
+  }
+
+  private locator(request: SessionLocator, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      sessionId: request.sessionId,
+      cwd: request.cwd,
+      mcpServers: request.mcpServers ?? [],
+      ...(request.additionalDirectories ? { additionalDirectories: request.additionalDirectories } : {}),
+      ...extra,
+    };
   }
 
   /** Close the connection. Running turns fail with a `closed` LocalError. */
@@ -243,8 +412,10 @@ const unrefTimer = (handle: ReturnType<typeof setTimeout>) => {
 export class Session {
   readonly id: string;
   readonly client: AcpClient;
-  /** What session/new returned. */
-  readonly created: Record<string, unknown>;
+  /** What session/new (or load, or resume) returned. */
+  created: Record<string, unknown>;
+  /** Title and update time, from the agent's `session_info_update`. */
+  readonly info: { title?: string; updatedAt?: string } = {};
 
   private active?: ActiveTurn;
   private readonly listeners = new Set<(event: TurnEvent, raw: unknown) => void>();
@@ -258,6 +429,35 @@ export class Session {
     this.id = id;
     this.created = created;
     this.currentModes = modesFrom(created);
+  }
+
+  /** @internal Take in a load or resume answer (modes, config options). */
+  absorb(result: unknown): void {
+    if (!result || typeof result !== 'object') return;
+    this.created = result as Record<string, unknown>;
+    this.currentModes = modesFrom(this.created) ?? this.currentModes;
+  }
+
+  /**
+   * End this session: cancel a running turn, then `session/close` if the agent
+   * supports it (v1 says so in `sessionCapabilities.close`; v2 agents are
+   * asked). The session is forgotten here either way.
+   */
+  async close(): Promise<void> {
+    if (this.active) {
+      const turn = this.active.turn;
+      await this.cancel();
+      await turn.done.catch(() => {});
+    }
+    try {
+      if (this.client.protocol === 2 || this.client.sessionCapability('close')) {
+        await this.client.peer.request('session/close', { sessionId: this.id }, { timeoutMs: 10_000 });
+      }
+    } catch {
+      // Not supported, or the agent is gone: the session is closed here regardless.
+    } finally {
+      this.client.forget(this.id);
+    }
   }
 
   /** The modes the agent offers and the current one, whichever way it offers them. Absent if none. */
@@ -430,6 +630,10 @@ export class Session {
   private trackModes(update: unknown): void {
     if (typeof update !== 'object' || update === null) return;
     const u = update as Record<string, unknown>;
+    if (u.sessionUpdate === 'session_info_update') {
+      if (typeof u.title === 'string') this.info.title = u.title;
+      if (typeof u.updatedAt === 'string') this.info.updatedAt = u.updatedAt;
+    }
     if (u.sessionUpdate === 'current_mode_update' && this.currentModes && typeof u.currentModeId === 'string') {
       this.currentModes.current = u.currentModeId;
     } else if (u.sessionUpdate === 'config_option_update') {

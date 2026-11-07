@@ -10,9 +10,9 @@
  */
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { ndjson, type FramingDiagnostic } from '@deft-subspace/kernel';
-import { spawnProcess, type SpawnOptions, type SupervisedProcess } from '@deft-subspace/kernel/node';
-import { AcpClient, type ClientOptions, type FileHandlers } from './client.ts';
+import { ndjson, RpcError, type FramingDiagnostic } from '@deft-subspace/kernel';
+import { spawnProcess, type ExitInfo, type SpawnOptions, type SupervisedProcess } from '@deft-subspace/kernel/node';
+import { AcpClient, type ClientOptions, type FileHandlers, type TerminalHandlers } from './client.ts';
 
 export interface ConnectAgentOptions extends ClientOptions, Omit<SpawnOptions, 'onStderr'> {
   /** Serve fs requests from this directory (and nothing outside it). */
@@ -105,4 +105,133 @@ async function realLocation(path: string): Promise<string> {
     }
   }
   return join(await realpath(existing), ...rest);
+}
+
+export interface WorkspaceTerminalOptions {
+  /** Refuse commands you do not want run. Return false (or throw) to refuse. Default: allow. */
+  allow?: (request: { command: string; args: string[]; cwd: string; sessionId: string }) => boolean | Promise<boolean>;
+  /** Output kept per terminal when the agent sets no `outputByteLimit`. Default 1 MiB. */
+  defaultOutputByteLimit?: number;
+  /** How long `kill` waits after SIGTERM before SIGKILL. Default 2000 ms. */
+  killGraceMs?: number;
+}
+
+interface TerminalState {
+  sessionId: string;
+  process: SupervisedProcess;
+  output: string;
+  bytes: number;
+  limit: number;
+  truncated: boolean;
+  exit?: ExitInfo;
+  ended: Promise<ExitInfo>;
+}
+
+/** Code for a command the client refused to run. */
+const COMMAND_REFUSED = -32001;
+
+/**
+ * Terminals that run inside `root` (v1 `terminal/*`). Each command runs in its
+ * own process group, so `kill` stops whatever it started too. stdout and
+ * stderr are merged, and only the newest `outputByteLimit` bytes are kept.
+ * Call `dispose()` to stop every terminal still running.
+ */
+export function workspaceTerminals(
+  root: string,
+  options: WorkspaceTerminalOptions = {}
+): TerminalHandlers & { dispose(): Promise<void> } {
+  const terminals = new Map<string, TerminalState>();
+  let next = 0;
+
+  const get = (request: { sessionId: string; terminalId: string }): TerminalState => {
+    const terminal = terminals.get(request.terminalId);
+    if (!terminal || terminal.sessionId !== request.sessionId) throw RpcError.notFound(`Unknown terminal ${request.terminalId}`);
+    return terminal;
+  };
+
+  const append = (terminal: TerminalState, text: string) => {
+    terminal.output += text;
+    terminal.bytes += Buffer.byteLength(text);
+    if (terminal.bytes <= terminal.limit) return;
+    // Keep the newest bytes, cut at a character boundary.
+    const kept = Buffer.from(terminal.output).subarray(-terminal.limit).toString('utf8').replace(/^\uFFFD+/, '');
+    terminal.output = kept;
+    terminal.bytes = Buffer.byteLength(kept);
+    terminal.truncated = true;
+  };
+
+  const exitStatus = (info: ExitInfo) => ({ exitCode: info.code, signal: info.signal });
+
+  return {
+    async create(request) {
+      const cwd = request.cwd ? await insideWorkspace(root, request.cwd) : resolve(root);
+      const args = request.args ?? [];
+      const allowed = await Promise.resolve(options.allow?.({ command: request.command, args, cwd, sessionId: request.sessionId }) ?? true).catch(
+        () => false
+      );
+      if (!allowed) throw new RpcError(COMMAND_REFUSED, `The client refused to run ${request.command}`);
+      const env = Object.fromEntries((request.env ?? []).map((v) => [v.name, v.value]));
+      const terminal = {
+        sessionId: request.sessionId,
+        output: '',
+        bytes: 0,
+        limit: request.outputByteLimit ?? options.defaultOutputByteLimit ?? 1024 * 1024,
+        truncated: false,
+      } as TerminalState;
+      terminal.process = await spawnProcess(request.command, {
+        args,
+        cwd,
+        env,
+        killGraceMs: options.killGraceMs ?? 2000,
+        stderrTailBytes: 1,
+        onStderr: (text) => append(terminal, text),
+      });
+      // No input: close stdin so commands that read it do not wait.
+      void terminal.process.channel.writable.close().catch(() => {});
+      const decoder = new TextDecoder();
+      const reader = terminal.process.channel.readable.getReader();
+      const drained = (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            append(terminal, decoder.decode(value, { stream: true }));
+          }
+        } catch {
+          // The process went away; its exit is reported below.
+        }
+      })();
+      // Exited, and all of its output read.
+      terminal.ended = Promise.all([terminal.process.ended, drained]).then(([info]) => (terminal.exit = info));
+      const terminalId = `term-${++next}`;
+      terminals.set(terminalId, terminal);
+      return { terminalId };
+    },
+    async output(request) {
+      const terminal = get(request);
+      return {
+        output: terminal.output,
+        truncated: terminal.truncated,
+        ...(terminal.exit ? { exitStatus: exitStatus(terminal.exit) } : {}),
+      };
+    },
+    async waitForExit(request) {
+      return exitStatus(await get(request).ended);
+    },
+    async kill(request) {
+      const terminal = get(request);
+      if (!terminal.exit) await terminal.process.stop(options.killGraceMs);
+      await terminal.ended;
+    },
+    async release(request) {
+      const terminal = get(request);
+      terminals.delete(request.terminalId);
+      if (!terminal.exit) await terminal.process.stop(options.killGraceMs);
+    },
+    async dispose() {
+      const all = [...terminals.values()];
+      terminals.clear();
+      await Promise.all(all.map((t) => (t.exit ? undefined : t.process.stop(options.killGraceMs))));
+    },
+  };
 }

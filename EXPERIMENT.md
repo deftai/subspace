@@ -187,16 +187,22 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
 ## Not done yet (next steps, if this direction holds)
 
 1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). `bridge mcp` reports the protocol in its session report. Bridge's request handling also runs on `serveAgent`, opt in (see below).
-2. **Agent side:**
-   - `session/load` and `session/resume`;
-   - several turns queued per session;
-   - typed `_vendor` extension methods.
-3. **Client side:**
-   - terminal handlers;
-   - elicitation;
-   - session config options (v1 modes and v2 config options as one API);
-   - capability-typed peers;
-   - first-class events for v2 `user_message` and `session_info_update` (title).
+2. **Agent side:** done:
+   - `loadSession` handles v1 `session/load` with a replay writer, v1 `session/resume`, and v2 `session/resume` (it replays when asked);
+   - `session/close`, with a `closeSession` hook;
+   - `turn.terminal()` and `turn.elicit()`, which check the client's capabilities;
+   - `turn.userMessage()`.
+
+   Still to do: several turns queued per session, and a typed registry for `_vendor` methods (today: `methods`).
+3. **Client side:** done:
+   - `client.loadSession()` returns the replayed events, using v1 load or v2 resume from the start;
+   - `client.resumeSession()` and `session.close()`;
+   - `TerminalHandlers`, with `workspaceTerminals(root)` in `./node`: process groups, a working directory inside the workspace, merged output capped at `outputByteLimit`, kill, and an `allow` hook;
+   - an `ElicitationHandler` that fails closed and gives `cancel` when the turn is cancelled;
+   - `user_message` and `session_info` events, with `session.info.title`;
+   - session modes as one API (done earlier).
+
+   Still to do: capability-typed peers, and `elicitation/complete`.
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
 5. **Testkit (`packages/testkit`, merged, first cut done, 33 tests):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;

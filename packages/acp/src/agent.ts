@@ -69,6 +69,23 @@ export interface AgentTurn {
   sendUpdate(update: Record<string, unknown> & { sessionUpdate: string }): Promise<void>;
   /** Call the client (e.g. `fs/read_text_file`, `terminal/create`). Aborted with the turn unless you pass a signal. */
   request<Result = unknown>(method: string, params?: unknown, options?: RequestOptions): Promise<Result>;
+  /** Echo or record the user's own message as an update (`user_message_chunk`). */
+  userMessage(text: string): Promise<void>;
+  /**
+   * Run a command in the client's terminal (v1 clients that advertise `terminal`).
+   * Throws if the client offers none. Release the handle when done.
+   */
+  terminal(command: string, options?: { args?: string[]; cwd?: string; env?: Record<string, string>; outputByteLimit?: number }): Promise<TerminalHandle>;
+  /**
+   * Ask the user through the client (`elicitation/create`). Throws if the client
+   * offers no elicitation. A cancelled turn answers `cancel`.
+   */
+  elicit(request: {
+    message: string;
+    requestedSchema?: unknown;
+    url?: string;
+    toolCallId?: string;
+  }): Promise<{ action: 'accept'; content?: Record<string, unknown> } | { action: 'decline' } | { action: 'cancel' }>;
   /** Ask the user. `allowed` is false for rejections and when the turn was cancelled. */
   requestPermission(request: {
     title: string;
@@ -76,6 +93,17 @@ export interface AgentTurn {
     options?: PermissionOption[];
   }): Promise<{ outcome: 'selected'; optionId: string; allowed: boolean } | { outcome: 'cancelled'; allowed: false }>;
 }
+
+export interface TerminalHandle {
+  readonly id: string;
+  output(): Promise<{ output: string; truncated: boolean; exitStatus?: { exitCode?: number | null; signal?: string | null } | null }>;
+  waitForExit(): Promise<{ exitCode?: number | null; signal?: string | null }>;
+  kill(): Promise<void>;
+  release(): Promise<void>;
+}
+
+/** What `loadSession` uses to replay history: updates only, no questions to the client. */
+export type ReplayWriter = Pick<AgentTurn, 'say' | 'think' | 'userMessage' | 'toolCall' | 'toolCallUpdate' | 'plan' | 'sendUpdate'>;
 
 export interface AgentOptions {
   name: string;
@@ -93,6 +121,22 @@ export interface AgentOptions {
   prompt(turn: AgentTurn): Promise<StopReason | void> | StopReason | void;
   /** More request handlers, e.g. vendor `_name/method` extensions. Registered before the first message. */
   methods?: Record<string, RequestHandler<any>>;
+  /**
+   * Reopen an existing session: v1 `session/load` (with `replay`) and
+   * `session/resume` (without), v2 `session/resume` (with `replay` when the
+   * client asks for it). Replay history through `replay` before returning; the
+   * client is answered after. Throw `RpcError.notFound(...)` for an unknown id.
+   * Providing it advertises loading and resuming.
+   */
+  loadSession?(request: {
+    sessionId: string;
+    cwd: string;
+    mcpServers: unknown[];
+    params: Record<string, unknown>;
+    replay?: ReplayWriter;
+  }): Promise<void | Record<string, unknown>> | void | Record<string, unknown>;
+  /** Called when the client closes a session (`session/close`), after its turn is cancelled. */
+  closeSession?(sessionId: string): Promise<void> | void;
   peer?: Omit<RpcPeerOptions, 'cancelOutbound' | 'cancelInbound'>;
 }
 
@@ -132,7 +176,11 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
       : {
           protocolVersion: 1,
           agentInfo: info,
-          agentCapabilities: { loadSession: false, ...options.capabilities },
+          agentCapabilities: {
+            loadSession: !!options.loadSession,
+            sessionCapabilities: { close: {}, ...(options.loadSession ? { resume: {} } : {}) },
+            ...options.capabilities,
+          },
           authMethods: [],
         };
   });
@@ -145,6 +193,40 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const id = (created && created.sessionId) || randomUUID();
     sessions.set(id, { id });
     return { sessionId: id };
+  });
+
+  if (options.loadSession) {
+    const load = options.loadSession;
+    const open = async (params: Record<string, unknown>, replay: boolean) => {
+      if (typeof params?.sessionId !== 'string') throw RpcError.invalidParams('sessionId is required');
+      if (typeof params.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
+      const id = params.sessionId;
+      const writer = replay
+        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities).api
+        : undefined;
+      const result = await load({
+        sessionId: id,
+        cwd: params.cwd,
+        mcpServers: Array.isArray(params.mcpServers) ? params.mcpServers : [],
+        params,
+        ...(writer ? { replay: writer } : {}),
+      });
+      if (!sessions.has(id)) sessions.set(id, { id });
+      return result ?? {};
+    };
+    peer.onRequest<Record<string, unknown>>('session/load', (params) => open(params, true));
+    peer.onRequest<Record<string, unknown>>('session/resume', (params) =>
+      open(params, protocol === 2 && !!params?.replayFrom)
+    );
+  }
+
+  peer.onRequest('session/close', async (params: { sessionId?: string }) => {
+    const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
+    if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
+    session.controller?.abort(new Error('session closed'));
+    sessions.delete(session.id);
+    await options.closeSession?.(session.id);
+    return {};
   });
 
   peer.onNotification('session/cancel', (params: { sessionId?: string }) => {
@@ -255,6 +337,53 @@ class TurnWriter {
       },
       sendUpdate: (update) => this.update(update),
       request: (method, params, options) => peer.request(method, params, { signal, ...options }),
+      userMessage: (text) =>
+        this.update({ sessionUpdate: 'user_message_chunk', messageId: `${this.turnId}-u`, content: { type: 'text', text } }),
+      terminal: async (command, options) => {
+        if (protocol !== 1 || clientCapabilities.terminal !== true) throw new Error('The client offers no terminal');
+        const created = await peer.request<{ terminalId: string }>(
+          'terminal/create',
+          {
+            sessionId,
+            command,
+            args: options?.args ?? [],
+            env: Object.entries(options?.env ?? {}).map(([name, value]) => ({ name, value })),
+            ...(options?.cwd ? { cwd: options.cwd } : {}),
+            ...(options?.outputByteLimit ? { outputByteLimit: options.outputByteLimit } : {}),
+          },
+          { signal }
+        );
+        const ref = { sessionId, terminalId: created.terminalId };
+        return {
+          id: created.terminalId,
+          output: () => peer.request('terminal/output', ref, { signal }),
+          waitForExit: () => peer.request('terminal/wait_for_exit', ref, { signal }),
+          kill: async () => void (await peer.request('terminal/kill', ref)),
+          release: async () => void (await peer.request('terminal/release', ref)),
+        };
+      },
+      elicit: async (request) => {
+        const caps = clientCapabilities.elicitation as { form?: unknown; url?: unknown } | undefined;
+        const mode = request.url ? 'url' : 'form';
+        if (!caps || caps[mode] == null) throw new Error(`The client offers no ${mode} elicitation`);
+        const params = {
+          sessionId,
+          mode,
+          message: request.message,
+          ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+          ...(mode === 'form'
+            ? { requestedSchema: request.requestedSchema ?? { type: 'object', properties: {} } }
+            : { url: request.url, elicitationId: randomUUID() }),
+        };
+        try {
+          const answer = await peer.request<{ action?: string; content?: Record<string, unknown> }>('elicitation/create', params, { signal });
+          if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
+          if (answer?.action === 'decline') return { action: 'decline' };
+        } catch {
+          // Aborted with the turn, or an error answer.
+        }
+        return { action: 'cancel' };
+      },
     };
   }
 
