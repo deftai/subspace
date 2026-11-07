@@ -18,6 +18,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 |---|---|
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
+| `@deft-subspace/acp-testkit` (`packages/testkit`) | Record and replay traces, faults, conformance checks for agents and clients, and a corpus of real agents' traces. See its README. |
 
 ## What the prototype shows
 
@@ -69,6 +70,14 @@ The new packages sit next to the existing ones. The old packages and their tests
   - `..` can't leave it;
   - symbolic links are checked;
   - names starting with `..` are allowed.
+
+### Testkit (33 tests)
+
+- **Record and replay** in the kernel trace format. A replayed agent remaps ids both ways, matches the client's calls by method, and fails with expected vs got instead of hanging.
+- **Faults:** banner lines, odd and coalesced chunks, delay, disconnect after N messages, close mid-turn.
+- **Conformance:** `checkAgent` (7 checks) passes against `serveAgent` and official-SDK agents, v1 and v2, and catches a broken agent. `checkClient` (4 checks) passes against `AcpClient`, v1 and v2, and catches a careless official-SDK client.
+- **Quirks corpus:** three real Grok traces (plain, write rejected, cancel) replay to `AcpClient` with the same `TurnResult` as live.
+- **Live `checkAgent` against Grok:** initialize, session/new and cancel pass. An unknown session is answered `-32602`, not `-32002`.
 
 ### Live, against real Grok Build (`grok --permission-mode default agent stdio`)
 
@@ -170,9 +179,6 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - send only the unsent suffix of a message;
    - make repeated requests safe;
    - a rewind convention.
-5. **Testkit:**
-   - record and replay NDJSON traces;
-   - a quirks corpus of real agents;
-   - conformance checks for both agents and clients.
+5. **Testkit:** done (see above). Remaining: Claude and Codex traces in the corpus (the operator records them with `packages/testkit/scripts/record.ts`).
 6. **Devtools:** OpenTelemetry spans per request and per turn, and a browser trace viewer.
 7. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
