@@ -123,7 +123,8 @@ export function viewerApp(): void {
   const isProblem = (e: TraceEvent) => {
     if (e.level || e.cancel || e.kind === 'error' || e.kind === 'invalid') return true;
     const rq = e.request !== undefined ? A.requests[e.request] : undefined;
-    return !!rq && e.kind === 'request' && (rq.outcome === 'unanswered' || rq.outcome === 'cancelled' || !!rq.late);
+    // An answer after $/cancel_request is what the protocol expects (a result or -32800), so neither is a problem.
+    return !!rq && e.kind === 'request' && (rq.outcome === 'unanswered' || (rq.outcome === 'cancelled' && rq.cancelEvent === undefined));
   };
   let toastTimer = 0;
   const toast = (text: string) => {
@@ -315,7 +316,7 @@ export function viewerApp(): void {
       if (rqSeq < 0) continue;
       const rq = A.requests[rqSeq]!;
       const part = rq.event === e.seq ? 'start' : rq.response === e.seq ? 'end' : 'mid';
-      const c = rq.outcome === 'result' ? (rq.late ? 'cancelled' : 'ok') : rq.outcome === 'error' ? 'error' : 'cancelled';
+      const c = rq.outcome === 'result' ? 'ok' : rq.outcome === 'error' ? 'error' : 'cancelled';
       gutter += `<span class="span ${part} ${c}" style="left:${8 + l * 6}px"></span>`;
     }
 
@@ -342,7 +343,7 @@ export function viewerApp(): void {
       else badges += `<span class="badge cancelled">${rq.outcome === 'cancelled' ? 'cancelled' : 'no answer'}</span>`;
     } else if (rq && (e.kind === 'response' || e.kind === 'error') && rq.response === e.seq) {
       badges += `<span class="badge ${statusClass(rq.outcome)}">↩ ${ms(rq.latency)}</span>`;
-      if (rq.late) badges += `<span class="badge warn" title="Answered after the requester asked to cancel it">after cancel</span>`;
+      if (rq.late) badges += `<span class="badge" title="Answered after the requester asked to cancel it (expected: a cancelled request is still answered)">after cancel</span>`;
     }
     if (e.cancel) badges += `<span class="badge cancelled">cancel</span>`;
     if (e.toolCall !== undefined && e.update) {
@@ -545,7 +546,7 @@ export function viewerApp(): void {
     let rel = '';
     if (rq && e.kind === 'request' && !e.cancel) {
       rel = rq.response !== undefined
-        ? `${evLink(rq.response, rq.outcome === 'result' ? 'result' : rq.outcome)} after <b>${ms(rq.latency)}</b>${rq.late ? ' <span class="badge warn">after cancel</span>' : ''}`
+        ? `${evLink(rq.response, rq.outcome === 'result' ? 'result' : rq.outcome)} after <b>${ms(rq.latency)}</b>${rq.late ? ' <span class="badge">after cancel</span>' : ''}`
         : `<span class="badge cancelled">${rq.outcome === 'cancelled' ? 'cancelled, never answered' : 'never answered'}</span>`;
       if (rq.cancelEvent !== undefined) rel += ` · ${evLink(rq.cancelEvent, 'cancel requested')} at ${clock(A.events[rq.cancelEvent]!.t)}`;
     } else if (rq && (e.kind === 'response' || e.kind === 'error')) {

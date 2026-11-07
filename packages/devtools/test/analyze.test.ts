@@ -83,7 +83,9 @@ test('v1: cancel, a rejected permission, an error answer and ids 0 and "0"', () 
       [21, 'in', err('0', -32002, 'Unknown session nope')]
     )
   );
-  assert.deepEqual(a.diagnostics, []);
+  // "nope" only ever failed: noted, and not counted as a session.
+  assert.deepEqual(codes(a), ['session-unconfirmed']);
+  assert.deepEqual(a.sessions.map((s) => s.id), [S]);
   assert.deepEqual(a.turns.map((t) => [t.sessionId, t.status, t.stopReason]), [[S, 'cancelled', 'cancelled'], ['nope', 'error', 'error']]);
   assert.equal(a.turns[0]!.cancelEvent, 3);
   assert.deepEqual(a.cancels.map((c) => [c.kind, c.turn, c.confirmedAfter]), [['session', 0, 7]]);
@@ -221,4 +223,19 @@ test('a trace that starts mid-session, with no header, recorded by the agent', (
   assert.equal(a.events[0]!.turn, undefined);
   // From the header, too.
   assert.equal(analyzeTrace([{ v: 1, kind: 'header', started: '', peer: 'my-agent' }]).recorder, 'agent');
+});
+
+test('an id seen only in failed requests is not a session; one with updates or results is', () => {
+  const a = analyzeTrace(
+    trace(
+      'client',
+      [0, 'out', req(0, 'session/prompt', { sessionId: 'ghost', prompt: [text('hi')] })],
+      [1, 'in', err(0, -32002, 'Resource not found')],
+      [2, 'out', req(1, 'session/set_mode', { sessionId: 'early', modeId: 'default' })],
+      [3, 'in', res(1, {})],
+      [4, 'in', update('started-before-trace', { sessionUpdate: 'agent_message_chunk', content: text('x') })]
+    )
+  );
+  assert.deepEqual(a.sessions.map((s) => s.id), ['early', 'started-before-trace']);
+  assert.ok(a.diagnostics.some((d) => d.code === 'session-unconfirmed' && d.message.includes('"ghost"')));
 });

@@ -236,6 +236,8 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
   const pending = new Map<string, number>();
   const answered = new Map<string, number>();
   const sessionIndex = new Map<string, number>();
+  /** Sessions something succeeded for: created, loaded or resumed, updated, or a request about them answered with a result. */
+  const confirmed = new Set<string>();
   const activeTurn = new Map<string, number>();
   const turnOfRequest = new Map<number, number>();
   const permissionOfRequest = new Map<number, number>();
@@ -458,6 +460,7 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
       touchTurn(turn, event);
       event.label = method;
       if (method === 'session/update') {
+        if (sessionId !== undefined) confirmed.add(sessionId);
         const update = isObj(params.update) ? params.update : {};
         const kind = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : '?';
         event.update = kind;
@@ -567,6 +570,8 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
         rq.error = { code: typeof err.code === 'number' ? err.code : undefined, message: typeof err.message === 'string' ? err.message : undefined };
         if (err.data !== undefined) rq.error.data = err.data;
         rq.outcome = err.code === -32800 ? 'cancelled' : 'error';
+        // Loading names a session the client knew; a cancel says nothing against it.
+        if (rq.outcome === 'cancelled' && (method === 'session/load' || method === 'session/resume') && rq.sessionId !== undefined) confirmed.add(rq.sessionId);
         event.label = `${rq.outcome === 'cancelled' ? 'cancelled' : 'error'} ${err.code ?? ''} ${clip(String(err.message ?? ''), 80)}`.replace(/\s+/g, ' ').trim();
         if (rq.outcome === 'error') event.level = 'error';
         if (turnSeq !== undefined) endTurn(turnSeq, event, rq.outcome === 'cancelled' ? 'cancelled' : 'error', msg.error);
@@ -577,6 +582,7 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
       }
 
       rq.outcome = 'result';
+      if (rq.sessionId !== undefined) confirmed.add(rq.sessionId);
       event.label = resultLabel(method, result);
       if (method === 'initialize') {
         if (typeof result.protocolVersion === 'number') a.protocol = result.protocolVersion;
@@ -587,6 +593,7 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
         const requestMsg = (records[a.events[rq.event]!.index] as { msg?: { params?: { cwd?: unknown } } }).msg;
         const cwd = requestMsg?.params?.cwd;
         session(sid, rq.t, rq.event, method, typeof cwd === 'string' ? cwd : undefined);
+        confirmed.add(sid);
         event.sessionId = sid;
       } else if (method === 'session/prompt' && turnSeq !== undefined) {
         if (typeof result.stopReason === 'string') {
@@ -632,6 +639,11 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
     }
     if (turn.status === 'open') warn('warning', 'turn-open', `Turn ${turn.seq + 1} never ended; the trace may be cut short`, turn.event);
   }
+  // An id seen only in requests that failed (a prompt for an unknown session, say) is not a session.
+  for (const s of a.sessions) {
+    if (!confirmed.has(s.id)) warn('info', 'session-unconfirmed', `${JSON.stringify(s.id)} appears only in requests that failed; not counted as a session`, s.event);
+  }
+  a.sessions = a.sessions.filter((s) => confirmed.has(s.id));
   return a;
 }
 
