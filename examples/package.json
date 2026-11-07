@@ -10,6 +10,7 @@
   "dependencies": {
     "@deft-subspace/acp": "workspace:*",
     "@deft-subspace/acp-testkit": "workspace:*",
+    "@deft-subspace/claude": "workspace:*",
     "@deft-subspace/kernel": "workspace:*"
   }
 }

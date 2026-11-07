@@ -39,6 +39,17 @@ export {
   type PermissionRule,
 } from './policies.ts';
 export { findJson, JsonAnswerError, type JsonOptions, type SessionConveniences, type StandardSchema } from './conveniences.ts';
+export {
+  modelAgent,
+  type ModelAdapter,
+  type ModelAgentOptions,
+  type ModelConversation,
+  type ModelInput,
+  type ModelReply,
+  type ModelTool,
+  type ModelToolCall,
+} from './model-agent.ts';
+export { checkToolInput, tool, toolInputSchema, toolOutputText, type ToolContext, type ToolDefinition, type ToolSet } from './tools.ts';
 export { connectSession, openSession, type ConnectedSession, type ConnectSessionOptions, type SessionSetup } from './open.ts';
 export { type TextInfo, type TurnHandlers } from './handlers.ts';
 export { agentSupport, CapabilityError, clientSupport, type AgentSupport, type ClientSupport } from './capabilities.ts';

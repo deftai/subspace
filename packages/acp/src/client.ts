@@ -46,7 +46,9 @@ import {
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { backgroundOf, TurnProjection } from './projection.ts';
-import { McpProvider, mcpServersParam, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
+import { McpProvider, mcpServersParam, MCP_PROTOCOL_VERSION, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
+import { checkToolInput, toolInputSchema, toolOutputText, type ToolSet } from './tools.ts';
+import { READ_KINDS } from './policies.ts';
 import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
 
@@ -467,6 +469,55 @@ export class AcpClient {
    */
   serveMcp(options: ServeMcpOptions): McpRegistration {
     return this.mcp.serve(options);
+  }
+
+  /**
+   * Serve your own tools to the agent over this connection (MCP-over-ACP),
+   * without writing an MCP handler: discovery, `tools/list` and `tools/call`
+   * (with the input checked) are answered for you. Put the registration in a
+   * session's `mcpServers`. Read kinds are marked read-only for the agent.
+   */
+  serveTools(options: { name: string; tools: ToolSet; version?: string; serverId?: string }): McpRegistration {
+    const { name, tools } = options;
+    return this.serveMcp({
+      name,
+      ...(options.serverId ? { serverId: options.serverId } : {}),
+      handler: async ({ method, params, signal }) => {
+        if (method === 'server/discover') {
+          return { result: { supportedVersions: [MCP_PROTOCOL_VERSION], capabilities: { tools: {} }, serverInfo: { name, version: options.version ?? '0.0.0' } } };
+        }
+        if (method === 'tools/list') {
+          return {
+            result: {
+              tools: Object.entries(tools).map(([toolName, definition]) => ({
+                name: toolName,
+                description: definition.description,
+                inputSchema: toolInputSchema(definition),
+                ...(READ_KINDS.includes(definition.kind ?? '') ? { annotations: { readOnlyHint: true } } : {}),
+              })),
+            },
+          };
+        }
+        if (method === 'tools/call') {
+          const call = (params ?? {}) as { name?: string; arguments?: unknown };
+          const definition = call.name ? tools[call.name] : undefined;
+          if (!definition) return { error: { code: -32602, message: `Unknown tool ${String(call.name)}` } };
+          const checked = await checkToolInput(definition, call.arguments ?? {});
+          if ('problems' in checked) {
+            return { result: { resultType: 'complete', content: [{ type: 'text', text: `Invalid input: ${checked.problems.join('; ')}` }], isError: true } };
+          }
+          try {
+            const output = await definition.run(checked.value, { signal });
+            const structured = output !== null && typeof output === 'object' ? { structuredContent: output } : {};
+            return { result: { resultType: 'complete', content: [{ type: 'text', text: toolOutputText(output) }], ...structured, isError: false } };
+          } catch (error) {
+            // A failed tool is a result with isError, not a protocol error.
+            return { result: { resultType: 'complete', content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true } };
+          }
+        }
+        return { error: { code: -32601, message: `No method ${method}` } };
+      },
+    });
   }
 
   private mcpServers(servers: SessionMcpServers | undefined): unknown[] {

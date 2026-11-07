@@ -33,6 +33,7 @@ import {
   type ExtensionRequest,
 } from './extensions.ts';
 import { base64, SessionWork } from './background.ts';
+import { checkToolInput, toolOutputText, toolTitle, type ToolDefinition } from './tools.ts';
 import { McpCaller, type McpServerClient } from './mcp-caller.ts';
 import { parseMcpServers, type McpServer } from './mcp.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
@@ -144,6 +145,12 @@ export interface AgentTurn {
    *   await turn.tool({ title: 'Delete build/', kind: 'delete', ask: true }, () => rm('build', { recursive: true }));
    */
   tool<T>(init: string | (ToolCallInit & { id?: string; ask?: boolean | string }), run: (call: ToolCallHandle) => T | Promise<T>): Promise<T>;
+  /**
+   * Run a defined tool (`tool({...})`) as one step: its input is checked,
+   * its title, kind and `ask` used, and its output becomes the tool call's
+   * content. Resolves with the output; throws like `tool()`.
+   */
+  useTool<Input, Output>(definition: ToolDefinition<Input, Output>, input: Input, name?: string): Promise<Output>;
   plan(entries: Array<{ content: string; priority?: string; status?: string }>): Promise<void>;
   /**
    * Send a tool call update you already have in ACP shape (e.g. from a model
@@ -526,6 +533,25 @@ class TurnWriter {
       think: (t) => this.chunk('agent_thought_chunk', t),
       toolCall: (init) => this.toolCall(init),
       tool: (init, run) => this.tool(init, run),
+      useTool: async (definition, input, name = 'tool') => {
+        const checked = await checkToolInput(definition, input);
+        if ('problems' in checked) throw new Error(`${name}: invalid input: ${checked.problems.join('; ')}`);
+        const value = checked.value;
+        return this.tool(
+          {
+            title: toolTitle(name, definition, value),
+            kind: definition.kind ?? 'other',
+            rawInput: value,
+            ...(definition.ask ? { ask: definition.ask } : {}),
+          },
+          async (call) => {
+            const output = await definition.run(value, { signal: call.signal });
+            // Shown as text in the client; the caller gets the value.
+            await call.update({ content: [{ type: 'content', content: { type: 'text', text: toolOutputText(output) } } as ToolCallContent] });
+            return output;
+          }
+        );
+      },
       showTerminal: (init) => this.showTerminal(init),
       plan: (entries) =>
         this.update(
