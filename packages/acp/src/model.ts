@@ -40,13 +40,14 @@ export interface ToolCall {
 
 /**
  * v2: work running independently of the session's foreground work, as the
- * agent lists it on state updates. Unknown kinds are kept (they still count).
+ * agent lists it on state updates. Kinds this client does not know are kept
+ * as `other` (they still count as running). Narrow on `type`.
  */
 export type BackgroundItem =
   | { type: 'terminal'; terminalId: string }
   | { type: 'tool_call'; toolCallId: string }
   | { type: 'subagent'; sessionId: string }
-  | { type: string; [key: string]: unknown };
+  | { type: 'other'; rawType: string; raw: Record<string, unknown> };
 
 export interface PlanEntry {
   content: string;

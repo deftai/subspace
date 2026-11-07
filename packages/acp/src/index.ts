@@ -53,7 +53,14 @@ export {
 } from './mcp.ts';
 export { McpError, type McpCallOptions, type McpServerClient, type McpTool } from './mcp-caller.ts';
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
-export { configOptionsFrom, type ConfigChoice, type ConfigOption } from './config.ts';
+export {
+  configOptionsFrom,
+  type BooleanConfigOption,
+  type ConfigChoice,
+  type ConfigOption,
+  type OtherConfigOption,
+  type SelectConfigOption,
+} from './config.ts';
 export type {
   BackgroundItem,
   ContentBlock,

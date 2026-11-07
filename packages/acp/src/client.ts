@@ -34,7 +34,7 @@ import type {
 } from './model.ts';
 import { authMethodNames, authMethodsFrom, canLogout, type AuthMethod } from './auth.ts';
 import { agentSupport, CapabilityError, type AgentSupport } from './capabilities.ts';
-import { configOptionsFrom, configParams, type ConfigOption } from './config.ts';
+import { configOptionsFrom, configParams, type ConfigOption, type SelectConfigOption } from './config.ts';
 import {
   callExtension,
   registerExtensions,
@@ -543,9 +543,6 @@ interface ActiveTurn {
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
-/** A background item's id field (the union's unknown kinds hide the named ones from narrowing). */
-const field = (item: BackgroundItem, name: 'toolCallId' | 'terminalId'): unknown => (item as Record<string, unknown>)[name];
-
 const unrefTimer = (handle: ReturnType<typeof setTimeout>) => {
   (handle as { unref?: () => void }).unref?.();
   return handle;
@@ -628,8 +625,8 @@ export class Session {
   /** Whether a tool call is background work: listed, or showing a listed terminal. */
   private isBackground(call: Pick<ToolCall, 'id' | 'content'>): boolean {
     const list = this.currentBackground ?? [];
-    if (list.some((item) => item.type === 'tool_call' && field(item, 'toolCallId') === call.id)) return true;
-    const terminals = new Set(list.filter((item) => item.type === 'terminal').map((item) => field(item, 'terminalId')));
+    if (list.some((item) => item.type === 'tool_call' && item.toolCallId === call.id)) return true;
+    const terminals = new Set(list.flatMap((item) => (item.type === 'terminal' ? [item.terminalId] : [])));
     return call.content.some((c) => c.type === 'terminal' && terminals.has((c as { terminalId?: string }).terminalId as string));
   }
 
@@ -732,8 +729,8 @@ export class Session {
   }
 
   /** The model option (category `model`, a select), if the agent offers one. */
-  get model(): (ConfigOption & { type: 'select' }) | undefined {
-    return this.currentConfig.find((o): o is ConfigOption & { type: 'select' } => o.category === 'model' && o.type === 'select');
+  get model(): SelectConfigOption | undefined {
+    return this.currentConfig.find((o): o is SelectConfigOption => o.category === 'model' && o.type === 'select');
   }
 
   /** Choose a model: sets the option with category `model`. */
@@ -998,8 +995,7 @@ export class Session {
     const terminalId = subject?.terminalId;
     return list.some(
       (item) =>
-        (item.type === 'tool_call' && field(item, 'toolCallId') === toolCallId) ||
-        (item.type === 'terminal' && field(item, 'terminalId') === terminalId)
+        (item.type === 'tool_call' && item.toolCallId === toolCallId) || (item.type === 'terminal' && item.terminalId === terminalId)
     );
   }
 

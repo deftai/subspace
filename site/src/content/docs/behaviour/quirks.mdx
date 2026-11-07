@@ -1,0 +1,21 @@
+---
+title: Quirks of real agents
+description: What Grok Build and the Claude and Codex ACP adapters actually do, recorded and replayed by the test suite.
+---
+
+These come from the testkit's corpus: real sessions, recorded and redacted, that the test suite replays to the client, checking it gets the result recorded live. Each quirk is what the agent did, not what the spec says; Subspace handles each one.
+
+## Grok Build (recorded 2026-11-07)
+
+- A write rejected by the permission policy ends the turn with `stopReason: "cancelled"`, though the client did not cancel (`grok-write-rejected`).
+- A prompt for an unknown session is answered `-32602 Invalid params`, not `-32002` (seen with `checkAgent`; not in a trace).
+- Many `_x.ai/*` extension notifications arrive around `session/new` and each turn; the client ignores them.
+
+## Claude and Codex adapters (recorded 2026-11-07)
+
+- Both start in a mode that writes without asking (Claude `auto`, Codex `agent`); switch to Claude `default` or Codex `read-only` to be asked.
+- Claude's adapter (`@agentclientprotocol/claude-agent-acp` 0.101.0) speaks protocol v2. A rejected write ends the turn with `end_turn` and the tool call `failed` (`claude-write-rejected`).
+- Codex, like Grok, ends a turn whose write was rejected with `stopReason: "cancelled"` though the client did not cancel, and leaves the tool call `pending` (`codex-write-rejected`). `TurnResult.refused` counts refused requests, and `turnEnd(result)` gives `refused` for such a turn rather than `cancelled`. Its reject option is named `cancel` (kind `reject_once`).
+- Both send `_auth/status_update` with the signed-in account's email, organization and plan; the recorder redacts it.
+- Both confirm a cancel mid-stream with `stopReason: "cancelled"`; neither turn is forced (`claude-cancel`, `codex-cancel`).
+- `checkAgent` (`scripts/check-claude-codex.sh`, Claude in `default`, Codex in `read-only`): all 10 checks pass for both, on protocol v2 (2026-11-07). Claude lists no login methods; Codex lists two `agent` ones (API key, ChatGPT). Both offer `session/delete`, and a deleted session is gone from `session/list`.

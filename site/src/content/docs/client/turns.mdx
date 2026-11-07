@@ -1,0 +1,58 @@
+---
+title: Turns, events and results
+description: What a turn emits, what its result holds, and how to tell a refused turn from a cancelled one.
+---
+
+A turn is async-iterable: iterate it to get its events in order. Iterating it again later gives the same events. `turn.done` resolves with the result.
+
+```ts
+const turn = session.prompt('Add a test for parse()');
+for await (const event of turn) {
+  if (event.type === 'message') process.stdout.write(event.delta);
+}
+const result = await turn.done;
+```
+
+## Events
+
+The same on v1 and v2.
+
+| Event | Meaning |
+|---|---|
+| `message`, `thought` | Agent text. `delta` is what is new; `text` is the whole message so far. |
+| `user_message` | The user's message, as the agent echoes it (v2) or replays it on load. |
+| `tool_call` | A tool call was created or changed. `toolCall` is a snapshot: `title`, `kind`, `status`, `content`, `locations`, `rawInput`, `rawOutput`, and `cancellable` (v2). |
+| `permission` | The agent asked; `request` and `outcome` say what and how it was answered. |
+| `plan` | The agent's plan entries. |
+| `usage` | Context use: `used`, `size`, `cost`. |
+| `terminal` | A terminal the agent runs changed (v2). See [Agent terminals](../../background/terminals/). |
+| `state` | v2's run state: `running`, `requires_action` or `idle`, with `background` when the agent reports it. |
+| `session_info` | The session's title or update time changed. |
+| `exhausted` | A turn limit fired. See [Cancelling and limits](../cancelling/). |
+| `update` | Anything else, unchanged: available commands, notices, vendor updates. |
+
+## Results
+
+`TurnResult` has:
+
+- `stopReason`: `end_turn`, `cancelled`, `max_tokens`, `refusal`, `error`, ...
+- `text`: all agent message text, messages separated by a blank line.
+- `toolCalls`: every tool call, in its final state.
+- `cancelled`: whether this client cancelled the turn. `forced` means the agent did not confirm the cancel in time, so the turn was ended here.
+- `refused`: how many permission requests were refused (not counting those answered `cancelled` during a cancel).
+- `exhausted`: which limit fired, if one did.
+
+## Refused is not cancelled
+
+Some agents end a turn whose write you refused with stop reason `cancelled`, though nobody cancelled: Grok Build and the Codex adapter do (see [Quirks](../../behaviour/quirks/)). `turnEnd(result)` reads the whole result and tells them apart:
+
+```ts
+import { turnEnd } from '@deft-subspace/acp';
+switch (turnEnd(result)) {
+  case 'completed':
+  case 'refused':   // the agent stopped after a refused permission
+  case 'cancelled': // you cancelled
+  case 'limit':     // a turn limit fired
+  case 'error':
+}
+```

@@ -1,0 +1,26 @@
+---
+title: Background work
+description: Work that keeps running after a turn ends, and stopping it one item at a time (ACP v2).
+---
+
+import Example from '../../../components/Example.astro';
+import background from '../../../../../examples/background.ts?raw';
+
+An agent may keep work running after a turn ends: a dev server, a log watcher, a scheduled job. ACP v2 (the "Background work" RFD) lists it on every state update, and lets the client stop one item without cancelling the turn.
+
+<Example file="background.ts" ts={background} />
+
+## On the client
+
+- `session.background`: the latest list (`terminal`, `tool_call`, `subagent` items; unknown kinds as `other`). It is undefined when the agent does not report background work: that means unknown, not "nothing running".
+- `session.toolCalls`: tool calls of earlier turns. Later updates to background work patch these, not the current turn.
+- `session.cancelToolCall(id)` and `session.cancelTerminal(id)`: only for items that say they are `cancellable`. The agent confirms with a final status, or an exit.
+- `turn.cancel()` stops the foreground turn only; listed work keeps running. `session.close()` stops everything.
+- Permission questions about listed work are answered by your permission handler, even with no turn running.
+
+## On the agent
+
+- `turn.toolCall({ ..., cancellable: true })` and `turn.showTerminal({ ..., cancellable: true })` give handles with their own `signal`, fired by the client's cancel, by `session/close`, and by the turn's cancel until detached.
+- `handle.detach()` moves the item to the background. From then on every state update carries the `background` list. Finishing it (a final status, or an exit) removes it.
+- `tool_call/cancel` and `terminal/cancel` are answered for you, with `-32602` for unknown, finished or uncancellable items.
+- Tool calls can be `paused` and `cancelled`, besides `pending`, `in_progress`, `completed` and `failed`.

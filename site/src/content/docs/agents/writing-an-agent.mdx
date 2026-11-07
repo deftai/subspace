@@ -1,0 +1,40 @@
+---
+title: Writing an agent
+description: Serve ACP with one prompt handler; the library speaks v1 or v2 on the wire.
+---
+
+import Example from '../../../components/Example.astro';
+import agent from '../../../../../examples/agent-stdio.ts?raw';
+
+<Example file="agent-stdio.ts" ts={agent} />
+
+`serveAgent` answers `initialize`, `session/new`, `session/prompt`, `session/cancel` and `session/close`, and calls your `prompt` handler once per turn. Return a stop reason (default `end_turn`), or `'cancelled'` once `turn.signal` fires.
+
+## What the library does for you
+
+- **Both protocol versions.** v1 creates tool calls with `tool_call`; v2 upserts every change. v1 answers the prompt request; v2 sends `running` and `idle` state updates. Your handler is the same.
+- **Cancellation.** `session/cancel` fires `turn.signal`, and tool calls still open are then marked failed.
+- **Unknown sessions** get `-32002`, never a silently created session.
+- **Prompts during a turn** are refused, or queued in order with `queuePrompts`.
+
+## The turn
+
+| Call | Does |
+|---|---|
+| `say(text)`, `think(text)` | Stream agent text, or thoughts. |
+| `toolCall({ title, kind, status, rawInput })` | Show a tool call; the handle has `update`, `complete`, `fail`, `cancelled`, and `signal`. |
+| `requestPermission({ title, toolCallId })` | Ask the user; `allowed` is false for rejections and when the turn was cancelled. |
+| `elicit({ message, requestedSchema })` | Ask the user a question through the client. |
+| `plan(entries)` | Show a plan. |
+| `showTerminal({ command, cwd })` | v2: show a terminal you run. See [Agent terminals](../../background/terminals/). |
+| `mcp(name)` | Call an MCP server the client serves. See [MCP-over-ACP](../../mcp/over-acp/). |
+| `readFile`, `writeFile`, `terminal` | v1: use the client's files and terminals, when it offers them (`turn.clientSupports`). |
+| `request(method, params)` | Call the client directly; aborted with the turn. |
+
+## Options
+
+- `newSession`, `loadSession` and `closeSession` hooks. `loadSession` gets a `replay` writer for history, and providing it advertises loading and resuming.
+- `protocols`: the versions to accept (default both).
+- `mcpTransports`: the MCP server transports you take. `acp` is handled for you; for the others you connect yourself.
+- `capabilities`: extra fields for `initialize`.
+- `extensions`: typed vendor methods. See [Extensions](../extensions/).

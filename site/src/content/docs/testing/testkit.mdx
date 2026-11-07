@@ -1,0 +1,32 @@
+---
+title: The testkit
+description: Record and replay real agents, inject faults, and run conformance checks against agents and clients.
+---
+
+import Example from '../../../components/Example.astro';
+import testing from '../../../../../examples/testing.ts?raw';
+
+`@deft-subspace/acp-testkit` tests ACP agents and clients, written with Subspace or not. Everything uses one trace format: JSON Lines, a header and then `{ t, dir, msg }` records. Traces are language-neutral, so any implementation can replay them.
+
+<Example file="testing.ts" ts={testing} />
+
+## Record and replay
+
+- `recordAgent(command, options)` (from `./node`) runs a real agent and records the connection. `recorder()` gives a `tap` for any peer or client, and `tapChannel()` records any channel. `replaceStrings()` and `redactKeys()` keep paths and identities out of traces.
+- `replayAgent(channel, trace)` plays the agent's side back to a live client. It remaps ids, matches the client's calls by method in order, tolerates different params, and rejects `done` with a `ReplayDivergence` (expected vs got) instead of hanging.
+
+## Faults
+
+`faultChannel(channel, { read, write })` adds `delay`, `disconnectAfter`, `closeWhen(isUpdate(...))`, and for bytes `rechunk`, `merge`, `coalesce` and `injectLines` (banner lines and other noise real agents print).
+
+## Conformance
+
+- `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it.
+- `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
+- From the command line: `node --conditions=source packages/testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
+
+The checks are listed on [Conformance](../../behaviour/conformance/).
+
+## The quirks corpus
+
+`packages/testkit/corpus/` holds traces recorded from Grok Build and the Claude and Codex adapters: a plain turn, a cancel mid-stream, and a refused write, for each. The test suite replays them to the client and checks it gets the result recorded live. What they show is on [Quirks](../../behaviour/quirks/).

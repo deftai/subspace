@@ -5,7 +5,7 @@
  * v1 names an option `id`, v2 `configId`; both offer `select` options (with
  * choices, possibly grouped) and `boolean` ones. Choices are flattened here,
  * keeping the group's name. Options of a type this client does not know are
- * listed with `type` as sent and cannot be set.
+ * listed as `type: 'other'` (with the agent's type in `rawType`) and cannot be set.
  *
  *   const model = session.configOption('model');      // or by category:
  *   const effort = session.configOptions.find((o) => o.category === 'thought_level');
@@ -21,17 +21,37 @@ export interface ConfigChoice {
   group?: string;
 }
 
-export type ConfigOption = {
+interface ConfigOptionBase {
   id: string;
   name: string;
   description?: string;
   /** `mode`, `model`, `model_config`, `thought_level`, or the agent's own. */
   category?: string;
-} & (
-  | { type: 'select'; currentValue?: string; choices: ConfigChoice[] }
-  | { type: 'boolean'; currentValue?: boolean }
-  | { type: string; currentValue?: unknown }
-);
+}
+
+/** A choice among values (model, effort, mode). */
+export interface SelectConfigOption extends ConfigOptionBase {
+  type: 'select';
+  currentValue?: string;
+  choices: ConfigChoice[];
+}
+
+/** An on/off switch. */
+export interface BooleanConfigOption extends ConfigOptionBase {
+  type: 'boolean';
+  currentValue?: boolean;
+}
+
+/** An option of a type this client does not know; it cannot be set. */
+export interface OtherConfigOption extends ConfigOptionBase {
+  type: 'other';
+  /** The type the agent sent. */
+  rawType: string;
+  currentValue?: unknown;
+}
+
+/** Narrow on `type`: `if (option.type === 'select') option.choices`. */
+export type ConfigOption = SelectConfigOption | BooleanConfigOption | OtherConfigOption;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -72,7 +92,7 @@ function option(raw: Record<string, unknown>): ConfigOption | undefined {
   if (raw.type === 'boolean') {
     return { ...base, type: 'boolean', ...(typeof raw.currentValue === 'boolean' ? { currentValue: raw.currentValue } : {}) };
   }
-  return { ...base, type: String(raw.type), ...('currentValue' in raw ? { currentValue: raw.currentValue } : {}) };
+  return { ...base, type: 'other', rawType: String(raw.type), ...('currentValue' in raw ? { currentValue: raw.currentValue } : {}) };
 }
 
 /** The config options in a session/new, load, resume or set_config_option answer, or a `config_option_update`. */
@@ -98,11 +118,11 @@ export function configParams(
     return { params: { ...base, type: 'boolean', value } };
   }
   if (option.type === 'select') {
-    const choices = (option as { choices: ConfigChoice[] }).choices;
+    const choices = option.choices;
     if (typeof value !== 'string' || !choices.some((c) => c.value === value)) {
       return { problem: `${option.id} has no choice ${JSON.stringify(value)} (choices: ${choices.map((c) => c.value).join(', ') || 'none'})` };
     }
     return { params: protocol === 2 ? { ...base, type: 'id', value } : { ...base, value } };
   }
-  return { problem: `${option.id} is a "${option.type}" option, which this client cannot set` };
+  return { problem: `${option.id} is a "${option.rawType}" option, which this client cannot set` };
 }

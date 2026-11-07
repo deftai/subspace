@@ -4,9 +4,11 @@
   "type": "module",
   "description": "Deft Subspace: ACP for apps and agents (kernel, acp, testkit, devtools)",
   "scripts": {
-    "build": "pnpm --filter \"@deft-subspace/*\" run build",
-    "typecheck": "pnpm --filter \"@deft-subspace/*\" run typecheck",
-    "test": "pnpm --filter \"@deft-subspace/*\" run test",
+    "build": "pnpm --filter \"./packages/*\" run build",
+    "typecheck": "pnpm --filter \"./packages/*\" --filter ./examples run typecheck",
+    "test": "pnpm --filter \"./packages/*\" --filter ./examples run test",
+    "docs:dev": "pnpm run build && pnpm --filter ./site run dev",
+    "docs:build": "pnpm run build && pnpm --filter ./site run build",
     "proto:build": "pnpm run build",
     "proto:typecheck": "pnpm run typecheck",
     "proto:test": "pnpm run test"

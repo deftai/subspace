@@ -1,0 +1,30 @@
+---
+title: Permissions
+description: Answering an agent's permission questions, and why the default fails closed.
+---
+
+import Example from '../../../components/Example.astro';
+import permissions from '../../../../../examples/permissions.ts?raw';
+
+Agents ask before acting (`session/request_permission`). The client option `permissions` decides. The default is `'reject'`: nothing is allowed unless you say so.
+
+<Example file="permissions.ts" ts={permissions} />
+
+## Answers
+
+A fixed answer, or a function returning one of:
+
+- `'allow'` and `'reject'`: the agent's once-only option of that kind (or its always option, if that is all it offers).
+- `'allow_always'` and `'reject_always'`: prefer the always option.
+- `{ optionId }`: exactly that option.
+- `'cancelled'`.
+
+## Failing closed
+
+- A handler that throws, or returns an option the agent did not offer, is a rejection.
+- The handler's `signal` fires if the turn is cancelled while you decide. The question is then answered `cancelled`, as the spec requires.
+- A question that arrives when no turn is running is answered `cancelled`. The exception is a question about listed [background work](../../background/background-work/), which your handler answers.
+
+## What a request holds
+
+`request.title`, `request.toolCall` (the tool call as it stands, with this request's fields merged in), `request.command` (v2 command permissions: `command` and `cwd`), `request.options`, `request.protocol`, and `request.raw`.

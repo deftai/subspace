@@ -1,0 +1,14 @@
+---
+title: Trace viewer
+description: See what an ACP connection did, from a trace.
+---
+
+`@deft-subspace/devtools` reads a testkit trace and shows what happened: requests and their answers, timing, sessions, turns, and problems (an unanswered request, an update after a turn ended).
+
+```sh
+deft-subspace-trace trace.jsonl             # writes trace.html, a standalone viewer
+deft-subspace-trace trace.jsonl --summary   # prints a text summary
+deft-subspace-trace trace.jsonl -o out.html --title "Grok, refused write"
+```
+
+From code: `analyzeTrace(records)` gives the analysis, `formatSummary(analysis)` the text, and `renderTraceHtml(records, options)` the page.

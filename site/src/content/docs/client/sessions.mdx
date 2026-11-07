@@ -1,0 +1,65 @@
+---
+title: Sessions, modes, config and login
+description: Open, list, load, resume, close and delete sessions; switch modes and models; log in.
+---
+
+import Example from '../../../components/Example.astro';
+import sessions from '../../../../../examples/sessions.ts?raw';
+
+<Example file="sessions.ts" ts={sessions} />
+
+## Sessions
+
+```ts
+const session = await client.newSession({ cwd, additionalDirectories: ['/data'] });
+const { sessions, nextCursor } = await client.listSessions({ cwd });
+const { session: loaded, replayed } = await client.loadSession({ sessionId, cwd }); // with its history as events
+const resumed = await client.resumeSession({ sessionId, cwd });                     // without
+await session.close();
+await client.deleteSession(sessionId);
+```
+
+`client.supports` says what the agent offers. A call it did not offer throws a `CapabilityError` before anything is sent, and so does prompt content it does not take (images, audio, embedded resources).
+
+A prompt sent while a turn is running throws, unless you pass `{ queue: true }` or set the client option `queuePrompts`. Queued prompts run in order, and cancelling a queued prompt means it is never sent.
+
+## Modes
+
+`session.modes` holds the modes and the current one, whichever way the agent offers them: v1 `modes` with `session/set_mode`, or a config option with category `mode`. `session.setMode(id)` uses the right one.
+
+## Config options and models
+
+`session.configOptions` lists the agent's options (model, reasoning effort, mode, on/off switches), kept current as the agent reports changes. Narrow on `type`:
+
+```ts
+for (const option of session.configOptions) {
+  if (option.type === 'select') console.log(option.id, option.choices.map((c) => c.value));
+  if (option.type === 'boolean') console.log(option.id, option.currentValue);
+}
+await session.setConfigOption('effort', 'high');
+await session.setConfigOption('fast', true);
+await session.setModel('opus'); // the select option with category "model"
+```
+
+A value the agent did not offer is refused before anything is sent. Option types this client does not know are listed as `type: 'other'` and cannot be set.
+
+## Logging in
+
+`client.authMethods` lists how the agent lets you log in. `client.authenticate(id)` sends v1 `authenticate` or v2 `auth/login`, and `client.logout()` logs out when the agent offers it (`client.canLogout`).
+
+- `agent` methods are handled by the agent itself, which may open a browser.
+- `terminal` methods are listed only when you pass `terminalAuth: true`. They ask you to run the agent again in a terminal, with `args` and `env` added.
+
+## Files and terminals (v1)
+
+ACP v1 lets an agent ask the client to read and write files and run commands. The `./node` helpers confine both to a workspace:
+
+```ts
+import { workspaceFiles, workspaceTerminals } from '@deft-subspace/acp/node';
+const client = await AcpClient.connect(channel, {
+  files: workspaceFiles(repo),         // paths cannot leave repo, symbolic links included
+  terminals: workspaceTerminals(repo), // process groups, capped output, kill
+});
+```
+
+Without these options the client advertises neither. ACP v2 removes these methods; there, a client offers its own tools through [MCP](../../mcp/servers/).

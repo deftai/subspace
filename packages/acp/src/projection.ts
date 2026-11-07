@@ -27,12 +27,17 @@ export interface StateChange {
   background?: BackgroundItem[];
 }
 
-/** A state update's `background`: a list of items with a string type, else not reported. */
+/** A state update's `background`: a list of items with a string type, else not reported (undefined). */
 export function backgroundOf(update: Record<string, unknown>): BackgroundItem[] | undefined {
   const list = update.background;
   if (!Array.isArray(list)) return undefined;
   if (!list.every((item) => isRecord(item) && typeof item.type === 'string')) return undefined;
-  return list as BackgroundItem[];
+  return (list as Array<Record<string, unknown>>).map((item): BackgroundItem => {
+    if (item.type === 'terminal' && typeof item.terminalId === 'string') return { type: 'terminal', terminalId: item.terminalId };
+    if (item.type === 'tool_call' && typeof item.toolCallId === 'string') return { type: 'tool_call', toolCallId: item.toolCallId };
+    if (item.type === 'subagent' && typeof item.sessionId === 'string') return { type: 'subagent', sessionId: item.sessionId };
+    return { type: 'other', rawType: String(item.type), raw: item };
+  });
 }
 
 export class TurnProjection {
