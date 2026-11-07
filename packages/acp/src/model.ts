@@ -63,7 +63,11 @@ export type TurnEvent =
   /** Agent text. `delta` is what is new; `text` is the whole message so far. */
   | { type: 'message'; messageId: string; delta: string; text: string }
   | { type: 'thought'; messageId: string; delta: string; text: string }
-  /** A tool call was created or changed. `toolCall` is its full current state. */
+  /**
+   * A tool call was created or changed. `toolCall` is a snapshot of its full
+   * state at that moment; `turn.toolCalls` has the latest, which can already
+   * include later updates (or a permission request's fields) when you look.
+   */
   | { type: 'tool_call'; toolCall: Readonly<ToolCall>; created: boolean }
   | { type: 'plan'; entries: PlanEntry[] }
   | { type: 'permission'; request: PermissionRequest; outcome: PermissionOutcome }

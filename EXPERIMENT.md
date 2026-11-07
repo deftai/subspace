@@ -114,6 +114,24 @@ The operator ran this one.
 - an extra blank line after text that already ends a line;
 - updates sent right after `session/new` could be dropped, both before the session existed and before its listener was added.
 
+### Bridge's ACP server side
+
+Bridge's `StdioTransport`, the transport `bridge` uses to serve editors, is now an adapter over `RpcPeer`.
+
+- **Message order:** a client request stays open until Bridge answers it, and `sendResponse` resolves only once the answer is written, so message order is kept.
+- **Changed behaviour:**
+  - requests to the client have no fixed 120-second timeout any more;
+  - the client's error codes and data are kept.
+- **Results:**
+  - All 1221 unit tests and 23 integration tests pass.
+  - Live: a Subspace client talked to `bridge` over this transport, `bridge` used its Grok backend, and a real Grok turn completed end to end.
+- **What Bridge's tests and lint caught in the kernel:**
+  - requests with a `null` id, which JSON-RPC 2.0 allows, were rejected;
+  - an unserializable message could break the output stream;
+  - handler params were typed `any`.
+
+  All three are fixed. New API: `RpcPeer.sendRaw`, and a `cancelRequest` preset.
+
 ## Try it
 
 `packages/acp/examples/quickstart.ts` writes an agent and a client against each other in one process: streaming, a tool call, a permission question, and a cancel. It runs on v2, or on v1 with `PROTOCOL=1`.
@@ -132,7 +150,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
 
 ## Not done yet (next steps, if this direction holds)
 
-1. **Bridge:** done for `bridge mcp` (see above). Remaining: the Claude and Codex live runs, and Bridge's ACP server side (`transport/stdio`) on `serveAgent`.
+1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). Remaining: the Claude and Codex live runs, and Bridge's request handling on `serveAgent`.
 2. **Agent side:**
    - `session/load` and `session/resume`;
    - several turns queued per session;
