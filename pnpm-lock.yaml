@@ -71,6 +71,8 @@ importers:
         specifier: workspace:*
         version: link:../kernel
 
+  packages/create-subspace: {}
+
   packages/devtools:
     dependencies:
       '@deft-subspace/kernel':
