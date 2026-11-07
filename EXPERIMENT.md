@@ -185,14 +185,15 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - session config options (v1 modes and v2 config options as one API);
    - capability-typed peers;
    - first-class events for v2 `user_message` and `session_info_update` (title).
-4. **Journal projection kit for Ideal:**
-   - stamp updates with sequence numbers and replay on load;
-   - send only the unsent suffix of a message;
-   - make repeated requests safe;
-   - a rewind convention.
-5. **Testkit:**
-   - record and replay NDJSON traces;
-   - a quirks corpus of real agents;
-   - conformance checks for both agents and clients.
-6. **Devtools:** OpenTelemetry spans per request and per turn, and a browser trace viewer.
-7. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
+4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
+5. **Testkit (`experiment/acp-testkit`, `packages/testkit`, first cut done, 33 tests):**
+   - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;
+   - still to do: Claude and Codex traces (the operator records them, since they need `npx`);
+   - still to do: whether Grok's `-32602` for an unknown session counts as a known quirk or a failure;
+   - still to do: move the package to `packages/acp-testkit` once the old package is retired.
+6. **Devtools (`experiment/devtools`, first cut done, 14 tests):**
+   - built: the trace analyzer, a standalone HTML viewer and the CLI;
+   - still to do: check the viewer in a real browser;
+   - still to do: OpenTelemetry spans per request and per turn.
+7. **Bounded turns:** `Turn` limits on time, tool calls and usage, ending with an explicit "exhausted" result.
+8. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
