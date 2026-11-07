@@ -19,6 +19,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
 | `@deft-subspace/acp-testkit` (`packages/testkit`) | Record and replay traces, faults, conformance checks for agents and clients, and a corpus of real agents' traces. See its README. |
+| `@deft-subspace/devtools` | `analyzeTrace` (requests paired with answers, turns, tool calls, permissions, cancels, problems) and `renderTraceHtml`, a self-contained browser viewer for kernel traces. CLI: `deft-subspace-trace`. |
 
 ## What the prototype shows
 
@@ -175,6 +176,8 @@ node --conditions=source packages/acp/examples/quickstart.ts
 pnpm proto:test        # kernel + acp
 pnpm proto:typecheck
 pnpm proto:build       # emits dist/ with .js imports
+node --conditions=source packages/devtools/examples/sample-trace.ts   # writes packages/devtools/samples/sample-v{1,2}.html
+node --conditions=source packages/devtools/src/cli.ts some.trace.jsonl [-o out.html] [--summary]
 node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
 PROMPT="Count to 400" CANCEL_AFTER_MS=300 node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
 ```
@@ -200,7 +203,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - still to do: Claude and Codex traces (the operator records them, since they need `npx`);
    - still to do: whether Grok's `-32602` for an unknown session counts as a known quirk or a failure;
    - still to do: move the package to `packages/acp-testkit` once the old package is retired.
-6. **Devtools (`experiment/devtools`, first cut done, 14 tests):**
+6. **Devtools (`packages/devtools`, merged, first cut done, 14 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
    - still to do: check the viewer in a real browser;
    - still to do: OpenTelemetry spans per request and per turn.
