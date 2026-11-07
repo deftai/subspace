@@ -214,3 +214,17 @@ test('a v2 whole-message upsert after streamed chunks does not repeat text', asy
   assert.equal((await turn.done).text, 'Hello');
   await client.close();
 });
+
+test('text: a tool call seen first in a permission request separates text; a line end needs no blank line', async () => {
+  const { TurnProjection } = await import('@deft-subspace/acp');
+  const p = new TurnProjection('t');
+  const chunk = (text: string) => p.apply({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+  chunk('Before.');
+  p.mergeToolCall({ toolCallId: 'x', title: 'Write' });
+  chunk('After.');
+  p.apply({ sessionUpdate: 'tool_call', toolCallId: 'y', title: 'Read' });
+  chunk('Line\n');
+  p.apply({ sessionUpdate: 'tool_call_update', toolCallId: 'y', status: 'completed' });
+  chunk('End.');
+  assert.equal(p.text, 'Before.\n\nAfter.\n\nLine\nEnd.');
+});
