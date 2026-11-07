@@ -130,6 +130,7 @@ export const BUILTIN_AGENTS = {
       'account-in-auth-status': {
         summary: 'Sends the signed-in account (email, organization, plan) in _auth/status_update',
         fix: 'The testkit recorder redacts it from traces',
+        seen: 'claude-agent-acp 0.101.0',
       },
     },
   },
@@ -143,6 +144,7 @@ export const BUILTIN_AGENTS = {
         summary: 'Starts in agent mode, where it runs commands without asking',
         apply: { mode: 'read-only' },
         fix: 'Sessions switch to read-only mode, where it asks first (and still acts once allowed)',
+        seen: 'codex-acp 2.5.0',
       },
       'refused-turn-ends-cancelled': {
         summary: 'A refused write ends the turn with stop reason cancelled, though nobody cancelled, and leaves the tool call pending',
@@ -153,10 +155,12 @@ export const BUILTIN_AGENTS = {
       'reject-option-named-cancel': {
         summary: 'Its reject option is named cancel (kind reject_once)',
         fix: 'Permission answers pick options by kind, not name',
+        seen: 'codex-acp 2.5.0',
       },
       'account-in-auth-status': {
         summary: 'Sends the signed-in account in _auth/status_update',
         fix: 'The testkit recorder redacts it from traces',
+        seen: 'codex-acp 2.5.0',
       },
     },
   },
@@ -179,10 +183,12 @@ export const BUILTIN_AGENTS = {
       'refused-turn-ends-cancelled': {
         summary: 'A refused write ends the turn with stop reason cancelled, though nobody cancelled',
         fix: 'turnEnd() reports refused (result.refused counts it)',
+        seen: 'Grok Build 1.0.77, 2026-11',
       },
       'vendor-notifications': {
         summary: 'Sends many _x.ai/* extension notifications around session/new and each turn',
         fix: 'The client ignores extension notifications it has no handler for',
+        seen: 'Grok Build 1.0.77, 2026-11',
       },
     },
   },

@@ -95,3 +95,50 @@ for (const agent of ['claude', 'codex']) {
     assert.deepEqual([result.stopReason, result.cancelled, result.forced], ['cancelled', true, false]);
   });
 }
+
+// The catalog's quirks (packages/acp/src/agents.ts), as the corpus shows them.
+
+/** Every JSON-RPC message in a corpus trace. */
+async function messages(file: string): Promise<Array<Record<string, any>>> {
+  const records = await loadTrace(join(dir, file));
+  return records.flatMap((r: any) => (r.kind === 'message' ? [r.msg] : []));
+}
+
+/** The mode a session starts in: the session/new result's mode option. */
+async function startingMode(file: string): Promise<string | undefined> {
+  for (const msg of await messages(file)) {
+    const options = msg.result?.configOptions as Array<Record<string, any>> | undefined;
+    const mode = options?.find((o) => o.category === 'mode' || o.id === 'mode');
+    if (mode) return mode.currentValue;
+  }
+  return undefined;
+}
+
+test('quirk starts-in-auto-mode: Claude starts a session in auto mode', async () => {
+  assert.equal(await startingMode('claude-plain.trace.jsonl'), 'auto');
+});
+
+test('quirk starts-in-agent-mode: Codex starts a session in agent mode', async () => {
+  assert.equal(await startingMode('codex-plain.trace.jsonl'), 'agent');
+});
+
+test('quirk reject-option-named-cancel: Codex offers its reject option as "cancel" (kind reject_once)', async () => {
+  const ask = (await messages('codex-write-rejected.trace.jsonl')).find((m) => m.method === 'session/request_permission');
+  const reject = ask?.params.options.find((o: any) => o.kind === 'reject_once');
+  assert.equal(reject?.optionId, 'cancel');
+});
+
+test('quirk account-in-auth-status: the account in _auth/status_update is redacted in the corpus', async () => {
+  for (const agent of ['claude', 'codex']) {
+    const updates = (await messages(`${agent}-plain.trace.jsonl`)).filter((m) => m.method === '_auth/status_update');
+    assert.ok(updates.length, `${agent} sends _auth/status_update`);
+    for (const u of updates) for (const value of Object.values(u.params.authStatus.account ?? {})) assert.equal(value, '<redacted>');
+  }
+});
+
+test('quirk vendor-notifications: Grok sends _x.ai/* notifications, and the replay ignores them', async () => {
+  const vendor = (await messages('grok-plain.trace.jsonl')).filter((m) => m.method?.startsWith('_x.ai/') && m.id === undefined);
+  assert.ok(vendor.length >= 10, `${vendor.length} _x.ai notifications`);
+  const { result } = await replayCorpus('grok-plain.trace.jsonl');
+  assert.equal(result.stopReason, 'end_turn');
+});
