@@ -193,7 +193,9 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - `turn.terminal()` and `turn.elicit()`, which check the client's capabilities;
    - `turn.userMessage()`.
 
-   Still to do: several turns queued per session, and a typed registry for `_vendor` methods (today: `methods`).
+   - prompt queueing (`queuePrompts`): prompts run in order, and `session/cancel` cancels the queued ones too;
+   - `turn.clientSupports`, plus `turn.readFile()`, `turn.writeFile()` and `turn.completeElicitation()`;
+   - typed extensions (`extensions`, `turn.call()`, `turn.notify()`).
 3. **Client side:** done:
    - `client.loadSession()` returns the replayed events, using v1 load or v2 resume from the start;
    - `client.resumeSession()` and `session.close()`;
@@ -202,7 +204,11 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - `user_message` and `session_info` events, with `session.info.title`;
    - session modes as one API (done earlier).
 
-   Still to do: capability-typed peers, and `elicitation/complete`.
+   - `client.supports`: one capability shape for v1 and v2, with `CapabilityError` thrown before any request the agent can't answer, including prompt content it doesn't accept;
+   - `client.listSessions()`;
+   - queued prompts (`{ queue }`); cancelling a queued prompt means it is never sent;
+   - typed extensions (`extensionRequest`, `extensionNotification`, `handle`): names start with `_`, and optional validators check params where they arrive and results where they return;
+   - `onElicitationComplete`.
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** a second pass is planned.
 5. **Testkit (`packages/testkit`, merged, first cut done, 33 tests):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;
@@ -216,5 +222,5 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - still to do: sessions seen only in error replies count as real sessions;
    - still to do: anything found when looking at it in a browser;
    - still to do: OpenTelemetry spans per request and per turn.
-7. **Bounded turns:** done. `session.prompt(input, { limits })`, or the client's `limits` option, takes `maxDurationMs`, `idleMs`, `maxToolCalls` and `maxUsage`. A limit cancels the turn the normal way, pushes an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`. 11 tests cover v1 and v2. Still to do: expose the limits in `bridge mcp`.
+7. **Bounded turns:** done. `session.prompt(input, { limits })`, or the client's `limits` option, takes `maxDurationMs`, `idleMs`, `maxToolCalls` and `maxUsage`. A limit cancels the turn the normal way, pushes an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`. 11 tests cover v1 and v2. In `bridge mcp`: the `prompt` tool takes `max_turn_seconds`, `idle_seconds` and `max_tool_calls`, `[mcp.limits]` sets the defaults, and the report says which limit fired.
 8. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
