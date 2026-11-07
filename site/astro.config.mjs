@@ -10,6 +10,7 @@ const packages = [
   { name: 'kernel', label: '@deft-subspace/kernel', entryPoints: ['../packages/kernel/src/index.ts', '../packages/kernel/src/node.ts'] },
   { name: 'testkit', label: '@deft-subspace/acp-testkit', entryPoints: ['../packages/testkit/src/index.ts', '../packages/testkit/src/node.ts'] },
   { name: 'devtools', label: '@deft-subspace/devtools', entryPoints: ['../packages/devtools/src/index.ts'] },
+  { name: 'claude', label: '@deft-subspace/claude', entryPoints: ['../packages/claude/src/index.ts'] },
 ];
 const reference = packages.map((pkg) => {
   const [plugin, sidebarGroup] = createStarlightTypeDocPlugin();
@@ -38,12 +39,13 @@ export default defineConfig({
       lastUpdated: true,
       plugins: [...reference.map((r) => r.plugin), starlightLlmsTxt({ projectName: 'Subspace' })],
       sidebar: [
-        { label: 'Start', items: ['getting-started', 'concepts'] },
+        { label: 'Start', items: ['getting-started', 'concepts', 'cli'] },
+        { label: 'Cookbook', items: ['cookbook', 'cookbook/review', 'cookbook/commit-message', 'cookbook/compare', 'cookbook/editor-tools', 'cookbook/tiny-agent'] },
         {
           label: 'Clients',
-          items: ['client/starting-agents', 'client/handlers', 'client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
+          items: ['client/starting-agents', 'client/handlers', 'client/terminal', 'client/answers', 'client/turns', 'client/permissions', 'client/cancelling', 'client/sessions', 'client/questions'],
         },
-        { label: 'Agents', items: ['agents/writing-an-agent', 'agents/extensions'] },
+        { label: 'Agents', items: ['agents/writing-an-agent', 'agents/tools', 'agents/model-agents', 'agents/extensions'] },
         { label: 'MCP', items: ['mcp/servers', 'mcp/over-acp'] },
         { label: 'Terminals and background work', items: ['background/terminals', 'background/background-work'] },
         { label: 'Testing', items: ['testing/testkit', 'testing/devtools'] },

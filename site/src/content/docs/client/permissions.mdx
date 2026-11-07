@@ -10,6 +10,27 @@ Agents ask before acting (`session/request_permission`). The client option `perm
 
 <Example file="permissions.ts" ts={permissions} />
 
+## Ready-made rules
+
+Most programs need one of a few answers, so they come ready-made:
+
+```ts
+import { allow, allowInside, firstOf, readOnly, reject } from '@deft-subspace/acp';
+import { askInTerminal } from '@deft-subspace/acp/node';
+
+start('claude', { onPermission: readOnly });                                   // reads and searches yes, the rest no
+start('claude', { onPermission: firstOf(allowInside(repo), askInTerminal()) }); // edits inside the repo yes, ask about the rest
+start('claude', {
+  onPermission: firstOf(reject({ commands: /rm -rf|git push/ }), allow({ kinds: ['read', 'search', 'execute'] }), 'reject'),
+});
+```
+
+- A rule returns a decision, or nothing ("no opinion"). `firstOf(...)` tries them in order; a fixed answer (`'allow'`, `'reject'`) can end the list, and with no decision at all it rejects.
+- `allow(match)` and `reject(match)` match on tool `kinds`, `titles`, `commands` (a string to look for, or a regular expression) and `inside` (every path the request touches is inside a folder). The paths come from the tool call's locations and the usual input fields; `..` cannot leave the folder.
+- `allowInside(root)` is `allow({ inside: root })`; `readOnly` allows the read kinds (`read`, `search`, `fetch`, `think`).
+- `askInTerminal()` asks y / n / always (always: for that kind of tool, while the handler lives). With no terminal to ask on, it rejects.
+- `onPermission` also takes a fixed answer: `onPermission: 'reject'`.
+
 ## Answers
 
 A fixed answer, or a function returning one of:

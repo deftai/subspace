@@ -1,0 +1,15 @@
+---
+title: Cookbook
+description: Short programs for common jobs, each a real file in examples/.
+---
+
+| Recipe | What it shows |
+|---|---|
+| [Review the staged diff](review/) | `json()` with a schema: findings as typed data, and an exit code for CI |
+| [Write a commit message](commit-message/) | `run()` in one line, with nothing allowed |
+| [Ask several agents](compare/) | `run()` on several agents at once, with timeouts |
+| [Tools from your app](editor-tools/) | `serveTools()`: give an agent your app's own state |
+| [A tiny agent of your own](tiny-agent/) | `serveStdio()` and `turn.tool()`, and a client for it |
+| [An agent backed by Claude](../agents/model-agents/) | `modelAgent()` and `claude()` |
+
+To start a project of your own: `npx create-subspace my-app --template script|agent|claude-agent` (see [Getting started](../getting-started/#start-a-project)).

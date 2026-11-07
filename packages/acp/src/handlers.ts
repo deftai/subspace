@@ -17,7 +17,7 @@
  *   own handlers replace them one by one.
  */
 import type { ElicitationHandler } from './client.ts';
-import type { PermissionHandler } from './permissions.ts';
+import type { PermissionPolicy } from './permissions.ts';
 import type { BackgroundItem, PlanEntry, ToolCall, TurnEvent } from './model.ts';
 
 /** Any return value is fine (`process.stdout.write` returns a boolean); a promise is awaited. */
@@ -61,8 +61,11 @@ export interface TurnHandlers {
   onLimit?(event: Of<'exhausted'>): Maybe;
   /** Every event, after its own handler. */
   onEvent?(event: TurnEvent): Maybe;
-  /** Answer this turn's permission questions (replaces the client's `permissions`). */
-  onPermission?: PermissionHandler;
+  /**
+   * Answer this turn's permission questions (replaces the client's
+   * `permissions`): a function, or a fixed 'allow' / 'reject'.
+   */
+  onPermission?: PermissionPolicy;
   /**
    * Answer this turn's questions to the user (replaces the client's
    * `elicitation`). The client must advertise elicitation: pass an

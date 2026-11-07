@@ -1,0 +1,23 @@
+---
+title: Terminal output
+description: terminal() renders a turn in the terminal; askInTerminal() asks the user there.
+---
+
+```ts
+import { askInTerminal, firstOf, readOnly, start, terminal } from '@deft-subspace/acp/node';
+
+const agent = await start('claude', { ...terminal(), onPermission: firstOf(readOnly, askInTerminal()) });
+await agent.run('Fix the failing test');
+```
+
+`terminal()` returns [handlers](../handlers/): spread it into `start()`, `connectSession()`, `AcpClient.connect()` or a single prompt. It shows:
+
+- the agent's text as it streams, messages separated;
+- thoughts, dimmed (`thoughts: false` to hide);
+- a line per tool call, and its result: `• Run npm test`, then `✓` or `✗`;
+- answered permission questions: `? Delete build/ refused`;
+- plans, and limits that stopped the turn.
+
+Colours appear only when the output is a terminal and `NO_COLOR` is not set; `color` forces them on or off, and `out` writes somewhere else.
+
+`askInTerminal()` is a permission answer that asks the user: `[y]es / [n]o / [a]lways for <kind> tools`. One question at a time; a cancelled turn withdraws its question; with no terminal it rejects and says why, once.

@@ -252,12 +252,12 @@ function traceFile(path: string, label: string, cwd: string) {
 export async function run(
   agent: Parameters<typeof start>[0],
   prompt: string | ContentBlock | ContentBlock[],
-  options: StartOptions & Pick<PromptOptions, 'limits'>
+  options: StartOptions & Pick<PromptOptions, 'limits' | 'timeoutMs' | 'signal'>
 ): Promise<TurnResult> {
-  const { limits, ...startOptions } = options;
+  const { limits, timeoutMs, signal, ...startOptions } = options;
   const started = await start(agent, startOptions);
   try {
-    return await started.run(prompt, limits ? { limits } : {});
+    return await started.run(prompt, { ...(limits ? { limits } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(signal ? { signal } : {}) });
   } finally {
     await started.close();
   }

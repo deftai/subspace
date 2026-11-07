@@ -58,6 +58,16 @@ An agent and a client joined by an in-memory channel: nothing to install, and th
 
 <Example file="in-process.ts" ts={inProcess} />
 
+## Start a project
+
+```sh
+npx create-subspace my-app                            # a script that uses an agent
+npx create-subspace my-agent --template agent         # an agent of your own
+npx create-subspace my-agent --template claude-agent  # an agent backed by Claude
+```
+
+The packages are not on npm yet: until they are, add `--subspace <path to a checkout>` to link a local one. Or skip code entirely: `subspace run claude "..."` (see [The subspace command](../cli/)).
+
 ## Three layers
 
 - **`run()` and `start()`** (`@deft-subspace/acp/node`): known agents, sensible defaults, handlers.

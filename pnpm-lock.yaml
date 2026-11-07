@@ -29,6 +29,10 @@ importers:
       '@deft-subspace/kernel':
         specifier: workspace:*
         version: link:../packages/kernel
+    devDependencies:
+      zod:
+        specifier: ^4.1.0
+        version: 4.6.7
 
   packages/acp:
     dependencies:

@@ -53,6 +53,11 @@ await run('What does this repo do?');
 await close();
 ```
 
+## Seeing what happened, and errors that help
+
+- `trace: 'run.jsonl'` records the whole connection; open it with `deft-subspace-trace run.jsonl` (or `subspace trace run.jsonl`) to see every request, answer, tool call and permission, with timing.
+- A missing program says how to install it; an agent that needs a login says how to log in (`codex login`, ...); a slow first start through `npx` says it is downloading the adapter (`quiet: true` to silence notices).
+
 ## Options
 
 Everything `connectAgent` takes (timeouts, `env`, `onStderr`, ...), plus `extraArgs` (after the preset's), `mode`, `session: { mcpServers, additionalDirectories }`, `files: false` to serve no files, and any [handler](../handlers/) as a default for every turn.

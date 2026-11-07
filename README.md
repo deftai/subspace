@@ -20,7 +20,9 @@ try {
 }
 ```
 
-Or in one line: `await run('codex', 'What does this repo do?', { permissions: 'reject' })`. Underneath are `AcpClient`, `Session` and `Turn` (async-iterable events and an awaitable result) for full control, and `serveAgent` / `serveStdio` for writing agents.
+Or in one line: `await run('codex', 'What does this repo do?', { permissions: 'reject' })`. Or no code at all: `subspace run claude "What does this repo do?"`.
+
+Also there: ready-made permission rules (`readOnly`, `allowInside(repo)`, `askInTerminal()`), a terminal renderer (`terminal()`), `agent.json(prompt, { schema })` for typed answers, `trace: 'run.jsonl'` to record a session, tools as data (`tool()`), and `modelAgent({ model: claude(), tools })` for an agent backed by a model. Underneath are `AcpClient`, `Session` and `Turn` (async-iterable events and an awaitable result) for full control, and `serveAgent` / `serveStdio` for writing agents.
 
 ## Packages
 
@@ -30,6 +32,9 @@ Or in one line: `await run('codex', 'What does this repo do?', { permissions: 'r
 | [`@deft-subspace/acp`](./packages/acp) | `AcpClient` and `serveAgent`, plus `./node` helpers to start agent programs and confine file and terminal access to a workspace. |
 | [`@deft-subspace/acp-testkit`](./packages/testkit) | Trace recording and replay, fault injection, conformance checks for agents and clients, and a corpus of real agents' quirks. |
 | [`@deft-subspace/devtools`](./packages/devtools) | A trace analyzer and a standalone HTML trace viewer. |
+| [`@deft-subspace/cli`](./packages/cli) | `subspace run`, `chat`, `agents`, `check` and `trace`: agents from the command line. |
+| [`@deft-subspace/claude`](./packages/claude) | `claude()`: a Claude model for `modelAgent()`, so an ACP agent backed by Claude is a short file. |
+| [`create-subspace`](./packages/create-subspace) | `npx create-subspace my-app --template script\|agent\|claude-agent` starts a project. |
 
 **Start with the [guide](./docs/GUIDE.md).** It goes from a first turn to MCP, background work and writing an agent.
 

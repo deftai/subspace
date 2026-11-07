@@ -1,0 +1,41 @@
+---
+title: Agents backed by a model
+description: modelAgent() turns a model and some tools into an ACP agent; @deft-subspace/claude provides Claude.
+---
+
+import Example from '../../../components/Example.astro';
+import claudeAgent from '../../../../../examples/claude-agent.ts?raw';
+
+<Example file="claude-agent.ts" ts={claudeAgent} />
+
+That file is a complete ACP agent: Zed, Toad, or `subspace run "What is in src?" -- node claude-agent.ts` can use it.
+
+## What `modelAgent()` does
+
+Each ACP session gets its own conversation with the model. For each turn:
+
+1. The prompt goes to the model. Its text streams as agent messages, its thinking as thoughts.
+2. Each tool call is checked (with the tool's `schema`), shown to the client with its title and kind, asked about if the tool says `ask`, and run.
+3. The results go back to the model. A refused or failing tool is reported to the model as an error result; the model decides what to do next.
+4. Until the model stops calling tools, or `maxSteps` (default 50) is reached (`max_turn_requests`).
+
+Cancelling the turn stops the model call and the running tool. `system` may be a string or a function of the session's folder.
+
+## Claude
+
+`claude(options)` from `@deft-subspace/claude` uses the official Anthropic SDK. Credentials come from the environment the way the SDK resolves them (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile). Defaults:
+
+| Option | Default |
+|---|---|
+| `model` | `claude-opus-5-5` |
+| `effort` | `high` |
+| `thinking` | `summarized`: adaptive thinking, with its summary shown to the client as thoughts (`omitted` to hide) |
+| `maxTokens` | 64000, streamed |
+| `fallbacks` | on: server-side refusal fallbacks (`fallbacks: false` to turn off) |
+| `client` | `new Anthropic()`; pass your own for a base URL, timeouts or a cloud platform client |
+
+The conversation history is append-only, so the model's thinking stays valid from turn to turn. Tools with a `schema` get eager input streaming (their input is checked before they run). Tools from a refused or truncated model turn are never run.
+
+## Another model
+
+A model is an adapter: `{ conversation({ system, tools, cwd }) }` returning `{ send(input, { onText, onThinking, signal }) }`, which keeps its own history and returns the model's stop reason and tool calls. `claude()` is about 150 lines; another provider's adapter would be the same size.

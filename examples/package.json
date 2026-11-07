@@ -12,5 +12,8 @@
     "@deft-subspace/acp-testkit": "workspace:*",
     "@deft-subspace/claude": "workspace:*",
     "@deft-subspace/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "zod": "^4.1.0"
   }
 }
