@@ -18,6 +18,7 @@ The new packages sit next to the existing ones. The old packages and their tests
 |---|---|
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
+| `@deft-subspace/acp-journal` | Serves journal-first agents (Ideal) over ACP: the event log owns history and the agent fills a slot. Projection with replay, message coalescing, tool calls, a permission broker, idempotent admission, a session registry. |
 
 ## What the prototype shows
 
@@ -136,6 +137,38 @@ Bridge's `StdioTransport`, the transport `bridge` uses to serve editors, is now 
 
   All three are fixed. New API: `RpcPeer.sendRaw`, and a `cancelRequest` preset.
 
+### Journal-first agents: `@deft-subspace/acp-journal` (16 tests)
+
+For agents like Ideal, where an append-only journal is the record. The agent implements `JournaledSession` (`head`, `subscribe(fromSeq)`, `prompt`, `cancel`, `allow`, `deny`, optional `rewind`, `busy` and `close`). The kit keeps no fold and no state machine of its own.
+
+```ts
+const registry = new SessionRegistry({ open, exists, closeJournal });
+serveJournal(channel, registry, { name: 'ideal', permissions: 'ask' });
+```
+
+- **Projection.** Each event is projected once. A seq at or below the high-water mark renders nothing. Every update carries `_meta.journal = { seq, headSeq }`.
+  - `session/new` is live from head+1.
+  - `session/load` replays from seq 1 and then sends `_journal/cursor { headSeq, rewindToSeq? }`.
+  - Replay equals the live stream, plus the user's own messages.
+- **Messages.** When the journal stores deltas followed by the full message, only the part of the full message not already sent goes out. A final message that disagrees with what was sent is reported, not sent.
+- **Tool calls.** A result re-sends the input's content, because ACP content replaces rather than appends. Calls still open on cancel, close or rewind end `failed`.
+- **Permissions.** One gate per session, and only live requests are asked. The broker fails closed, and a client answer of `cancelled` cancels the turn. The gate closes when the journal records an answer from elsewhere (for example a slash command), or on cancel, close or rewind: the client's question is withdrawn and its late answer ignored. `auto-allow` is opt-in.
+- **Retries.** Requests carrying `_meta.journal.requestId` run once, including `session/new`. A reused id with different params gets -32602, and a failure is a receipt too. Receipts live in the registry, so a retry on a new connection is still safe.
+- **Rewind convention.** `_journal/rewind { sessionId, toSeq }` asks for a rewind. Clients are told with `_journal/rewind { headSeq, toSeq }`, after the failed tool calls.
+- **Registry.**
+  - Unknown, closing and closed ids get -32002.
+  - `close` cancels a busy session, then closes it.
+  - `dispose` closes all sessions, then the journal.
+  - A connection that drops detaches without cancelling anything.
+
+Tests use an in-memory journal with Ideal's event names. The AcpClient end-to-end tests cover streamed text shown once, tool calls and permissions as TurnEvents, deny, and cancel mid-gate. Other tests cover:
+- load replay equal to live;
+- a retried prompt and `session/new` with the same receipt, also across connections;
+- both orders of the race between a slash `/allow` or `/deny` and the client's answer;
+- rewind invalidation.
+
+This covers protocol v1 only; v2 `session/resume` is not done.
+
 ## Try it
 
 `packages/acp/examples/quickstart.ts` writes an agent and a client against each other in one process: streaming, a tool call, a permission question, and a cancel. It runs on v2, or on v1 with `PROTOCOL=1`.
@@ -165,11 +198,11 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - session config options (v1 modes and v2 config options as one API);
    - capability-typed peers;
    - first-class events for v2 `user_message` and `session_info_update` (title).
-4. **Journal projection kit for Ideal:**
-   - stamp updates with sequence numbers and replay on load;
-   - send only the unsent suffix of a message;
-   - make repeated requests safe;
-   - a rewind convention.
+4. **Journal projection kit for Ideal:** first pass done (see above). Remaining:
+   - v2 (`session/resume`, `state_update`);
+   - asking again about a gate still open at load time;
+   - fold-based (compacted) replay for long journals;
+   - Ideal implementing `JournaledSession` directly.
 5. **Testkit:**
    - record and replay NDJSON traces;
    - a quirks corpus of real agents;

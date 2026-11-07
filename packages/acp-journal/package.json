@@ -1,0 +1,32 @@
+{
+  "name": "@deft-subspace/acp-journal",
+  "version": "0.0.0-experiment",
+  "description": "Serve a journal-first agent over ACP: the event log owns history, the agent fills a slot. Projection, replay, permission broker, idempotent admission, session registry.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=source --test --test-force-exit test/*.test.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/kernel": "workspace:*",
+    "@deft-subspace/acp": "workspace:*"
+  }
+}

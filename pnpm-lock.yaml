@@ -34,6 +34,15 @@ importers:
 
   packages/acp-harness: {}
 
+  packages/acp-journal:
+    dependencies:
+      '@deft-subspace/acp':
+        specifier: workspace:*
+        version: link:../acp
+      '@deft-subspace/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+
   packages/acp-probe:
     dependencies:
       '@deft/acp-client':
