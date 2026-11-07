@@ -32,6 +32,8 @@ export interface Quirk {
   apply?: { mode?: string | false; args?: string[]; env?: Record<string, string> };
   /** Where or when it was seen (an agent version, a date). */
   seen?: string;
+  /** Where it is reported upstream (an issue URL). */
+  upstream?: string;
   /** false: ignore it (its settings are not used and its checks not waived). */
   enabled?: boolean;
 }
@@ -145,7 +147,8 @@ export const BUILTIN_AGENTS = {
       'refused-turn-ends-cancelled': {
         summary: 'A refused write ends the turn with stop reason cancelled, though nobody cancelled, and leaves the tool call pending',
         fix: 'turnEnd() reports refused (result.refused counts it)',
-        seen: 'codex-acp, 2026-11',
+        seen: 'codex-acp 2.5.0, 2026-11',
+        upstream: 'https://github.com/agentclientprotocol/codex-acp/issues/556',
       },
       'reject-option-named-cancel': {
         summary: 'Its reject option is named cancel (kind reject_once)',

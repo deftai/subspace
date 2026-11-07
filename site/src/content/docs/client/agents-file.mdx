@@ -76,6 +76,7 @@ apply = { mode = "ask" }        # settings used because of it: mode, args, env
 - `apply`: the settings used because of it, `mode`, `args` (added) and `env`. The agent's own fields still win over these.
 - `fix`: what Subspace, or your code, does about it.
 - `seen`: which version, or when.
+- `upstream`: where it is reported (an issue URL).
 - `enabled = false`: ignore it. This turns off a built-in quirk's settings and waivers too.
 
 A file can add quirks to a built-in agent, or turn one of its quirks off, by id. The built-in quirks come from the recorded corpus ([Quirks of real agents](/subspace/behaviour/quirks/)); `subspace agents <name>` lists them.

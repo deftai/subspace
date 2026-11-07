@@ -475,6 +475,7 @@ async function agentsCommand(parsed: Parsed, io: Io): Promise<number> {
         if (applied.length) lines.push(`    applies: ${applied.join('; ')}`);
         if (q.waives?.length) lines.push(`    waives: ${q.waives.join(', ')}`);
         if (q.seen) lines.push(`    seen: ${q.seen}`);
+        if (q.upstream) lines.push(`    upstream: ${q.upstream}`);
       }
     }
     io.out(`${lines.join('\n')}\n`);

@@ -73,7 +73,7 @@ const AGENT_FIELDS: Record<string, 'string' | 'strings' | 'env' | 'mode' | 'bool
   aliases: 'strings',
   enabled: 'boolean',
 };
-const QUIRK_FIELDS: Record<string, 'string' | 'strings' | 'boolean'> = { summary: 'string', waives: 'strings', fix: 'string', seen: 'string', enabled: 'boolean' };
+const QUIRK_FIELDS: Record<string, 'string' | 'strings' | 'boolean'> = { summary: 'string', waives: 'strings', fix: 'string', seen: 'string', upstream: 'string', enabled: 'boolean' };
 const APPLY_FIELDS: Record<string, 'strings' | 'env' | 'mode'> = { mode: 'mode', args: 'strings', env: 'env' };
 
 function unknownKey(source: string, path: string, key: string, known: string[]): never {
