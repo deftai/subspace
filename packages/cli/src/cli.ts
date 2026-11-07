@@ -10,7 +10,7 @@
  * An agent is a known name (claude, codex, grok, gemini, opencode) or a
  * command after `--` (the prompt comes before it):  subspace run "hello" -- node my-agent.js
  */
-import { accessSync, constants, writeFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -28,6 +28,7 @@ import {
   type PermissionHandler,
   type StartedAgent,
   type StartOptions,
+  type TurnResult,
 } from '@deft-subspace/acp/node';
 import { failures, formatReport, KNOWN_QUIRKS } from '@deft-subspace/acp-testkit';
 import { checkAgentProcess, formatJUnit, formatScenarios, loadScenarios, runScenario, type ScenarioReport } from '@deft-subspace/acp-testkit/node';
@@ -53,7 +54,19 @@ Commands:
 <agent> is one of ${Object.keys(AGENT_PRESETS).join(', ')}, or a command after -- (the prompt goes before it):
   subspace run "hello" -- node my-agent.js
 
+Options for run:
+  --prompt <text>        A prompt (repeat for several, run in order in one session)
+  --prompts-file <file>  Prompts, one per line (blank lines and # comments skipped; - for stdin)
+  --stdin                Prompts from stdin, one per line
+  --expect-contains <t>  Exit 4 unless the session's text contains this (repeatable)
+  --expect-not-contains <t>  Exit 4 if it does (repeatable)
+  --expect-end <end>     Exit 4 unless every turn ended so: completed, refused, cancelled, limit, error
+  --expect-stop-reason <r>   Exit 4 unless every turn's stop reason is this
+  --timeout <seconds>    Cancel a turn that runs longer
+  --raw                  Print every JSON-RPC message to stderr (-> sent, <- received)
+
 Options for run and chat:
+  --env KEY=VALUE        An environment variable for the agent (repeatable)
   --cwd <dir>            The agent's folder (default: here)
   --mode <mode>          A session mode (default: the agent's ask-first mode); --mode none keeps its own
   --yes                  Allow everything the agent asks
@@ -68,22 +81,27 @@ interface Parsed {
   command?: string;
   positional: string[];
   flags: Record<string, string | true>;
+  /** Flags that may repeat (--prompt, --env, --expect-contains, ...), every value. */
+  lists: Record<string, string[]>;
   /** The agent command after `--`. */
   custom?: { command: string; args: string[] };
 }
 
-const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'junit', 'artifacts']);
+const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'junit', 'artifacts', 'prompts-file', 'timeout', 'expect-end', 'expect-stop-reason']);
+/** Valued flags that may be given more than once. */
+const REPEATED = new Set(['prompt', 'env', 'expect-contains', 'expect-not-contains']);
 
 export function parse(argv: string[]): Parsed {
   const dash = argv.indexOf('--');
   const head = dash >= 0 ? argv.slice(0, dash) : argv;
   const tail = dash >= 0 ? argv.slice(dash + 1) : [];
-  const parsed: Parsed = { positional: [], flags: {} };
+  const parsed: Parsed = { positional: [], flags: {}, lists: {} };
   for (let i = 0; i < head.length; i++) {
     const arg = head[i]!;
     if (arg.startsWith('-') && arg !== '-') {
       const name = arg.replace(/^--?/, '');
-      if (VALUED.has(name)) parsed.flags[name] = head[++i] ?? '';
+      if (REPEATED.has(name)) (parsed.lists[name] ??= []).push(head[++i] ?? '');
+      else if (VALUED.has(name)) parsed.flags[name] = head[++i] ?? '';
       else parsed.flags[name] = true;
     } else if (!parsed.command) parsed.command = arg;
     else parsed.positional.push(arg);
@@ -112,7 +130,17 @@ function permissionsOf(parsed: Parsed): PermissionHandler | 'allow' {
 function startOptions(parsed: Parsed, io: Io, onPermission: PermissionHandler | 'allow'): StartOptions {
   const quiet = !!parsed.flags.quiet;
   const mode = parsed.flags.mode;
+  const env = Object.fromEntries(
+    (parsed.lists.env ?? []).map((pair) => {
+      const at = pair.indexOf('=');
+      if (at < 1) throw new UsageError(`--env takes KEY=VALUE, got ${JSON.stringify(pair)}`);
+      return [pair.slice(0, at), pair.slice(at + 1)];
+    })
+  );
   return {
+    ...(Object.keys(env).length ? { env: { ...(process.env as Record<string, string>), ...env } } : {}),
+    // --raw: the wire, both ways, on stderr.
+    ...(parsed.flags.raw ? { tap: (direction: 'in' | 'out', message: unknown) => io.err(`${direction === 'out' ? '->' : '<-'} ${JSON.stringify(message)}\n`) } : {}),
     ...(typeof parsed.flags.cwd === 'string' ? { cwd: parsed.flags.cwd } : {}),
     ...(mode === 'none' ? { mode: false as const } : typeof mode === 'string' ? { mode } : {}),
     ...(typeof parsed.flags.trace === 'string' ? { trace: parsed.flags.trace } : {}),
@@ -135,21 +163,72 @@ export function installed(command: string): boolean {
   });
 }
 
+/** Prompts, one per line: blank lines and # comments skipped. */
+export function promptLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+async function readStdin(): Promise<string> {
+  let text = '';
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
+async function promptsOf(parsed: Parsed): Promise<string[]> {
+  const prompts: string[] = [];
+  const inline = parsed.positional.join(' ').trim();
+  if (inline) prompts.push(inline);
+  prompts.push(...(parsed.lists.prompt ?? []));
+  const file = parsed.flags['prompts-file'];
+  if (typeof file === 'string') prompts.push(...promptLines(file === '-' ? await readStdin() : readFileSync(file, 'utf8')));
+  if (parsed.flags.stdin) prompts.push(...promptLines(await readStdin()));
+  return prompts;
+}
+
+const exitFor = (end: string) => (end === 'completed' ? 0 : end === 'refused' ? 3 : end === 'cancelled' || end === 'limit' ? 130 : 1);
+
 async function runCommand(parsed: Parsed, io: Io): Promise<number> {
   const agent = agentOf(parsed);
-  const prompt = parsed.positional.join(' ').trim();
-  if (!prompt) throw new UsageError('What should the agent do? Give a prompt.');
+  const prompts = await promptsOf(parsed);
+  if (!prompts.length) throw new UsageError('What should the agent do? Give a prompt (or --prompt, --prompts-file, --stdin).');
+  const timeout = typeof parsed.flags.timeout === 'string' ? Number(parsed.flags.timeout) * 1000 : undefined;
   const started = await start(agent, startOptions(parsed, io, permissionsOf(parsed)));
+  const results: TurnResult[] = [];
   try {
     if (started.modeWarning && !parsed.flags.quiet) io.err(`${started.modeWarning}\n`);
-    const result = await started.run(prompt);
-    if (parsed.flags.json) io.out(`${JSON.stringify({ end: turnEnd(result), ...result }, null, 2)}\n`);
-    else io.out('\n');
-    const end = turnEnd(result);
-    return end === 'completed' ? 0 : end === 'refused' ? 3 : end === 'cancelled' || end === 'limit' ? 130 : 1;
+    for (const [i, prompt] of prompts.entries()) {
+      if (prompts.length > 1 && !parsed.flags.json && !parsed.flags.quiet) io.out(`${i ? '\n' : ''}> ${prompt}\n`);
+      results.push(await started.run(prompt, timeout ? { timeoutMs: timeout } : {}));
+      if (!parsed.flags.json) io.out('\n');
+    }
   } finally {
     await started.close();
   }
+  const turns = results.map((result) => ({ end: turnEnd(result), ...result }));
+  if (parsed.flags.json) io.out(`${JSON.stringify(turns.length === 1 ? turns[0] : turns, null, 2)}\n`);
+  const failed = expectationFailures(parsed, results);
+  for (const failure of failed) io.err(`expectation failed: ${failure}\n`);
+  if (failed.length) return 4;
+  // The worst turn decides.
+  return Math.max(...turns.map((t) => exitFor(t.end)));
+}
+
+/** The --expect-* flags: text across the session, ends and stop reasons per turn. */
+export function expectationFailures(parsed: Pick<Parsed, 'flags' | 'lists'>, results: TurnResult[]): string[] {
+  const failures: string[] = [];
+  const text = results.map((r) => r.text).join('\n\n');
+  for (const want of parsed.lists['expect-contains'] ?? []) if (!text.includes(want)) failures.push(`the text does not contain ${JSON.stringify(want)}`);
+  for (const not of parsed.lists['expect-not-contains'] ?? []) if (text.includes(not)) failures.push(`the text contains ${JSON.stringify(not)}`);
+  const end = parsed.flags['expect-end'];
+  const stop = parsed.flags['expect-stop-reason'];
+  results.forEach((result, i) => {
+    if (typeof end === 'string' && turnEnd(result) !== end) failures.push(`turn ${i + 1} ended ${turnEnd(result)}, not ${end}`);
+    if (typeof stop === 'string' && String(result.stopReason) !== stop) failures.push(`turn ${i + 1} stop reason is ${result.stopReason}, not ${stop}`);
+  });
+  return failures;
 }
 
 async function chatCommand(parsed: Parsed, io: Io): Promise<number> {

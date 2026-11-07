@@ -15,6 +15,20 @@ subspace trace run.jsonl                          # an HTML viewer for a trace (
 subspace run "hello" -- node my-agent.js          # any agent: its command after --
 ```
 
+## Quick checks and debugging
+
+`run` takes more than one prompt, run in order in one session: `--prompt` (repeat it), `--prompts-file <file>` (one per line; blank lines and `#` comments skipped; `-` for stdin) or `--stdin`.
+
+```sh
+subspace run grok --prompt "My name is Ada." --prompt "What is my name?" --expect-contains Ada --expect-end completed
+subspace run "hello" --raw -- node my-agent.js                    # every JSON-RPC message on stderr (-> sent, <- received)
+subspace run claude --prompts-file smoke.txt --env DEBUG=1 --timeout 120 --json
+```
+
+- `--expect-contains` and `--expect-not-contains` (repeatable) check the session's text; `--expect-end` and `--expect-stop-reason` check every turn. A failed expectation exits 4, with each failure on stderr. For anything more, write a scenario file (`subspace test`).
+- `--raw` shows the wire; `--trace` records it for the viewer.
+- `--env KEY=VALUE` (repeatable) sets the agent's environment; `--timeout <seconds>` cancels a turn that runs longer.
+
 ## Permissions
 
 By default reads are allowed without asking, and everything else is asked about in the terminal (refused when there is no terminal). `--yes` allows everything; `--read-only` allows reads and refuses the rest.
@@ -29,6 +43,6 @@ By default reads are allowed without asking, and everything else is asked about 
 | `--json` | `run`: print the result as JSON instead of rendering it |
 | `--quiet` | no thoughts, tool lines or notices |
 
-`run` exits 0 when the turn completed, 3 when the agent stopped after a refusal, 130 when it was cancelled or hit a limit, and 1 on an error.
+`run` exits 0 when every turn completed, 3 when the agent stopped after a refusal, 130 when a turn was cancelled or hit a limit, 4 when an `--expect-*` check failed, and 1 on an error (the worst turn decides).
 
 `check` takes `--only <ids>` and `--mode`, like `check-agent.ts`.

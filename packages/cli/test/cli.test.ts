@@ -21,7 +21,9 @@ test('parse: command, positional, valued and boolean flags, and the agent after 
     command: 'run',
     positional: ['claude', 'fix', 'it'],
     flags: { mode: 'plan', yes: true },
+    lists: {},
   });
+  assert.deepEqual(parse(['run', '--prompt', 'a', '--prompt', 'b', '--env', 'X=1']).lists, { prompt: ['a', 'b'], env: ['X=1'] });
   assert.deepEqual(parse(['run', 'hi', '--', 'node', 'a.js', '--x']).custom, { command: 'node', args: ['a.js', '--x'] });
 });
 
@@ -89,4 +91,30 @@ test('test runs scenario files: text report, JUnit, exit code', async () => {
   assert.match(run.out, /FAIL  tidy refused/);
   assert.match(run.out, /1 of 2 scenarios failed/);
   assert.match(await rf(junit, 'utf8'), /<testsuite name="tidy refused" tests="1" failures="1"/);
+});
+
+test('run: several prompts in one session, inline expectations (exit 4), --raw, --env', async () => {
+  const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
+  const dir = await mk(join(tmpdir(), 'subspace-cli-run-'));
+  const prompts = join(dir, 'prompts.txt');
+  await wf(prompts, '# a comment\nenv GREETING\n\ntidy up\n');
+
+  const json = await cli('run', '--prompts-file', prompts, '--env', 'GREETING=hello', '--yes', '--json', ...agent);
+  assert.equal(json.code, 0, json.err);
+  const turns = JSON.parse(json.out);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].text, 'GREETING=hello');
+  assert.equal(turns[1].end, 'completed');
+
+  const ok = await cli('run', 'tidy up', '--yes', '--quiet', '--expect-contains', 'Deleted them', '--expect-end', 'completed', ...agent);
+  assert.equal(ok.code, 0, ok.err);
+  const no = await cli('run', '--prompt', 'tidy up', '--prompt', 'env X', '--read-only', '--quiet', '--expect-contains', 'Deleted them', '--expect-not-contains', 'logs', ...agent);
+  assert.equal(no.code, 4);
+  assert.match(no.err, /expectation failed: the text does not contain "Deleted them"/);
+  assert.match(no.err, /expectation failed: the text contains "logs"/);
+
+  const raw = await cli('run', 'env X', '--raw', '--quiet', ...agent);
+  assert.match(raw.err, /^-> \{"jsonrpc":"2.0","id":0,"method":"initialize"/m);
+  assert.match(raw.err, /^<- \{"jsonrpc":"2.0","method":"session\/update"/m);
+  assert.equal((await cli('run', 'x', '--env', 'NOEQUALS', ...agent)).code, 2);
 });
