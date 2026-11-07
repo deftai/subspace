@@ -21,8 +21,12 @@ export interface AgentSupport {
   additionalDirectories: boolean;
   /** Content a prompt may carry besides text and resource links. */
   prompt: { image: boolean; audio: boolean; embeddedContext: boolean };
-  /** MCP server transports the agent can connect to (stdio is required of every agent). */
-  mcp: { stdio: boolean; http: boolean; sse: boolean };
+  /**
+   * MCP server transports the agent takes. v1 requires stdio of every agent;
+   * v2 advertises it. `acp`: servers the client serves over the ACP
+   * connection (MCP-over-ACP).
+   */
+  mcp: { stdio: boolean; http: boolean; sse: boolean; acp: boolean };
 }
 
 export interface ClientSupport {
@@ -61,7 +65,7 @@ export function agentSupport(protocol: ProtocolVersion, capabilities: Record<str
       deleteSession: on(session.delete),
       additionalDirectories: on(session.additionalDirectories),
       prompt: { image: on(prompt.image), audio: on(prompt.audio), embeddedContext: on(prompt.embeddedContext) },
-      mcp: { stdio: true, http: on(mcp.http), sse: false },
+      mcp: { stdio: on(mcp.stdio), http: on(mcp.http), sse: false, acp: on(mcp.acp) },
     };
   }
   const session = rec(capabilities.sessionCapabilities);
@@ -75,7 +79,7 @@ export function agentSupport(protocol: ProtocolVersion, capabilities: Record<str
     deleteSession: on(session.delete),
     additionalDirectories: on(session.additionalDirectories),
     prompt: { image: prompt.image === true, audio: prompt.audio === true, embeddedContext: prompt.embeddedContext === true },
-    mcp: { stdio: true, http: mcp.http === true, sse: mcp.sse === true },
+    mcp: { stdio: true, http: mcp.http === true, sse: mcp.sse === true, acp: mcp.acp === true },
   };
 }
 

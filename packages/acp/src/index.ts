@@ -8,6 +8,7 @@ export {
   type ElicitationResponse,
   type FileHandlers,
   type SessionLocator,
+  type SessionMcpServers,
   type TerminalHandlers,
 } from './client.ts';
 export {
@@ -37,6 +38,17 @@ export { TurnProjection } from './projection.ts';
 export { turnEnd, type TurnEnd } from './model.ts';
 export { validateElicitation } from './elicitation.ts';
 export { type AuthMethod } from './auth.ts';
+export {
+  MCP_PROTOCOL_VERSION,
+  McpBindingError,
+  mcpServersParam,
+  type McpOperationContext,
+  type McpOutcome,
+  type McpRegistration,
+  type McpRequestHandler,
+  type McpServer,
+  type ServeMcpOptions,
+} from './mcp.ts';
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
 export { configOptionsFrom, type ConfigChoice, type ConfigOption } from './config.ts';
 export type {

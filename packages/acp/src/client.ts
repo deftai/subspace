@@ -44,6 +44,7 @@ import {
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { TurnProjection } from './projection.ts';
+import { McpProvider, mcpServersParam, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
 import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
 
@@ -144,10 +145,13 @@ export interface ClientOptions {
 }
 
 /** Which existing session to open, and where. */
+/** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
+export type SessionMcpServers = ReadonlyArray<McpServer | McpRegistration>;
+
 export interface SessionLocator {
   sessionId: string;
   cwd: string;
-  mcpServers?: unknown[];
+  mcpServers?: SessionMcpServers;
   additionalDirectories?: string[];
 }
 
@@ -169,13 +173,15 @@ export class AcpClient {
   readonly authMethods: readonly AuthMethod[];
 
   private readonly options: ClientOptions;
+  private readonly mcp: McpProvider;
   private readonly sessions = new Map<string, Session>();
   /** Updates for a session id not registered yet: agents often send them right after session/new. */
   private readonly early = new Map<string, unknown[]>();
   private turnCounter = 0;
 
-  private constructor(peer: RpcPeer, protocol: ProtocolVersion, init: Record<string, unknown>, options: ClientOptions) {
+  private constructor(peer: RpcPeer, protocol: ProtocolVersion, init: Record<string, unknown>, options: ClientOptions, mcp: McpProvider) {
     this.peer = peer;
+    this.mcp = mcp;
     this.protocol = protocol;
     this.options = options;
     const info = (init.info ?? init.agentInfo ?? {}) as AgentInfo;
@@ -270,6 +276,8 @@ export class AcpClient {
         return { action: 'decline' };
       });
     }
+    // Always answers mcp/message: unknown servers get -33001.
+    const mcp = new McpProvider(peer);
     peer.start();
 
     const wanted = options.protocol ?? 'auto';
@@ -310,14 +318,14 @@ export class AcpClient {
       await peer.close();
       throw new Error(`Asked for protocol v${wanted}, agent chose v${negotiated}`);
     }
-    client = new AcpClient(peer, negotiated as ProtocolVersion, init, options);
+    client = new AcpClient(peer, negotiated as ProtocolVersion, init, options, mcp);
     return client;
   }
 
-  async newSession(request: { cwd: string; mcpServers?: unknown[]; additionalDirectories?: string[] }): Promise<Session> {
+  async newSession(request: { cwd: string; mcpServers?: SessionMcpServers; additionalDirectories?: string[] }): Promise<Session> {
     const result = (await this.peer.request(
       'session/new',
-      { cwd: request.cwd, mcpServers: request.mcpServers ?? [], ...(request.additionalDirectories ? { additionalDirectories: request.additionalDirectories } : {}) },
+      { cwd: request.cwd, mcpServers: this.mcpServers(request.mcpServers), ...(request.additionalDirectories ? { additionalDirectories: request.additionalDirectories } : {}) },
       { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 }
     )) as { sessionId?: unknown } & Record<string, unknown>;
     if (typeof result?.sessionId !== 'string' || !result.sessionId) {
@@ -423,6 +431,20 @@ export class AcpClient {
     await this.peer.request('session/delete', { sessionId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
+  /**
+   * Serve an MCP server to the agent over this connection (MCP-over-ACP).
+   * Put the registration in a session's `mcpServers`; the agent must
+   * advertise the `acp` MCP transport (`client.supports.mcp.acp`). The server
+   * serves requests as soon as this returns; `dispose()` stops it.
+   */
+  serveMcp(options: ServeMcpOptions): McpRegistration {
+    return this.mcp.serve(options);
+  }
+
+  private mcpServers(servers: SessionMcpServers | undefined): unknown[] {
+    return mcpServersParam(this.protocol, this.supports, servers ?? []);
+  }
+
   /** Call one of the agent's vendor extension requests. */
   call<Params, Result>(extension: ExtensionRequest<Params, Result>, params: Params, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Result> {
     return callExtension(this.peer, extension, params, options);
@@ -457,7 +479,7 @@ export class AcpClient {
     return {
       sessionId: request.sessionId,
       cwd: request.cwd,
-      mcpServers: request.mcpServers ?? [],
+      mcpServers: this.mcpServers(request.mcpServers),
       ...(request.additionalDirectories ? { additionalDirectories: request.additionalDirectories } : {}),
       ...extra,
     };
