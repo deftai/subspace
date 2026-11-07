@@ -9,6 +9,7 @@
  * The client asks for protocol v2 and accepts v1; the app sees the same model
  * either way (`client.protocol` says which one is in use).
  */
+import { validateElicitation } from './elicitation.ts';
 import {
   cancelRequest,
   LocalError,
@@ -85,7 +86,11 @@ export type ElicitationResponse =
   | { action: 'decline' }
   | { action: 'cancel' };
 
-/** Answer an elicitation. Anything that goes wrong becomes `decline`. */
+/**
+ * Answer an elicitation. Anything that goes wrong becomes `decline`, and so
+ * does a form answer that does not fit `requestedSchema` (check it first with
+ * `validateElicitation` to ask the user again instead).
+ */
 export type ElicitationHandler = (
   request: ElicitationRequest,
   signal: AbortSignal
@@ -236,7 +241,11 @@ export class AcpClient {
         };
         try {
           const answer = await handler(request, context.signal);
-          if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
+          if (answer?.action === 'accept') {
+            // A form answer must fit the form; one that does not is not sent.
+            if (request.mode === 'form' && validateElicitation(request.requestedSchema, answer.content).length) return { action: 'decline' };
+            return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
+          }
           if (answer?.action === 'cancel') return { action: 'cancel' };
         } catch {
           // Fail closed.
