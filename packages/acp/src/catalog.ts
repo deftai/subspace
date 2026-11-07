@@ -88,11 +88,19 @@ export function parseAgentFile(text: string, source: string): CatalogLayer {
   } catch (error) {
     throw new AgentFileError(`${source}: ${(error as Error).message}`);
   }
+  return parseAgentTable(raw.agents, source);
+}
+
+/**
+ * Check an already-parsed agents table (name: definition), such as one
+ * nested in another tool's config. `at` names it in errors (default "agents").
+ */
+export function parseAgentTable(table: unknown, source: string, at = 'agents'): CatalogLayer {
   const agents: Record<string, AgentDefinition> = {};
-  if (raw.agents === undefined) return { source, agents };
-  if (!isRecord(raw.agents)) throw new AgentFileError(`${source}: agents should be a table ([agents.<name>])`);
-  for (const [name, value] of Object.entries(raw.agents)) {
-    const path = `agents.${name}`;
+  if (table === undefined) return { source, agents };
+  if (!isRecord(table)) throw new AgentFileError(`${source}: ${at} should be a table ([${at}.<name>])`);
+  for (const [name, value] of Object.entries(table)) {
+    const path = `${at}.${name}`;
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) throw new AgentFileError(`${source}: ${path}: names are letters, digits, ., _ and -`);
     if (!isRecord(value)) throw new AgentFileError(`${source}: ${path} should be a table`);
     const definition: Record<string, unknown> = {};

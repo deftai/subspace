@@ -239,7 +239,7 @@ export function workspaceTerminals(
 export { file, image } from './content.ts';
 export { askInTerminal, terminal, type AskOptions, type TerminalOptions } from './terminal-ui.ts';
 export { agentByName, run, serveStdio, start, type AgentCommand, type AgentName, type StartedAgent, type StartOptions } from './start.ts';
-export { AgentFileError, agentFiles, loadCatalog, loadRegistry, parseAgentFile, refreshRegistry, registryCachePath, type CatalogOptions } from './catalog.ts';
+export { AgentFileError, agentFiles, loadCatalog, loadRegistry, parseAgentFile, parseAgentTable, refreshRegistry, registryCachePath, type CatalogOptions } from './catalog.ts';
 
 // Everything in @deft-subspace/acp too, so a Node program needs one import.
 export * from './index.ts';
