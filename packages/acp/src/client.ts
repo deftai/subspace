@@ -68,6 +68,8 @@ export class AcpClient {
 
   private readonly options: ClientOptions;
   private readonly sessions = new Map<string, Session>();
+  /** Updates for a session id not registered yet: agents often send them right after session/new. */
+  private readonly early = new Map<string, unknown[]>();
   private turnCounter = 0;
 
   private constructor(peer: RpcPeer, protocol: ProtocolVersion, init: Record<string, unknown>, options: ClientOptions) {
@@ -162,6 +164,9 @@ export class AcpClient {
     }
     const session = new Session(this, result.sessionId, result);
     this.sessions.set(session.id, session);
+    const early = this.early.get(session.id);
+    this.early.delete(session.id);
+    for (const update of early ?? []) session.receive(update);
     return session;
   }
 
@@ -181,8 +186,17 @@ export class AcpClient {
   }
 
   private routeUpdate(params: { sessionId?: string; update?: unknown }): void {
-    const session = typeof params?.sessionId === 'string' ? this.sessions.get(params.sessionId) : undefined;
-    session?.receive(params.update);
+    if (typeof params?.sessionId !== 'string') return;
+    const session = this.sessions.get(params.sessionId);
+    if (session) {
+      session.receive(params.update);
+      return;
+    }
+    // Keep a few, for a session/new still being answered; drop the rest.
+    const held = this.early.get(params.sessionId) ?? [];
+    if (held.length < 100) held.push(params.update);
+    this.early.set(params.sessionId, held);
+    if (this.early.size > 16) this.early.delete(this.early.keys().next().value as string);
   }
 
   private async handlePermission(params: Record<string, unknown>, signal: AbortSignal): Promise<v1.RequestPermissionResponse> {
@@ -209,6 +223,8 @@ export class Session {
 
   private active?: ActiveTurn;
   private readonly listeners = new Set<(event: TurnEvent, raw: unknown) => void>();
+  /** Recent updates between turns, replayed to listeners added later. */
+  private readonly idleHistory: Array<{ event: TurnEvent; raw: unknown }> = [];
   private currentModes?: SessionModes;
 
   /** @internal */
@@ -251,8 +267,13 @@ export class Session {
     return this.active !== undefined;
   }
 
-  /** Updates that arrive between turns (available commands, config options, ...), with the raw update. */
+  /**
+   * Updates that arrive between turns (available commands, config options, ...),
+   * with the raw update. The last 50 are replayed to a new listener, so nothing
+   * sent right after session/new is missed.
+   */
   onIdleUpdate(listener: (event: TurnEvent, raw: unknown) => void): () => void {
+    for (const { event, raw } of this.idleHistory) listener(event, raw);
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -316,7 +337,11 @@ export class Session {
     const active = this.active;
     if (!active) {
       const { events } = new TurnProjection(`${this.id}#idle`).apply(update);
-      for (const event of events) for (const listener of this.listeners) listener(event, update);
+      for (const event of events) {
+        this.idleHistory.push({ event, raw: update });
+        if (this.idleHistory.length > 50) this.idleHistory.shift();
+        for (const listener of this.listeners) listener(event, update);
+      }
       return;
     }
     const { events, state } = active.projection.apply(update);

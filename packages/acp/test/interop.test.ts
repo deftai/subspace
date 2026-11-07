@@ -227,3 +227,26 @@ test('a permission request when no turn is running is cancelled, whatever the po
   assert.deepEqual(answer, { outcome: { outcome: 'cancelled' } });
   await client.close();
 });
+
+test('updates sent right after session/new are kept and replayed to a later listener', async () => {
+  const link = byteLink();
+  officialV1
+    .agent({ name: 'chatty' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', ({ client }) => {
+      // Sent before the session/new answer, in the same tick.
+      void client.notify('session/update', {
+        sessionId: 'c',
+        update: { sessionUpdate: 'available_commands_update', availableCommands: [] },
+      });
+      return { sessionId: 'c' };
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/tmp' });
+  await new Promise((r) => setTimeout(r, 20));
+  const seen: string[] = [];
+  session.onIdleUpdate((event) => seen.push(event.type === 'update' ? event.sessionUpdate : event.type));
+  assert.deepEqual(seen, ['available_commands_update']);
+  await client.close();
+});
