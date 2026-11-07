@@ -18,6 +18,7 @@ import {
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
 import type { ContentBlock, PermissionRequest, ProtocolVersion, ToolCall, TurnEvent, v1, v2 } from './model.ts';
+import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
 import { TurnProjection } from './projection.ts';
 import { Turn } from './turn.ts';
@@ -208,12 +209,42 @@ export class Session {
 
   private active?: ActiveTurn;
   private readonly listeners = new Set<(event: TurnEvent) => void>();
+  private currentModes?: SessionModes;
 
   /** @internal */
   constructor(client: AcpClient, id: string, created: Record<string, unknown>) {
     this.client = client;
     this.id = id;
     this.created = created;
+    this.currentModes = modesFrom(created);
+  }
+
+  /** The modes the agent offers and the current one, whichever way it offers them. Absent if none. */
+  get modes(): Readonly<SessionModes> | undefined {
+    return this.currentModes;
+  }
+
+  /**
+   * Switch mode, through `session/set_mode` or `session/set_config_option`
+   * as the agent requires. Throws if the agent offers no such mode.
+   */
+  async setMode(modeId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    const modes = this.currentModes;
+    if (!modes) throw new Error(`The agent offers no session modes`);
+    if (!modes.available.some((m) => m.id === modeId)) {
+      throw new Error(`The agent offers no mode "${modeId}" (available: ${modes.available.map((m) => m.id).join(', ') || 'none'})`);
+    }
+    if (modes.via === 'modes') {
+      await this.client.peer.request('session/set_mode', { sessionId: this.id, modeId }, options);
+      modes.current = modeId;
+      return;
+    }
+    const params =
+      this.client.protocol === 2
+        ? { sessionId: this.id, configId: modes.configId, type: 'id', value: modeId }
+        : { sessionId: this.id, configId: modes.configId, value: modeId };
+    const result = (await this.client.peer.request('session/set_config_option', params, options)) as Record<string, unknown> | null;
+    this.currentModes = (result && modesFromConfig(result.configOptions)) ?? { ...modes, current: modeId };
   }
 
   get busy(): boolean {
@@ -231,9 +262,13 @@ export class Session {
     const blocks: ContentBlock[] =
       typeof input === 'string' ? [{ type: 'text', text: input }] : Array.isArray(input) ? input : [input];
     const id = this.client.nextTurnId(this.id);
+    const projection = new TurnProjection(id);
     const active: ActiveTurn = {
-      turn: new Turn(id, () => this.cancel()),
-      projection: new TurnProjection(id),
+      turn: new Turn(id, () => this.cancel(), {
+        text: () => projection.text,
+        toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
+      }),
+      projection,
       promptAnswered: false,
       cancelController: new AbortController(),
     };
@@ -277,6 +312,7 @@ export class Session {
 
   /** @internal */
   receive(update: unknown): void {
+    this.trackModes(update);
     const active = this.active;
     if (!active) {
       const { events } = new TurnProjection(`${this.id}#idle`).apply(update);
@@ -292,9 +328,22 @@ export class Session {
     }
   }
 
+  private trackModes(update: unknown): void {
+    if (typeof update !== 'object' || update === null) return;
+    const u = update as Record<string, unknown>;
+    if (u.sessionUpdate === 'current_mode_update' && this.currentModes && typeof u.currentModeId === 'string') {
+      this.currentModes.current = u.currentModeId;
+    } else if (u.sessionUpdate === 'config_option_update') {
+      const modes = modesFromConfig(u.configOptions);
+      if (modes) this.currentModes = modes;
+    }
+  }
+
   /** @internal */
   async permission(params: Record<string, unknown>, signal: AbortSignal, policy: PermissionPolicy): Promise<v1.RequestPermissionResponse> {
     const active = this.active;
+    // No turn is running, or it is being cancelled: nobody asked for this. Fail closed.
+    if (!active || active.cancelController.signal.aborted) return { outcome: { outcome: 'cancelled' } };
     const projection = active?.projection ?? new TurnProjection(`${this.id}#idle`);
     const request = this.permissionRequest(params, projection);
     const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
