@@ -136,6 +136,26 @@ Bridge's `StdioTransport`, the transport `bridge` uses to serve editors, is now 
 
   All three are fixed. New API: `RpcPeer.sendRaw`, and a `cancelRequest` preset.
 
+### Bridge's request handling on `serveAgent` (opt in)
+
+With `BRIDGE_ACP_SERVER=subspace`, `bridge` serves its built-in backends (OpenAI, Anthropic, Grok) through `serveAgent`. The module is `packages/cli/src/agent-server.ts` on Bridge's branch. Ideal keeps the classic server.
+
+- **One handler for both protocols:** a single prompt handler runs Bridge's pipeline and maps it onto `AgentTurn` for v1 and v2.
+- **Review findings fixed:**
+  - cancel now stops the turn (finding 6);
+  - the working-directory message always survives the history window (finding 3);
+  - an unknown session gets -32002 (finding 13).
+- **Live, with the Grok backend:**
+  - `bridge` served ACP **v2** for the first time, and the turn completed end to end;
+  - a cancel was confirmed in 2 ms, and the turn ended `cancelled` without being forced.
+- **What `serveAgent` gained for this:**
+  - `methods` (extra handlers) and `capabilities`;
+  - `newSession` receives the full params;
+  - `turn.clientCapabilities`;
+  - `turn.request()` for calls back to the client, aborted with the turn;
+  - `turn.toolCallUpdate()` for pipeline-shaped tool updates;
+  - `turn.sendUpdate()`.
+
 ## Try it
 
 `packages/acp/examples/quickstart.ts` writes an agent and a client against each other in one process: streaming, a tool call, a permission question, and a cancel. It runs on v2, or on v1 with `PROTOCOL=1`.
@@ -154,7 +174,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
 
 ## Not done yet (next steps, if this direction holds)
 
-1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). Remaining: Bridge's request handling on `serveAgent`, and reporting the protocol in `bridge mcp`'s session report.
+1. **Bridge:** done for `bridge mcp` (see above). The server-side transport is also on the kernel (see above). `bridge mcp` reports the protocol in its session report. Bridge's request handling also runs on `serveAgent`, opt in (see below).
 2. **Agent side:**
    - `session/load` and `session/resume`;
    - several turns queued per session;
