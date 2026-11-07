@@ -89,8 +89,11 @@ The operator ran this one.
 
 ## Try it
 
+`packages/acp/examples/quickstart.ts` writes an agent and a client against each other in one process: streaming, a tool call, a permission question, and a cancel. It runs on v2, or on v1 with `PROTOCOL=1`.
+
 ```bash
 pnpm install
+node --conditions=source packages/acp/examples/quickstart.ts
 pnpm proto:test        # kernel + acp
 pnpm proto:typecheck
 pnpm proto:build       # emits dist/ with .js imports

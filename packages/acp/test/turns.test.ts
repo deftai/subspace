@@ -63,6 +63,7 @@ for (const protocol of [1, 2] as const) {
     assert.equal(result.stopReason, 'end_turn');
     assert.equal(result.text, 'I will read the file.\n\nIt says hello.');
     assert.equal(result.toolCalls[0]?.status, 'completed');
+    assert.equal(result.toolCalls[0]?.title, 'Read README.md', 'the permission request did not rename the tool call');
     assert.deepEqual(seen, turn.history, 'iterating again gives the same events');
     await client.close();
   });
@@ -94,8 +95,8 @@ test('v1 and v2 give the same events for the same agent', async () => {
 
 for (const protocol of [1, 2] as const) {
   test(`v${protocol}: permissions fail closed`, async () => {
-    // Default policy: reject. A throwing policy and an unknown option also reject.
-    for (const permissions of [undefined, () => { throw new Error('ui crashed'); }, () => ({ optionId: 'made-up' })] as const) {
+    // Default policy: reject. A throwing policy, an unknown option and a misspelt decision also reject.
+    for (const permissions of [undefined, () => { throw new Error('ui crashed'); }, () => ({ optionId: 'made-up' }), async () => 'alow'] as const) {
       const { client } = await start(protocol, { permissions: permissions as never });
       const session = await client.newSession({ cwd: '/tmp' });
       const result = await session.prompt('go').done;
