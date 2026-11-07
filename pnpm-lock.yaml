@@ -28,39 +28,6 @@ importers:
         specifier: ^4.1.0
         version: 4.6.7
 
-  packages/acp-agent: {}
-
-  packages/acp-client: {}
-
-  packages/acp-harness: {}
-
-  packages/acp-probe:
-    dependencies:
-      '@deft/acp-client':
-        specifier: workspace:*
-        version: link:../acp-client
-      '@deft/acp-wire':
-        specifier: workspace:*
-        version: link:../acp-wire
-
-  packages/acp-testkit:
-    dependencies:
-      '@deft/acp-agent':
-        specifier: workspace:*
-        version: link:../acp-agent
-      '@deft/acp-client':
-        specifier: workspace:*
-        version: link:../acp-client
-      '@deft/acp-wire':
-        specifier: workspace:*
-        version: link:../acp-wire
-
-  packages/acp-wire:
-    dependencies:
-      '@deft/subspace-foundation':
-        specifier: workspace:*
-        version: link:../subspace-foundation
-
   packages/devtools:
     dependencies:
       '@deft-subspace/kernel':
@@ -72,8 +39,6 @@ importers:
         version: link:../acp
 
   packages/kernel: {}
-
-  packages/subspace-foundation: {}
 
   packages/testkit:
     dependencies:

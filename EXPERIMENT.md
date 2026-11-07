@@ -12,7 +12,7 @@ The official SDKs own the wire. `@agentclientprotocol/sdk` has about 8.3M downlo
 - permissions that fail closed;
 - one model across ACP v1 and v2.
 
-The new packages sit next to the existing ones. The old packages and their tests are untouched (37 tests still pass).
+The original `@deft/*` packages from `main`, with their tests and developer guide, are in `legacy/`, outside the pnpm workspace. The guide for the current packages is [`docs/GUIDE.md`](./docs/GUIDE.md).
 
 | Package | What it is |
 |---|---|
@@ -173,9 +173,9 @@ With `BRIDGE_ACP_SERVER=subspace`, `bridge` serves its built-in backends (OpenAI
 ```bash
 pnpm install
 node --conditions=source packages/acp/examples/quickstart.ts
-pnpm proto:test        # kernel + acp
-pnpm proto:typecheck
-pnpm proto:build       # emits dist/ with .js imports
+pnpm test             # every package (proto:test still works)
+pnpm run typecheck
+pnpm run build         # emits dist/ with .js imports (proto:build still works)
 node --conditions=source packages/devtools/examples/sample-trace.ts   # writes packages/devtools/samples/sample-v{1,2}.html
 node --conditions=source packages/devtools/src/cli.ts some.trace.jsonl [-o out.html] [--summary]
 node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
@@ -222,7 +222,7 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 3 Grok traces;
    - still to do: Claude and Codex traces (the operator records them, since they need `npx`);
    - still to do: whether Grok's `-32602` for an unknown session counts as a known quirk or a failure;
-   - still to do: move the package to `packages/acp-testkit` once the old package is retired.
+   - the old `@deft/acp-testkit` is now in `legacy/`, so this folder could be renamed `packages/acp-testkit` to match its package name.
 6. **Devtools (`packages/devtools`, merged, first cut done, 14 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
    - published as a private page for review;
