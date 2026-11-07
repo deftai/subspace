@@ -172,3 +172,13 @@ test('run: a turn that ends with an error says why on stderr and exits 1', async
   assert.equal(failed.code, 1);
   assert.match(failed.err, /^error: out of credits$/m);
 });
+
+test('run: each turn is drawn fresh; the second starts right after its prompt line', async () => {
+  const twice = await cli('run', '--prompt', 'tidy up', '--prompt', 'tidy up', '--yes', ...agent);
+  assert.equal(twice.code, 0, twice.err);
+  const turns = twice.out.split('> tidy up\n');
+  assert.equal(turns.length, 3);
+  // The same turn twice draws the same; only the blank line before the next prompt differs.
+  assert.equal(turns[1], `${turns[2]}\n`);
+  assert.match(turns[2]!, /^thinking: Looking around\./);
+});

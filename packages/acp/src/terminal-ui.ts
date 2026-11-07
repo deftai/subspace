@@ -39,15 +39,22 @@ const FINAL = new Set(['completed', 'failed', 'cancelled']);
 /** Handlers that render a turn to a terminal. Spread them into `start()`, `connect` or a prompt. */
 export function terminal(options: TerminalOptions = {}): TurnHandlers {
   const out = options.out ?? process.stdout;
-  const s = style(options.color ?? (!!out.isTTY && !process.env.NO_COLOR));
+  const color = options.color ?? (!!out.isTTY && !process.env.NO_COLOR);
+  const s = style(color);
   let lineStart = true;
+  /** The output so far ends with a blank line. */
+  let blank = false;
   let last: 'message' | 'thought' | 'line' | undefined;
   const finished = new Set<string>();
-  const write = (text: string) => {
+  /** Write `text`; `plain` is the same without styling, which says how the output now ends. */
+  const write = (text: string, plain = text) => {
     if (!text) return;
     out.write(text);
-    lineStart = text.endsWith('\n');
+    blank = plain.endsWith('\n\n') || (lineStart && plain === '\n');
+    lineStart = plain.endsWith('\n');
   };
+  /** Separate a new block from the text before it by one blank line. */
+  const separate = () => write(blank ? '' : lineStart ? '\n' : '\n\n');
   /** Start a new line for a block, separated from text before it. */
   const line = (text: string) => {
     if (!lineStart) write('\n');
@@ -57,7 +64,7 @@ export function terminal(options: TerminalOptions = {}): TurnHandlers {
   };
   return {
     onMessage: (delta, { separator, first }) => {
-      if (first && last && last !== 'message') write(lineStart ? '\n' : '\n\n');
+      if (first && last && last !== 'message') separate();
       else write(separator);
       write(delta);
       last = 'message';
@@ -66,8 +73,10 @@ export function terminal(options: TerminalOptions = {}): TurnHandlers {
       ? {}
       : {
           onThought: (delta: string, { first }: { first: boolean }) => {
-            if (first && last && last !== 'thought') write(lineStart ? '\n' : '\n\n');
-            write(s.dim(delta));
+            if (first && last && last !== 'thought') separate();
+            // Without color a thought would read as the answer: label it.
+            if (first && !color) write('thinking: ');
+            write(s.dim(delta), delta);
             last = 'thought';
           },
         }),

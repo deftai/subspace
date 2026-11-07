@@ -23,7 +23,7 @@ Cancelling the turn stops the model call and the running tool. `system` may be a
 
 ## Claude
 
-`claude(options)` from `@deft-subspace/claude` uses the official Anthropic SDK. Credentials come from the environment the way the SDK resolves them (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile). Defaults:
+`claude(options)` from `@deft-subspace/claude` uses the official Anthropic SDK. Credentials come from the environment the way the SDK resolves them (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile). These are Claude API credentials, billed to an API account. A Claude Code login is a different thing: it serves `start('claude')`, which runs Claude Code itself as the agent, and `claude()` does not use it. A failed request ends the turn with one line saying why, such as `Claude API 401: invalid x-api-key (...)`. Defaults:
 
 | Option | Default |
 |---|---|

@@ -65,6 +65,28 @@ test('permission rules: readOnly, allow/reject matches, allowInside, firstOf ord
   assert.equal(await firstOf(allow({ kinds: ['read'] }))(request({ kind: 'edit' }), signal), 'reject');
 });
 
+test('terminal(): a thought that ends with a blank line (as Claude\'s summaries do) gets no second one before the answer, colored or not', async () => {
+  for (const color of [false, true]) {
+    let written = '';
+    const out = { write: (text: string) => void (written += text), isTTY: color };
+    const [agentEnd, clientEnd] = channelPair<unknown>();
+    serveAgent(agentEnd, {
+      name: 'r',
+      async prompt(turn) {
+        await turn.think('Noting it.');
+        await turn.think('\n\n');
+        await turn.say('The answer.');
+      },
+    });
+    const client = await AcpClient.connect(clientEnd, terminal({ out, color }));
+    const session = await client.newSession({ cwd: '/w' });
+    await session.prompt('go').done;
+    // eslint-disable-next-line no-control-regex
+    assert.equal(written.replace(/\u001b\[\d+m/g, ''), `${color ? '' : 'thinking: '}Noting it.\n\nThe answer.`, `color ${color}`);
+    await client.close();
+  }
+});
+
 test('terminal(): streams text, dims thoughts, shows tool calls and answered permissions', async () => {
   let written = '';
   const out = { write: (text: string) => void (written += text), isTTY: false };
@@ -85,7 +107,7 @@ test('terminal(): streams text, dims thoughts, shows tool calls and answered per
   await session.prompt('go').done;
   assert.equal(
     written,
-    ['Looking.', '', 'Checking files.', '', '• List files', '  ✓ List files', '• Delete a', '? Delete a refused', '  ✗ Delete a', '', 'Done.'].join('\n')
+    ['thinking: Looking.', '', 'Checking files.', '', '• List files', '  ✓ List files', '• Delete a', '? Delete a refused', '  ✗ Delete a', '', 'Done.'].join('\n')
   );
   await client.close();
 });

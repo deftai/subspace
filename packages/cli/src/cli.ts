@@ -284,9 +284,14 @@ function startOptions(parsed: Parsed, io: Io, onPermission: PermissionHandler | 
     ...(mode === 'none' ? { mode: false as const } : typeof mode === 'string' ? { mode } : {}),
     ...(typeof parsed.flags.trace === 'string' ? { trace: parsed.flags.trace } : {}),
     ...(onPermission === 'allow' ? { permissions: 'allow' as const } : { onPermission }),
-    ...(parsed.flags.json ? {} : terminal({ out: { write: io.out, isTTY: process.stdout.isTTY }, thoughts: !quiet, tools: !quiet, plans: !quiet })),
     quiet,
   };
+}
+
+/** How a turn is drawn: a fresh terminal view per turn, so one turn's line state does not leak into the next. */
+function view(parsed: Parsed, io: Io) {
+  const quiet = !!parsed.flags.quiet;
+  return parsed.flags.json ? {} : terminal({ out: { write: io.out, isTTY: process.stdout.isTTY }, thoughts: !quiet, tools: !quiet, plans: !quiet });
 }
 
 /** Whether a command can be found (an absolute path, or on PATH). */
@@ -349,7 +354,7 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
     if (started.modeWarning && !parsed.flags.quiet) io.err(`${started.modeWarning}\n`);
     for (const [i, prompt] of prompts.entries()) {
       if (prompts.length > 1 && !parsed.flags.json && !parsed.flags.quiet) io.out(`${i ? '\n' : ''}> ${prompt}\n`);
-      const result = await started.run(prompt, timeout ? { timeoutMs: timeout } : {});
+      const result = await started.run(prompt, { ...view(parsed, io), ...(timeout ? { timeoutMs: timeout } : {}) });
       results.push(result);
       if (!parsed.flags.json) io.out('\n');
       const error = turnError(result);
@@ -408,7 +413,7 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
       const text = line.trim();
       if (text === '/exit' || text === '/quit') break;
       if (text) {
-        const turn = started.prompt(text);
+        const turn = started.prompt(text, view(parsed, io));
         running = turn;
         await turn.done.then(
           (result) => {
