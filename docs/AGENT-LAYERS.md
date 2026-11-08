@@ -41,8 +41,11 @@ coordination contracts explicit, or it will change behaviour.
    to the code below it, and lets that code send anything to the client.
 2. Each opinion of `serveAgent` as a layer that can be used alone or left out.
 3. `serveAgent(channel, options)` unchanged for its users: same options, same
-   wire behaviour, same teardown order, all existing tests passing without
-   edits.
+   protocol results, same session-close and connection-close behaviour, and
+   all existing tests passing without edits. One intended change: concurrent
+   notifications for a session get a defined order (see Ordering). New tests
+   pin the close behaviour, because "existing tests pass" would not catch an
+   untested callback changing.
 4. A proxy or pipeline can take only some layers (for example negotiate and
    tracing) and handle everything else itself.
 
@@ -167,7 +170,11 @@ It defines, in order:
 - **close**: abort the running turn, cancel queued prompts, close background
   work, delete the session, close MCP connections, then call `closeSession`.
   This order is today's, and a test pins it.
-- **connection close**: close every session as above.
+- **connection close**: today's behaviour, kept in the preset: every
+  session's MCP connections close, and running turns and background work
+  stop through the connection's signal. `closeSession` is **not** called for
+  each session. A test pins this. (Calling the full session close here would
+  be a behaviour change; if wanted later, it is an option, off by default.)
 
 ## The v1 / v2 turn lifecycles
 
@@ -192,7 +199,9 @@ Five different things, documented and tested separately:
 2. **`session/cancel`**: aborts the session's turn and its queued prompts.
 3. **`tool_call/cancel` and `terminal/cancel`**: stop one piece of
    background work.
-4. **Connection close**: everything above, for every session.
+4. **Connection close**: turns and background work stop through the
+   connection's signal and MCP connections close (not the full session
+   close; see the lifecycle service).
 5. **Work that outlives its call**: a v2 turn keeps running after its
    `session/prompt` was answered; background work outlives its turn.
 
@@ -207,7 +216,8 @@ and cancel goes through `session/cancel`. The extraction keeps that exactly.
   outbound hooks: each send waits for the previous one's hooks before it
   writes, so a slow hook on notification A cannot let B reach the stream
   first. Today `SessionWork` has no send queue and only the stream's write
-  order is guaranteed; the queue is new.
+  order is guaranteed; the queue is new, and it is the one intended
+  behaviour change (goal 3).
 - **Hook order.** As in the kernel's middleware chain: the first layer in
   the stack runs first on the way in and last on the way back. For outbound
   calls that means the first layer sees the call first and its reply last;
