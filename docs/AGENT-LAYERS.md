@@ -228,6 +228,29 @@ and cancel goes through `session/cancel`. The extraction keeps that exactly.
   test fixes which layer sees what first in each direction. **The tests are
   the definition of hook order;** the prose above is a summary.
 
+## Lifecycle states
+
+Protocol handling is state machines at its core, and today these states are
+implicit. The layers make four of them explicit:
+
+| Lifecycle           | States (roughly)                                           |
+| ------------------- | ---------------------------------------------------------- |
+| Connection          | uninitialized → negotiating → ready → closed               |
+| Session             | creating → attaching → active → closing → closed           |
+| Turn                | queued → running → awaiting-permission → cancelling → done |
+| Background work     | running → paused → completed / failed / cancelled          |
+
+- Each is a small typed transition table in the layer that owns it
+  (`negotiate`, `sessions`, `turns`, background work), not a state-machine
+  library: the package stays dependency-light and runs in browsers, Bun
+  and Deno, and no library types enter the public API.
+- A transition that is not allowed throws in tests and is reported as a
+  diagnostic in production.
+- The current state is readable (for tracing and debugging).
+- Only lifecycle events go through them, never streamed chunks.
+- The tables drive the focused tests (plan step 6): every path through the
+  turn table, including a cancel at each state, is a test case.
+
 ## Performance
 
 The bar: a streaming turn (chunks per second) is not visibly slower than
@@ -255,7 +278,7 @@ its preset, comes later.
 
 1. **Specify** this contract in tests first: continuation rules, exclusive
    handlers, per-endpoint state, close and teardown order, the `negotiate`
-   wait rule, ordering.
+   wait rule, ordering, and the lifecycle tables.
 2. **The raw endpoint** on the existing kernel: `agentEndpoint`, the layer
    interface, state keys, call middleware. Tests of the endpoint alone.
 3. **A two-way proxy example and test** (`examples/proxy.ts`): client, proxy,
