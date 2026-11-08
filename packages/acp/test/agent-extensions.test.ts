@@ -40,6 +40,25 @@ for (const protocol of [1, 2] as const) {
   });
 }
 
+test("turn.request() adds the turn's sessionId when the params leave it out", async () => {
+  const link = byteLink();
+  serveAgent(link.agent, {
+    name: 'tools',
+    async prompt(turn) {
+      await turn.request('fs/read_text_file', { path: 'a.txt' });
+      return 'end_turn';
+    },
+  });
+  const seen: unknown[] = [];
+  const client = await AcpClient.connect(link.client, {
+    files: { readTextFile: async (p) => (seen.push(p), 'x'), writeTextFile: async () => {} },
+  });
+  const session = await client.newSession({ cwd: '/tmp' });
+  await session.prompt('go').done;
+  assert.deepEqual(seen, [{ sessionId: session.id, path: 'a.txt' }]);
+  await client.close();
+});
+
 test('extra methods are served before the first message', async () => {
   const link = byteLink();
   serveAgent(link.agent, {

@@ -165,7 +165,10 @@ export interface AgentTurn {
   toolCallUpdate(fields: ToolCallFields, options?: { create?: boolean }): Promise<void>;
   /** Send any `session/update` as given. You are responsible for it suiting `protocol`. */
   sendUpdate(update: Record<string, unknown> & { sessionUpdate: string }): Promise<void>;
-  /** Call the client (e.g. `fs/read_text_file`, `terminal/create`). Aborted with the turn unless you pass a signal. */
+  /**
+   * Call the client (e.g. `fs/read_text_file`, `terminal/create`). Aborted with the turn unless you pass a signal.
+   * Object params without a `sessionId` get this turn's (ACP requires it on the client methods); one you set is kept.
+   */
   request<Result = unknown>(method: string, params?: unknown, options?: RequestOptions): Promise<Result>;
   /** Echo or record the user's own message as an update (`user_message_chunk`). */
   userMessage(text: string): Promise<void>;
@@ -609,7 +612,11 @@ class TurnWriter {
         });
       },
       sendUpdate: (update) => this.update(update),
-      request: (method, params, options) => peer.request(method, params, { signal, ...options }),
+      request: (method, params, options) => {
+        const withSession =
+          params && typeof params === 'object' && !Array.isArray(params) && !('sessionId' in params) ? { sessionId, ...params } : params;
+        return peer.request(method, withSession, { signal, ...options });
+      },
       userMessage: (text) =>
         this.update({ sessionUpdate: 'user_message_chunk', messageId: `${this.turnId}-u`, content: { type: 'text', text } }),
       readFile: async (path, options) => {
