@@ -141,15 +141,15 @@ calls into "the next layer down".
 
 ### The layers
 
-| Layer | Answers | Provides | Notes |
-| --- | --- | --- | --- |
-| `tracing(otel)` | nothing | — | `otelTap` as a layer; watches both directions |
-| `negotiate(opts)` | `initialize` | protocol, client capabilities | `initialize` may be a function of the client's request returning the **whole** result (version, agent info, capabilities, auth methods, `_meta`); today's options are the shortcut. Other requests wait until it has answered; before any `initialize` they are rejected |
-| `normalize()` | nothing | — | shapes only (see the contract); needs wire hooks |
-| `sessions(opts)` | `session/new`, `load`, `resume`, `close` | session lifecycle service | `newSession`, `loadSession`, `closeSession` hooks as today |
-| `turns(opts)` | `session/prompt`, `session/cancel`, `tool_call/cancel`, `terminal/cancel` | — | `AgentTurn`, queueing, background work, v1 and v2 turn lifecycles |
-| `mcp(opts)` | nothing | MCP connections per session | `turn.mcp()`, `mcpConnector`, `mcpTransports`; registers with the session lifecycle |
-| `extensions(list)` | the listed `_name/...` methods | — | typed extensions, and today's `methods` |
+| Layer | Answers | Provides | Requires | Notes |
+| --- | --- | --- | --- | --- |
+| `tracing(otel)` | nothing | — | — | `otelTap`. Until wire hooks exist (plan step 5) it uses the peer's wire tap, which sees every message including replies; call middleware alone would miss the replies |
+| `negotiate(opts)` | `initialize` | protocol, client capabilities | — | `initialize` may be a function of the client's request returning the **whole** result (version, agent info, capabilities, auth methods, `_meta`); today's options are the shortcut. Other requests wait until it has answered; before any `initialize` they are rejected, and notifications are dropped with a diagnostic |
+| `normalize()` | nothing | — | protocol | shapes only (see the contract); needs wire hooks |
+| `sessions(opts)` | `session/new`, `load`, `resume`, `close` | session lifecycle service | protocol, client capabilities | `newSession`, `loadSession`, `closeSession` hooks as today |
+| `turns(opts)` | `session/prompt`, `session/cancel`, `tool_call/cancel`, `terminal/cancel` | — | session lifecycle service, protocol, client capabilities | `AgentTurn`, queueing, background work, v1 and v2 turn lifecycles |
+| `mcp(opts)` | nothing | MCP connections per session | session lifecycle service, protocol | `turn.mcp()`, `mcpConnector`, `mcpTransports`; registers with the session lifecycle |
+| `extensions(list)` | the listed `_name/...` methods | — | — | typed extensions, and today's `methods` |
 
 ### The session lifecycle service
 
@@ -214,7 +214,9 @@ and cancel goes through `session/cancel`. The extraction keeps that exactly.
   for wire hooks (step 5) the layer nearest the wire is the last to transform
   what is written.
 - **Executable example** in the spec tests: two notifications, the first
-  through a hook that awaits a timer; the wire shows them in order.
+  through a hook that awaits a timer; the wire shows them in order. A second
+  test fixes which layer sees what first in each direction. **The tests are
+  the definition of hook order;** the prose above is a summary.
 
 ## Performance
 
@@ -233,7 +235,10 @@ answers any other request from the agent with "method not found". It exposes
 
 For the first proxy (plan step 3), a documented adapter on `client.peer`
 passes unknown requests and notifications up, and the agent's permission and
-fs requests too. A polished `clientEndpoint` with layers, with `AcpClient` as
+fs requests too. A `'*'` handler is not enough: `AcpClient` already
+registers `session/request_permission`, `fs/*` and `terminal/*`, and a
+wildcard only sees methods with no handler. The adapter **replaces** those
+handlers on the peer with pass-through ones, and adds `'*'` for the rest. A polished `clientEndpoint` with layers, with `AcpClient` as
 its preset, comes later.
 
 ## Plan
@@ -248,7 +253,8 @@ its preset, comes later.
    and cancel across both hops (with `cancelOutbound` on the downstream peer).
 4. **Extract the layers** one at a time with the whole suite after each:
    `negotiate`, `sessions` (with the lifecycle service), `mcp`, `turns`,
-   `extensions`, `tracing`. `serveAgent` becomes the preset.
+   `extensions`, `tracing` (on the wire tap). `serveAgent` becomes the
+   preset.
 5. **Wire hooks** in the kernel, then `normalize` (shapes only).
 6. **Focused tests**: ordering, the five kinds of cancel, failed setup,
    isolation between endpoints, and the performance comparison.
