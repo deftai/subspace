@@ -36,6 +36,8 @@ export interface McpConnectorOptions {
   stderr?: 'inherit' | 'ignore' | ((line: string, server: string) => void);
   /** Default per-request timeout. Default: none (cancel with the turn instead). */
   timeoutMs?: number;
+  /** Longest a connect (start and handshake) may take; a stdio server still starting is stopped. Default 60 s. */
+  connectTimeoutMs?: number;
 }
 
 /** The parts of `@modelcontextprotocol/client` used here (typed locally: it is optional, and its types are not ours to ship). */
@@ -43,7 +45,7 @@ interface SdkTransport {
   close(): Promise<void>;
 }
 interface SdkClient {
-  connect(transport: SdkTransport): Promise<void>;
+  connect(transport: SdkTransport, options?: Record<string, unknown>): Promise<void>;
   request(request: { method: string; params?: Record<string, unknown> }, schema: unknown, options: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -58,12 +60,13 @@ interface SdkStdio {
   getDefaultEnvironment(): Record<string, string>;
 }
 
-// Specifiers in variables: resolved at run time only.
-const CLIENT = '@modelcontextprotocol/client';
-const CLIENT_STDIO = '@modelcontextprotocol/client/stdio';
+// Literal specifiers, so bundlers see the dependency; loaded on first use only.
 let loading: Promise<[Sdk, SdkStdio]> | undefined;
 const load = () =>
-  (loading ??= Promise.all([import(CLIENT) as Promise<Sdk>, import(CLIENT_STDIO) as Promise<SdkStdio>]).catch((error: unknown) => {
+  (loading ??= Promise.all([
+    import('@modelcontextprotocol/client') as unknown as Promise<Sdk>,
+    import('@modelcontextprotocol/client/stdio') as unknown as Promise<SdkStdio>,
+  ]).catch((error: unknown) => {
     loading = undefined;
     throw new Error('mcpConnector() needs @modelcontextprotocol/client: npm install @modelcontextprotocol/client', { cause: error });
   }));
@@ -107,7 +110,14 @@ export function mcpConnector(options: McpConnectorOptions = {}): McpConnector {
             ? new sdk.StreamableHTTPClientTransport(url, requestInit ? { requestInit } : {})
             : new sdk.SSEClientTransport(url, requestInit ? { requestInit } : {});
       }
-      await client.connect(transport);
+      try {
+        await client.connect(transport, { timeout: options.connectTimeoutMs ?? 60_000 });
+      } catch (error) {
+        // Don't leave a half-started server behind.
+        await client.close().catch(() => {});
+        await transport.close().catch(() => {});
+        throw error;
+      }
       const connection: McpConnection = {
         async request(method, params, callOptions: McpCallOptions): Promise<McpOutcome> {
           const onNotification = callOptions.onNotification;

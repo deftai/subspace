@@ -158,3 +158,19 @@ test('without a connector, or for an unknown name, turn.mcp() says what is missi
   assert.match(messages[0]!, /"fixture" is stdio: give serveAgent an `mcpConnector`/);
   assert.match(messages[1]!, /no MCP server "nope" \(servers: fixture\)/);
 });
+
+test('a server that never answers times out on connect and is stopped; a missing one fails at once', async () => {
+  const marker = `subspace-silent-${process.pid}`;
+  const connector = mcpConnector({ stderr: 'ignore', connectTimeoutMs: 500 });
+  const started = Date.now();
+  await assert.rejects(
+    connector.connect({ type: 'stdio', name: 'silent', command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)', marker] }, { cwd: tmpdir() })
+  );
+  assert.ok(Date.now() - started < 10_000, `gave up in ${Date.now() - started} ms`);
+  await assert.rejects(connector.connect({ type: 'stdio', name: 'missing', command: '/no/such/mcp-server' }, { cwd: tmpdir() }));
+  // The SDK stops a stdio server as MCP says: close its stdin, wait, then SIGTERM (about 2 s).
+  const { execFileSync } = await import('node:child_process');
+  const running = () => execFileSync('ps', ['-axo', 'command'], { encoding: 'utf8' }).split('\n').filter((l) => l.includes(marker));
+  for (let i = 0; i < 50 && running().length; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(running(), [], 'no silent server left running');
+});

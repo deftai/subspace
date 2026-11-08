@@ -29,7 +29,7 @@ console.log(formatReport(report));
 if (failures(report).length) process.exitCode = 1;
 
 // 2. Replay: a real Grok Build session, recorded once, played back to our client.
-const trace = await loadTrace(join(import.meta.dirname, '../packages/testkit/corpus/grok-plain.trace.jsonl'));
+const trace = await loadTrace(join(import.meta.dirname, '../packages/acp-testkit/corpus/grok-plain.trace.jsonl'));
 const [replayEnd, clientEnd] = channelPair<unknown>();
 const replay = replayAgent(replayEnd, trace);
 const client = await AcpClient.connect(clientEnd);

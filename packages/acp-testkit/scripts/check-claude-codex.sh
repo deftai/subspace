@@ -3,9 +3,9 @@
 # ask-first mode (so the permission check runs). Each prompt check costs a
 # real model turn, about five per agent.
 #
-#   packages/testkit/scripts/check-claude-codex.sh            # both agents
-#   packages/testkit/scripts/check-claude-codex.sh codex      # one agent
-#   packages/testkit/scripts/check-claude-codex.sh --quick    # only the checks with no model turn
+#   packages/acp-testkit/scripts/check-claude-codex.sh            # both agents
+#   packages/acp-testkit/scripts/check-claude-codex.sh codex      # one agent
+#   packages/acp-testkit/scripts/check-claude-codex.sh --quick    # only the checks with no model turn
 #
 # Prints each report and saves it to /tmp/deft-check-<agent>.txt.
 set -o pipefail

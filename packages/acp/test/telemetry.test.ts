@@ -147,7 +147,7 @@ test('agent side: the same tap on serveAgent; the prompt is a SERVER span, the q
   assert.equal(deleted.status?.code, 2, 'a failed tool call is an error span');
 });
 
-const corpus = (name: string) => parseTrace(readFileSync(fileURLToPath(new URL(`../../testkit/corpus/${name}.trace.jsonl`, import.meta.url)), 'utf8'));
+const corpus = (name: string) => parseTrace(readFileSync(fileURLToPath(new URL(`../../acp-testkit/corpus/${name}.trace.jsonl`, import.meta.url)), 'utf8'));
 
 test('from a saved trace: a cancelled Claude turn, at the recorded times', () => {
   const otel = fakeOtel();

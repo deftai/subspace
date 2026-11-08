@@ -23,7 +23,7 @@ import testing from '../../../../../examples/testing.ts?raw';
 
 - `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; An agent's quirks carry its waivers (`resolveAgent(catalog, name).waivers`; see [agents files](/subspace/client/agents-file/)), which `subspace check <agent>` applies (`--strict` to not).
 - `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
-- From the command line: `node --conditions=subspace-source packages/testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
+- From the command line: `node --conditions=subspace-source packages/acp-testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
 
 The checks are listed on [Conformance](../../behaviour/conformance/).
 
@@ -64,4 +64,4 @@ Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "s
 
 ## The quirks corpus
 
-`packages/testkit/corpus/` holds traces recorded from Grok Build and the Claude and Codex adapters: a plain turn, a cancel mid-stream, and a refused write, for each. The test suite replays them to the client and checks it gets the result recorded live. What they show is on [Quirks](../../behaviour/quirks/).
+`packages/acp-testkit/corpus/` holds traces recorded from Grok Build and the Claude and Codex adapters: a plain turn, a cancel mid-stream, and a refused write, for each. The test suite replays them to the client and checks it gets the result recorded live. What they show is on [Quirks](../../behaviour/quirks/).

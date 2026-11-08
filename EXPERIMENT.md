@@ -18,7 +18,7 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
 |---|---|
 | `@deft-subspace/kernel` | Channels (Web Streams), NDJSON framing, `RpcPeer`, and `./node` for supervised processes. It has no dependencies, and its runtime core is about 5.7 KB gzipped. |
 | `@deft-subspace/acp` | `AcpClient`, `Session`, `Turn`, `serveAgent`, and permission policies, plus `./node` with `connectAgent` and `workspaceFiles`. Its ACP types come from `@agentclientprotocol/sdk`; no wire schema is hand-written. |
-| `@deft-subspace/acp-testkit` (`packages/testkit`) | Record and replay traces, faults, conformance checks for agents and clients, and a corpus of real agents' traces. See its README. |
+| `@deft-subspace/acp-testkit` (`packages/acp-testkit`) | Record and replay traces, faults, conformance checks for agents and clients, and a corpus of real agents' traces. See its README. |
 | `@deft-subspace/devtools` | `analyzeTrace` (requests paired with answers, turns, tool calls, permissions, cancels, problems) and `renderTraceHtml`, a self-contained browser viewer for kernel traces. CLI: `deft-subspace-trace`. |
 
 ## What the prototype shows
@@ -223,12 +223,12 @@ Tests run the TypeScript sources directly. Node strips the types, and the `subsp
    - MCP servers for sessions: typed `mcpServers` (`stdio`, `http`, `sse`, `acp`), written in the agent's protocol (v1 stdio has no type; v2 stdio needs an absolute command) and checked against its transports before `session/new`. `client.supports.mcp` now has `acp`, and v2 `stdio` only when advertised.
    - MCP-over-ACP (the "MCP-over-ACP" RFD, MCP 2026-07-28): `client.serveMcp({ name, handler })` serves tools over the ACP connection. The handler has the official SDK's `McpRequestHandler` shape, so `fromMcpServer()` plugs in. Validation and error codes follow the SDK's provider (-33001 unknown server, -33000 limit, -33002 backend failure, -32800 cancelled; inner errors in the outcome). Tested against the SDK's `McpOverAcpCaller`. No real agent advertises the `acp` transport yet (Claude and Codex: stdio and http; Grok: http and sse).
 4. **Journal kit (`experiment/acp-journal`, first cut done, 16 tests):** parked for the future (2026-11-07). When something needs it: v2 `session/resume`, a permission left open by a dead process recorded as interrupted on load, and cursors that are not plain sequence numbers. Kept generic: nothing specific to a private project goes in.
-5. **Testkit (`packages/testkit`, merged, first cut done):**
+5. **Testkit (`packages/acp-testkit`, merged, first cut done):**
    - built: recording and replay, fault injection, `checkAgent` and `checkClient`, and a corpus of 9 traces: a plain turn, a cancel and a refused write each for Grok (1.0.77), Claude (claude-agent-acp 0.101.0) and Codex (codex-acp 2.5.0), with accounts redacted;
    - every quirk in the agent catalog that a trace can show has a corpus test (`test/corpus.test.ts`): the refusal endings, the starting modes, Codex's `cancel` option, the redacted auth status, Grok's `_x.ai` notifications. Not from traces: Grok's `follows-always-approve` (a user setting) and `unknown-session-32602` (seen by `subspace check`, waived there);
    - Grok's `-32602` for an unknown session is a known quirk, waived from the catalog (`waives: ['session.unknown']`); `--strict` turns it into a failure;
    - re-record with `scripts/record-claude-codex.sh` when an adapter version changes, and check the catalog's `seen` fields;
-   - the old `@deft/acp-testkit` is now in `legacy/`, so this folder could be renamed `packages/acp-testkit` to match its package name.
+   - the old `@deft/acp-testkit` is now in `legacy/`, and this folder is now `packages/acp-testkit`, matching its package name (2026-11-08).
 6. **Devtools (`packages/devtools`, merged, 15 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
    - done (2026-11-07): an answer after a `$/cancel_request` is not a problem (LSP expects one); ids seen only in failed requests are not sessions; checked in a browser on the Claude, Codex and Grok corpus traces, and it looked right;

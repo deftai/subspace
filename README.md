@@ -30,7 +30,7 @@ Also there: ready-made permission rules (`readOnly`, `allowInside(repo)`, `askIn
 |---|---|
 | [`@deft-subspace/kernel`](./packages/kernel) | Channels, NDJSON framing, a JSON-RPC peer with timeouts and cancellation. Protocol-neutral; Node, Bun, Deno and browsers. |
 | [`@deft-subspace/acp`](./packages/acp) | `AcpClient` and `serveAgent`, plus `./node` helpers to start agent programs and confine file and terminal access to a workspace. |
-| [`@deft-subspace/acp-testkit`](./packages/testkit) | Trace recording and replay, fault injection, conformance checks for agents and clients, and a corpus of real agents' quirks. |
+| [`@deft-subspace/acp-testkit`](./packages/acp-testkit) | Trace recording and replay, fault injection, conformance checks for agents and clients, and a corpus of real agents' quirks. |
 | [`@deft-subspace/devtools`](./packages/devtools) | A trace analyzer and a standalone HTML trace viewer. |
 | [`@deft-subspace/cli`](./packages/cli) | `subspace run`, `chat`, `agents`, `check` and `trace`: agents from the command line. |
 | [`@deft-subspace/claude`](./packages/claude) | `claude()`: a Claude model for `modelAgent()`, so an ACP agent backed by Claude is a short file. |

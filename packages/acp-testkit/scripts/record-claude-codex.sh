@@ -2,9 +2,9 @@
 # Record the Claude and Codex corpus traces: a plain turn, a cancel
 # mid-stream, and a write the reject policy refuses, for each agent.
 #
-#   packages/testkit/scripts/record-claude-codex.sh                # both agents
-#   packages/testkit/scripts/record-claude-codex.sh claude         # one agent
-#   packages/testkit/scripts/record-claude-codex.sh --write-only   # only the write traces
+#   packages/acp-testkit/scripts/record-claude-codex.sh                # both agents
+#   packages/acp-testkit/scripts/record-claude-codex.sh claude         # one agent
+#   packages/acp-testkit/scripts/record-claude-codex.sh --write-only   # only the write traces
 #
 # Uses your Claude and Codex logins (one short turn each). Writes
 # corpus/<agent>-{plain,cancel,write-rejected}.trace.jsonl and commits

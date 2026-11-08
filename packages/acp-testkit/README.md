@@ -15,7 +15,7 @@ Test ACP agents and clients. Everything uses the kernel's trace format (`@deft-s
 `scripts/record-claude-codex.sh` records all six Claude and Codex traces in one go (pass `claude` or `codex` for one agent, `--write-only` for just the write traces). `scripts/record.ts` runs one turn against a real agent and saves `corpus/<name>.trace.jsonl`. The temp workspace and the home directory are replaced with `/workspace` and `~`; account details (email, organization, plan), the agent's available commands (your own skills and plugins; only their count is kept), Grok's subscription tier and your hook runs are redacted. Check a new trace for anything else private before committing it.
 
 ```bash
-cd packages/testkit
+cd packages/acp-testkit
 # Plain turn
 node --conditions=subspace-source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
 # A write the reject policy refuses

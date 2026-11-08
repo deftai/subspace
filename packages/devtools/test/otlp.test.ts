@@ -10,7 +10,7 @@ import { exportTrace } from '@deft-subspace/devtools/otlp';
 import { InMemorySpanExporter, type ReadableSpan, type SpanExporter } from '@opentelemetry/sdk-trace';
 import { main } from '../src/cli.ts';
 
-const tracePath = fileURLToPath(new URL('../../testkit/corpus/claude-cancel.trace.jsonl', import.meta.url));
+const tracePath = fileURLToPath(new URL('../../acp-testkit/corpus/claude-cancel.trace.jsonl', import.meta.url));
 const records = parseTrace(readFileSync(tracePath, 'utf8'));
 
 /** A collector that keeps what it is sent and answers with `status`. */

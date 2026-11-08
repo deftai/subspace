@@ -111,7 +111,7 @@ export interface ResolvedAgent {
 /**
  * Subspace's curation of the agents it knows best. Launch details come from
  * the registry where it has them; quirks come from the testkit's recorded
- * corpus (packages/testkit/corpus).
+ * corpus (packages/acp-testkit/corpus).
  */
 export const BUILTIN_AGENTS = {
   claude: {

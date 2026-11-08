@@ -8,7 +8,7 @@ import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 const packages = [
   { name: 'acp', label: '@deft-subspace/acp', entryPoints: ['../packages/acp/src/index.ts', '../packages/acp/src/node.ts'] },
   { name: 'kernel', label: '@deft-subspace/kernel', entryPoints: ['../packages/kernel/src/index.ts', '../packages/kernel/src/node.ts'] },
-  { name: 'testkit', label: '@deft-subspace/acp-testkit', entryPoints: ['../packages/testkit/src/index.ts', '../packages/testkit/src/node.ts'] },
+  { name: 'testkit', dir: 'acp-testkit', label: '@deft-subspace/acp-testkit', entryPoints: ['../packages/acp-testkit/src/index.ts', '../packages/acp-testkit/src/node.ts'] },
   { name: 'devtools', label: '@deft-subspace/devtools', entryPoints: ['../packages/devtools/src/index.ts'] },
   { name: 'claude', label: '@deft-subspace/claude', entryPoints: ['../packages/claude/src/index.ts'] },
 ];
@@ -18,7 +18,7 @@ const reference = packages.map((pkg) => {
     sidebarGroup,
     plugin: plugin({
       entryPoints: pkg.entryPoints,
-      tsconfig: `../packages/${pkg.name}/tsconfig.json`,
+      tsconfig: `../packages/${pkg.dir ?? pkg.name}/tsconfig.json`,
       output: `reference/typescript/${pkg.name}`,
       sidebar: { label: pkg.label, collapsed: true },
       typeDoc: { excludeInternal: true, excludePrivate: true, excludeExternals: true, readme: 'none', gitRevision: 'experiment/deft-subspace-prototype' },

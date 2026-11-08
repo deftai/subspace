@@ -355,8 +355,8 @@ Names must start with `_`, as ACP requires. Optional validators check params whe
   - `checkAgent(channel)` checks any agent: initialize, sessions, a prompt's end, cancel, unknown sessions, permission during cancel, login methods, config options and delete.
   - `checkClient(connect)` plays an agent against any client.
   - `checkAgentProcess()` starts a program and checks it.
-  - From the command line: `node --conditions=subspace-source packages/testkit/scripts/check-agent.ts <agent command>`.
-- **Quirks corpus:** `packages/testkit/corpus/` holds real traces from Grok Build, Claude and Codex, replayed by the test suite. Its README lists each agent's known quirks.
+  - From the command line: `node --conditions=subspace-source packages/acp-testkit/scripts/check-agent.ts <agent command>`.
+- **Quirks corpus:** `packages/acp-testkit/corpus/` holds real traces from Grok Build, Claude and Codex, replayed by the test suite. Its README lists each agent's known quirks.
 
 `@deft-subspace/devtools`: `deft-subspace-trace trace.jsonl` writes a standalone HTML viewer for a trace, and `--summary` prints a text summary.
 
