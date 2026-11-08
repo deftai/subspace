@@ -9,13 +9,12 @@ description: Spans for every request, turn, tool call and permission question, l
 import * as otel from '@opentelemetry/api';
 import { AcpClient, otelTap } from '@deft-subspace/acp';
 
-const telemetry = otelTap(otel, { attributes: { 'acp.agent': 'claude' } });
-const client = await AcpClient.connect(channel, { tap: telemetry });
-// ... when the connection is closed:
-telemetry.close();
+const client = await AcpClient.connect(channel, {
+  telemetry: otelTap(otel, { attributes: { 'acp.agent': 'claude' } }),
+});
 ```
 
-On an agent, pass it to the peer: `serveAgent(channel, { ..., peer: { tap: telemetry } })`. With `start()`, pass `tap: telemetry`; it works alongside `trace`.
+The same option works on `serveAgent(channel, { telemetry, ... })` and `start(agent, { telemetry })`, alongside `trace`. Its open spans end when the connection closes.
 
 Subspace has no OpenTelemetry dependency: you pass the `@opentelemetry/api` module. Without a registered SDK, its tracer does nothing, so the tap costs next to nothing when tracing is off.
 
@@ -34,7 +33,26 @@ Subspace has no OpenTelemetry dependency: you pass the `@opentelemetry/api` modu
 - **Privacy:** nothing from the conversation is recorded: no prompt or message text, and no tool titles, which can hold commands and paths. `otelTap(otel, { titles: true })` adds `acp.tool_call.title`.
 - **Unfinished work:** a tool call still open when its turn ends is ended with it and marked `acp.unfinished` (and `acp.tool_call.background` when the agent reported it as background work). `close()` ends everything else still open the same way.
 
+## Across the connection
+
+With `telemetry` on both sides, a turn is one trace from the app that sent the prompt to the agent's own work:
+
+- Each request carries the W3C trace context in `_meta`: `traceparent`, `tracestate` and `baggage`, the root-level keys ACP reserves for it. It uses the propagator your SDK registered (the Node SDK's default is W3C).
+- A request that carries one continues that trace: the agent's `session/prompt` span is a child of the client's.
+- Handlers run inside their request's span. The agent's prompt handler, and any span it starts (a model call, an HTTP request), is inside the turn. A request it sends from inside its own span, such as a permission question, goes under that span.
+
+This needs a context manager (the Node SDK sets one). Passing `otelTap()` as a plain `tap` makes the same spans on this side, but does not carry the trace across.
+
 ## From a saved trace
+
+```sh
+subspace trace run.jsonl --otlp                       # $OTEL_EXPORTER_OTLP_*, else http://localhost:4318/v1/traces
+subspace trace run.jsonl --otlp https://otel.example.com/v1/traces --service ci-run
+```
+
+`--otlp` sends the spans over OTLP/HTTP (protobuf), at the times the trace recorded, and exits 1 if the collector does not take them. Headers come from `$OTEL_EXPORTER_OTLP_HEADERS`. `--titles` adds tool call titles. In code, `exportTrace(records, { url })` from `@deft-subspace/devtools/otlp` does the same.
+
+To make the spans with your own SDK instead:
 
 ```ts
 import { parseTrace } from '@deft-subspace/kernel';

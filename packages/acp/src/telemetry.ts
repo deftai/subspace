@@ -2,11 +2,11 @@
  * OpenTelemetry spans for an ACP connection, from the messages it carries.
  *
  *   import * as otel from '@opentelemetry/api';
- *   const telemetry = otelTap(otel);
- *   const client = await AcpClient.connect(channel, { tap: telemetry });   // a client
- *   serveAgent(channel, { ..., peer: { tap: telemetry } });                // or an agent
- *   ...
- *   telemetry.close();   // ends what is still open, e.g. when the connection closes
+ *   const client = await AcpClient.connect(channel, { telemetry: otelTap(otel) });  // a client
+ *   serveAgent(channel, { ..., telemetry: otelTap(otel) });                         // or an agent
+ *
+ *   // Spans on this side only, without carrying the trace across:
+ *   const tap = otelTap(otel);  ... { tap } ...  tap.close();
  *
  * - Every request is a span (CLIENT when this side sent it, SERVER when it
  *   received it), named by its method, with the RPC semantic-convention
@@ -24,9 +24,15 @@
  * - No dependency: pass the `@opentelemetry/api` module. Without a registered
  *   SDK, its tracer does nothing.
  *
+ * - Across the connection: with `telemetry` on the client, the agent or
+ *   `start()` (rather than `tap`), each request carries the W3C trace context
+ *   in `_meta` (`traceparent`, `tracestate`, `baggage`, the keys ACP reserves
+ *   for it), a request that carries one continues that trace, and handlers
+ *   run inside their request's span, so your own spans nest under it.
+ *
  * `spansFromTrace()` makes the same spans from a saved trace.
  */
-import type { TraceRecord } from '@deft-subspace/kernel';
+import type { InboundMiddleware, OutboundMiddleware, TraceRecord } from '@deft-subspace/kernel';
 
 type Attributes = Record<string, string | number | boolean>;
 
@@ -45,8 +51,19 @@ export interface OtelApi {
       startSpan(name: string, options?: { kind?: number; attributes?: Attributes; startTime?: number }, context?: never): OtelSpan;
     };
     setSpan(context: never, span: never): unknown;
+    /** The span in a context, if any. */
+    getSpan?(context: never): unknown;
   };
-  context: { active(): unknown };
+  context: {
+    active(): unknown;
+    /** Run `fn` in `context`: for handlers inside their request's span. */
+    with?(context: never, fn: () => never): unknown;
+  };
+  /** W3C trace context in and out of `_meta`, with the registered propagator. */
+  propagation?: {
+    inject(context: never, carrier: never): void;
+    extract(context: never, carrier: never): unknown;
+  };
 }
 
 export interface OtelTapOptions {
@@ -62,6 +79,10 @@ export interface OtelTap {
   (direction: 'in' | 'out', message: unknown): void;
   /** End every span still open (marked `acp.unfinished`), e.g. when the connection closed. */
   close(): void;
+  /** Peer middleware: puts the trace context in each request's `_meta` (the `telemetry` option sets it). */
+  outbound: OutboundMiddleware;
+  /** Peer middleware: runs each request's handler inside its span (the `telemetry` option sets it). */
+  inbound: InboundMiddleware;
 }
 
 // OpenTelemetry's numbers for SpanKind and SpanStatusCode (stable API).
@@ -93,6 +114,8 @@ interface OpenTurn {
 class Spans {
   private readonly tracer: ReturnType<OtelApi['trace']['getTracer']>;
   private readonly requests = new Map<string, Open>();
+  /** Spans started by `outbound` before the message is sent, by its params. */
+  private readonly sending = new WeakMap<object, OtelSpan>();
   private readonly turns = new Map<string, OpenTurn>();
   private protocol = 1;
   private readonly api: OtelApi;
@@ -123,19 +146,66 @@ class Spans {
     }
   }
 
-  private start(name: string, kind: number, attributes: Attributes, time: number, sessionId?: string): OtelSpan {
+  /** Before a request is sent: its span, and params with the trace context in `_meta`. */
+  stamp(method: string, params: unknown, time: number): unknown {
+    if (!isRecord(params) || !this.api.propagation) return params;
+    const span = this.requestSpan('out', method, params, undefined, time);
+    const carrier: Record<string, string> = {};
+    this.api.propagation.inject(this.api.trace.setSpan(this.api.context.active() as never, span as never) as never, carrier as never);
+    if (!Object.keys(carrier).length) return params;
+    const meta = isRecord(params._meta) ? params._meta : {};
+    const stamped = { ...params, _meta: { ...meta, ...carrier } };
+    this.sending.set(stamped, span);
+    return stamped;
+  }
+
+  /** A stamped request that was never sent (the connection closed, or it was aborted first). */
+  unsent(params: unknown, error: unknown, time: number): void {
+    const span = isRecord(params) ? this.sending.get(params) : undefined;
+    if (!span) return;
+    this.sending.delete(params as object);
+    span.setStatus({ code: ERROR, message: error instanceof Error ? error.message : String(error) });
+    span.setAttribute('acp.unsent', true);
+    span.end(time);
+  }
+
+  /** The context of a received request's span, for running its handler. */
+  contextOf(id: string): unknown {
+    const open = this.requests.get(`in:${id}`);
+    return open ? this.api.trace.setSpan(this.api.context.active() as never, open.span as never) : undefined;
+  }
+
+  /**
+   * Under what: a received request continues the trace it carries, else goes
+   * in its session's turn. Something this side sends goes under the span
+   * active when it is sent (e.g. the agent's own work inside the turn), else
+   * in the turn.
+   */
+  private start(name: string, kind: number, attributes: Attributes, time: number, sessionId?: string, remote?: Record<string, unknown>, sent = false): OtelSpan {
     const turn = sessionId ? this.turns.get(sessionId) : undefined;
     let parent = this.api.context.active();
-    if (turn) parent = this.api.trace.setSpan(parent as never, turn.span as never);
+    const activeSpan = sent && this.api.trace.getSpan ? this.api.trace.getSpan(parent as never) : undefined;
+    if (remote && this.api.propagation && typeof remote.traceparent === 'string') parent = this.api.propagation.extract(parent as never, remote as never);
+    else if (turn && !activeSpan) parent = this.api.trace.setSpan(parent as never, turn.span as never);
     return this.tracer.startSpan(name, { kind, attributes: { ...this.options.attributes, ...attributes }, startTime: time }, parent as never);
+  }
+
+  private requestSpan(direction: 'in' | 'out', method: string, params: Record<string, unknown>, id: string | undefined, time: number): OtelSpan {
+    const sessionId = str(params.sessionId);
+    const attributes: Attributes = { 'rpc.system': 'jsonrpc', 'rpc.method': method };
+    if (id !== undefined) attributes['rpc.jsonrpc.request_id'] = id;
+    if (sessionId) attributes['acp.session_id'] = sessionId;
+    const remote = direction === 'in' && isRecord(params._meta) ? params._meta : undefined;
+    // A prompt is the turn: it starts under the caller's context, not an earlier turn.
+    return this.start(method, direction === 'out' ? CLIENT : SERVER, attributes, time, method === 'session/prompt' ? undefined : sessionId, remote, direction === 'out');
   }
 
   private request(direction: 'in' | 'out', id: string, method: string, params: Record<string, unknown>, time: number): void {
     const sessionId = str(params.sessionId);
-    const attributes: Attributes = { 'rpc.system': 'jsonrpc', 'rpc.method': method, 'rpc.jsonrpc.request_id': id };
-    if (sessionId) attributes['acp.session_id'] = sessionId;
-    // A prompt is the turn: it starts under the caller's context, not an earlier turn.
-    const span = this.start(method, direction === 'out' ? CLIENT : SERVER, attributes, time, method === 'session/prompt' ? undefined : sessionId);
+    const stamped = direction === 'out' ? this.sending.get(params) : undefined;
+    if (stamped) this.sending.delete(params);
+    const span = stamped ?? this.requestSpan(direction, method, params, id, time);
+    if (stamped) span.setAttribute('rpc.jsonrpc.request_id', id);
     const key = `${direction}:${id}`;
     this.requests.set(key, { span, method, ...(sessionId ? { sessionId } : {}) });
     if (method === 'session/prompt' && sessionId) {
@@ -264,6 +334,17 @@ export function otelTap(api: OtelApi, options: OtelTapOptions = {}): OtelTap {
   const spans = new Spans(api, options);
   const tap = ((direction: 'in' | 'out', message: unknown) => spans.handle(direction, message, Date.now())) as OtelTap;
   tap.close = () => spans.close(Date.now());
+  tap.outbound = (call, next) => {
+    if (call.kind !== 'request') return next(call.params);
+    const params = spans.stamp(call.method, call.params, Date.now());
+    const sent = next(params);
+    sent.catch((error: unknown) => spans.unsent(params, error, Date.now()));
+    return sent;
+  };
+  tap.inbound = (call, next) => {
+    const context = call.kind === 'request' && call.id !== undefined && api.context.with ? spans.contextOf(String(call.id)) : undefined;
+    return context === undefined ? next() : (api.context.with!(context as never, next as never) as Promise<unknown>);
+  };
   return tap;
 }
 
@@ -282,4 +363,25 @@ export function spansFromTrace(records: readonly TraceRecord[], api: OtelApi, op
     spans.handle(record.dir, record.msg, last);
   }
   spans.close(last);
+}
+
+/** @internal Peer options for a `tap` and/or `telemetry`. */
+export function withTelemetry(
+  tap: ((direction: 'in' | 'out', message: unknown) => void) | undefined,
+  telemetry: OtelTap | undefined,
+  options: { inbound?: InboundMiddleware[]; outbound?: OutboundMiddleware[] } = {}
+): { tap?: (direction: 'in' | 'out', message: unknown) => void; inbound?: InboundMiddleware[]; outbound?: OutboundMiddleware[] } {
+  if (!telemetry) return { ...(tap ? { tap } : {}), ...options };
+  return {
+    tap: tap
+      ? (direction, message) => {
+          tap(direction, message);
+          telemetry(direction, message);
+        }
+      : telemetry,
+    // Inbound outermost: the other middleware run inside the span too. Outbound
+    // innermost: the trace context goes on the params as finally sent.
+    inbound: [telemetry.inbound, ...(options.inbound ?? [])],
+    outbound: [...(options.outbound ?? []), telemetry.outbound],
+  };
 }

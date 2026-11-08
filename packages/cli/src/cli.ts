@@ -191,6 +191,11 @@ scenario's failure bundle) and prints its path.
   -o, --out <file>       Where to write the viewer (default: next to the trace)
   --summary              Print a text summary instead
   --title <text>         The page title
+  --otlp [url]           Send the trace's OpenTelemetry spans to a collector
+                         instead (OTLP/HTTP; default: $OTEL_EXPORTER_OTLP_*,
+                         else http://localhost:4318/v1/traces)
+  --service <name>       service.name for --otlp (default: the trace's label)
+  --titles               With --otlp, include tool call titles
 `,
 };
 HELP.help = USAGE;

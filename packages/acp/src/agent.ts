@@ -37,6 +37,7 @@ import { checkToolInput, toolOutputText, toolTitle, type ToolDefinition } from '
 import { McpCaller, type McpServerClient } from './mcp-caller.ts';
 import { parseMcpServers, type McpServer } from './mcp.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
+import { withTelemetry, type OtelTap } from './telemetry.ts';
 
 export interface ToolCallInit {
   title: string;
@@ -262,6 +263,12 @@ export interface AgentOptions {
   /** Handlers for the client's calls to your vendor extension methods (see `extensionRequest`, `handle`). */
   extensions?: ExtensionHandler[];
   peer?: Omit<RpcPeerOptions, 'cancelOutbound' | 'cancelInbound'>;
+  /**
+   * OpenTelemetry for this connection: `otelTap(otel)`. A turn continues the
+   * client's trace when its prompt carries one in `_meta`, your handlers run
+   * inside their request's span, and requests to the client carry the trace on.
+   */
+  telemetry?: OtelTap;
 }
 
 const randomUUID = (): string => globalThis.crypto.randomUUID();
@@ -299,8 +306,10 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   const peer = new RpcPeer(channel, {
     name: options.name,
     ...options.peer,
+    ...withTelemetry(options.peer?.tap, options.telemetry, options.peer),
     ...cancelRequest,
   });
+  if (options.telemetry) void peer.closed.then(() => options.telemetry!.close());
   const mcpCaller = new McpCaller(peer, { name: options.name, version: options.version ?? '0.0.0' });
   const newSession = (id: string, servers: McpServer[] = []): AgentSession => ({
     id,

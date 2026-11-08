@@ -34,6 +34,7 @@ import type {
   v2,
 } from './model.ts';
 import { authMethodNames, authMethodsFrom, canLogout, type AuthMethod } from './auth.ts';
+import { withTelemetry, type OtelTap } from './telemetry.ts';
 import { agentSupport, CapabilityError, type AgentSupport } from './capabilities.ts';
 import { configOptionsFrom, configParams, type ConfigOption, type SelectConfigOption } from './config.ts';
 import {
@@ -162,6 +163,12 @@ export interface ClientOptions extends TurnHandlers {
   onElicitationComplete?: (notification: { elicitationId: string; sessionId?: string }) => void;
   /** Sees every JSON-RPC message, both directions. */
   tap?: RpcPeerOptions['tap'];
+  /**
+   * OpenTelemetry for this connection: `otelTap(otel)`. Like `tap`, and also
+   * passes the trace context to the agent in `_meta` and runs handlers inside
+   * their request's span; its open spans end when the connection closes.
+   */
+  telemetry?: OtelTap;
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
 }
 
@@ -244,9 +251,10 @@ export class AcpClient {
     const peer = new RpcPeer(channel, {
       name: options.name ?? 'acp-client',
       ...cancelRequest,
-      tap: options.tap,
+      ...withTelemetry(options.tap, options.telemetry),
       onDiagnostic: options.onDiagnostic,
     });
+    if (options.telemetry) void peer.closed.then(() => options.telemetry!.close());
     // Handlers are registered before the first message can arrive.
     let client: AcpClient | undefined;
     peer.onNotification('session/update', (params: { sessionId?: string; update?: unknown }) => {

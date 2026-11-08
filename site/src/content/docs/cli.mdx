@@ -14,6 +14,7 @@ subspace agents install goose                     # a registry binary, checksum-
 subspace check grok                               # the conformance checks (known quirks waived; --strict to not)
 subspace test scenarios/*.json --junit results.xml # scenario files: expectations, snapshots, CI reports
 subspace trace run.jsonl                          # an HTML viewer for a trace (--summary for text)
+subspace trace run.jsonl --otlp                   # or send its OpenTelemetry spans to a collector
 subspace run "hello" -- node my-agent.js          # any agent: its command after --
 ```
 
