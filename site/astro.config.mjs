@@ -48,7 +48,7 @@ export default defineConfig({
         { label: 'Agents', items: ['agents/writing-an-agent', 'agents/tools', 'agents/model-agents', 'agents/extensions'] },
         { label: 'MCP', items: ['mcp/servers', 'mcp/over-acp'] },
         { label: 'Terminals and background work', items: ['background/terminals', 'background/background-work'] },
-        { label: 'Testing', items: ['testing/testkit', 'testing/devtools'] },
+        { label: 'Testing', items: ['testing/testkit', 'testing/devtools', 'testing/telemetry'] },
         { label: 'Behaviour', items: ['behaviour/conformance', 'behaviour/quirks', 'behaviour/protocol-versions'] },
         { label: 'Kernel', items: ['kernel'] },
         { label: 'Reference: TypeScript', items: reference.map((r) => r.sidebarGroup) },

@@ -229,12 +229,9 @@ Tests run the TypeScript sources directly. Node strips the types, and the `sourc
    - Grok's `-32602` for an unknown session is a known quirk, waived from the catalog (`waives: ['session.unknown']`); `--strict` turns it into a failure;
    - re-record with `scripts/record-claude-codex.sh` when an adapter version changes, and check the catalog's `seen` fields;
    - the old `@deft/acp-testkit` is now in `legacy/`, so this folder could be renamed `packages/acp-testkit` to match its package name.
-6. **Devtools (`packages/devtools`, merged, first cut done, 14 tests):**
+6. **Devtools (`packages/devtools`, merged, 15 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
-   - published as a private page for review;
-   - still to do: an answer that arrives after a `$/cancel_request` is flagged as a problem, though LSP expects one;
-   - still to do: sessions seen only in error replies count as real sessions;
-   - still to do: anything found when looking at it in a browser;
-   - still to do: OpenTelemetry spans per request and per turn.
+   - done (2026-11-07): an answer after a `$/cancel_request` is not a problem (LSP expects one); ids seen only in failed requests are not sessions; checked in a browser on the Claude, Codex and Grok corpus traces, and it looked right;
+   - OpenTelemetry (2026-11-07): `otelTap(otel)` in `@deft-subspace/acp`, an `RpcPeerOptions.tap` for a client or an agent, makes a span per request (CLIENT or SERVER), the `session/prompt` span is the turn (ends with the turn on v1 and v2, `acp.stop_reason`), with tool calls and the session's requests (permission questions, fs, terminals) inside it; cancels and plans are events. Requests start under the active context, so a turn nests under the app's span. No dependency (the app passes `@opentelemetry/api`); no conversation content, and tool titles only with `titles: true`. `spansFromTrace()` makes the same spans from a saved trace. Checked with the real SDK (sdk-trace-base 2.12, in-memory exporter, async-hooks context) on v1 and v2: one trace, the turn under the app's span. In Bridge: on both its ACP server and the MCP front's agent connections, with a test against the real SDK. Not done: passing the trace context to the agent in `_meta` (W3C `traceparent`), so an agent's own spans can join.
 7. **Bounded turns:** done. `session.prompt(input, { limits })`, or the client's `limits` option, takes `maxDurationMs`, `idleMs`, `maxToolCalls` and `maxUsage`. A limit cancels the turn the normal way, pushes an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`. 11 tests cover v1 and v2. In `bridge mcp`: the `prompt` tool takes `max_turn_seconds`, `idle_seconds` and `max_tool_calls`, `[mcp.limits]` sets the defaults, and the report says which limit fired.
 8. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.

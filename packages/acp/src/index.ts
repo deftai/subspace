@@ -124,3 +124,4 @@ export {
   type ResolvedAgent,
 } from './agents.ts';
 export { REGISTRY_URL, registryTarget, trimRegistry, type Registry, type RegistryAgent } from './registry.ts';
+export { otelTap, spansFromTrace, type OtelApi, type OtelSpan, type OtelTap, type OtelTapOptions } from './telemetry.ts';
