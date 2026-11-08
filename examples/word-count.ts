@@ -4,7 +4,7 @@
 import { start } from '@deft-subspace/acp/node';
 
 const agent = await start(
-  { command: process.execPath, args: ['--conditions=source', 'word-count-agent.ts'] },
+  { command: process.execPath, args: ['--conditions=subspace-source', 'word-count-agent.ts'] },
   {
     onPermission: (request) => (console.log(`  (agent asks: ${request.title}) yes`), 'allow'),
     onMessage: (delta, { separator }) => process.stdout.write(separator + delta),

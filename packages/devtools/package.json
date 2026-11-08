@@ -13,17 +13,17 @@
   },
   "exports": {
     ".": {
-      "source": "./src/index.ts",
+      "subspace-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./cli": {
-      "source": "./src/cli.ts",
+      "subspace-source": "./src/cli.ts",
       "types": "./dist/cli.d.ts",
       "default": "./dist/cli.js"
     },
     "./otlp": {
-      "source": "./src/otlp.ts",
+      "subspace-source": "./src/otlp.ts",
       "types": "./dist/otlp.d.ts",
       "default": "./dist/otlp.js"
     },
@@ -37,8 +37,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "node --conditions=source --test --test-force-exit test/*.test.ts",
-    "sample": "node --conditions=source examples/sample-trace.ts"
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts",
+    "sample": "node --conditions=subspace-source examples/sample-trace.ts"
   },
   "dependencies": {
     "@deft-subspace/acp": "workspace:*",

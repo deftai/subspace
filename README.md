@@ -47,7 +47,7 @@ pnpm run typecheck
 pnpm run build   # dist/, for projects that link the packages
 ```
 
-Tests and examples run the TypeScript sources directly (`node --conditions=source`, Node 22.19 or later).
+Tests and examples run the TypeScript sources directly (`node --conditions=subspace-source`, Node 22.19 or later).
 
 ## Status
 

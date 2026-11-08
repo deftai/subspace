@@ -53,7 +53,7 @@ record() {
   local vars=("PROMPT=$prompt")
   [ -n "$cancel" ] && vars+=("CANCEL_AFTER_MS=$cancel")
   [ -n "$mode" ] && vars+=("MODE=$mode")
-  if env "${vars[@]}" node --conditions=source scripts/record.ts "$name" "$@"; then
+  if env "${vars[@]}" node --conditions=subspace-source scripts/record.ts "$name" "$@"; then
     ok+=("$name")
   else
     failed+=("$name")

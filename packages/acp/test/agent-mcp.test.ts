@@ -60,7 +60,7 @@ for (const protocol of [1, 2] as const) {
         const echo = await tools.callTool('echo', { message: 'hi' }, { onNotification: (n) => progress.push(n.method) });
         log.push(['echo', echo.content, progress]);
         await tools.callTool('nope').catch((error: unknown) => log.push(['nope', error instanceof McpError && error.code]));
-        assert.throws(() => turn.mcp('files'), /no acp MCP server "files"/);
+        assert.throws(() => turn.mcp('files'), /"files" is stdio: give serveAgent an `mcpConnector`/);
         await turn.say('done');
       },
     });

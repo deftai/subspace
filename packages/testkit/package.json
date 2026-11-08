@@ -10,12 +10,12 @@
   },
   "exports": {
     ".": {
-      "source": "./src/index.ts",
+      "subspace-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./node": {
-      "source": "./src/node.ts",
+      "subspace-source": "./src/node.ts",
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
     },
@@ -29,8 +29,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "node --conditions=source --test --test-force-exit test/*.test.ts",
-    "record": "node --conditions=source scripts/record.ts"
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts",
+    "record": "node --conditions=subspace-source scripts/record.ts"
   },
   "dependencies": {
     "@deft-subspace/kernel": "workspace:*",

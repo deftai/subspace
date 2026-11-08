@@ -40,7 +40,7 @@ To use the packages from another project before they are published, link them. p
 }
 ```
 
-Run `pnpm run build` in Subspace after pulling, so the linked `dist/` is current. Inside the repo, tests and examples run the TypeScript sources directly: `node --conditions=source file.ts` (Node 22.19 or later).
+Run `pnpm run build` in Subspace after pulling, so the linked `dist/` is current. Inside the repo, tests and examples run the TypeScript sources directly: `node --conditions=subspace-source file.ts` (Node 22.19 or later).
 
 ## The quick way
 
@@ -325,7 +325,7 @@ Also on the turn:
 - **Asking the user:** `turn.elicit()`.
 - **Agent terminals (v2):** `turn.showTerminal({ command, cancellable })`, with `write()`, `replace()`, `exit()` and `detach()`.
 - **Background tool calls:** `turn.toolCall({ ..., cancellable: true })` returns a handle with its own `signal`; `detach()` keeps it running in the background after the turn.
-- **MCP:** `turn.mcpServers` lists the session's servers, typed. `turn.mcp(name)` calls an `acp` server the client serves: `listTools()`, `callTool()`, `request()`. Calls are cancelled with the turn. Advertise what you take with `mcpTransports: ['acp', ...]`.
+- **MCP:** `turn.mcpServers` lists the session's servers, typed. `turn.mcp(name)` uses one: `listTools()`, `callTool()`, `request()`. `acp` servers go over the ACP connection. `stdio`, `http` and `sse` servers need `mcpConnector: mcpConnector()` (from `./node`, with `@modelcontextprotocol/client` installed); a server is connected on first use, kept for the session, and closed with it. Calls are cancelled with the turn. Advertise what you take with `mcpTransports` (default: the connector's transports).
 
 Options to `serveAgent`:
 
@@ -355,7 +355,7 @@ Names must start with `_`, as ACP requires. Optional validators check params whe
   - `checkAgent(channel)` checks any agent: initialize, sessions, a prompt's end, cancel, unknown sessions, permission during cancel, login methods, config options and delete.
   - `checkClient(connect)` plays an agent against any client.
   - `checkAgentProcess()` starts a program and checks it.
-  - From the command line: `node --conditions=source packages/testkit/scripts/check-agent.ts <agent command>`.
+  - From the command line: `node --conditions=subspace-source packages/testkit/scripts/check-agent.ts <agent command>`.
 - **Quirks corpus:** `packages/testkit/corpus/` holds real traces from Grok Build, Claude and Codex, replayed by the test suite. Its README lists each agent's known quirks.
 
 `@deft-subspace/devtools`: `deft-subspace-trace trace.jsonl` writes a standalone HTML viewer for a trace, and `--summary` prints a text summary.

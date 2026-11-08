@@ -31,7 +31,7 @@ for agent in "${agents[@]}"; do
   echo "=== $agent (mode $mode)"
   vars=("MODE=$mode")
   [ -n "$only" ] && vars+=("ONLY=$only")
-  if env "${vars[@]}" node --conditions=source scripts/check-agent.ts npx -y "$pkg" 2>&1 | tee "/tmp/deft-check-$agent.txt"; then
+  if env "${vars[@]}" node --conditions=subspace-source scripts/check-agent.ts npx -y "$pkg" 2>&1 | tee "/tmp/deft-check-$agent.txt"; then
     ok+=("$agent")
   else
     failed+=("$agent")

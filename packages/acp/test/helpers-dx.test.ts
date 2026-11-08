@@ -134,7 +134,7 @@ test('start({ trace }) records the connection; errors say what to do next', asyn
   const dir = await mkdtemp(join(tmpdir(), 'subspace-trace-'));
   const trace = join(dir, 'run.jsonl');
   const agent = await start(
-    { command: process.execPath, args: ['--conditions=source', fixture('login-agent.ts')] },
+    { command: process.execPath, args: ['--conditions=subspace-source', fixture('login-agent.ts')] },
     { permissions: 'allow', trace, handleSignals: false, quiet: true }
   );
   await agent.run('go');
@@ -150,7 +150,7 @@ test('start({ trace }) records the connection; errors say what to do next', asyn
   );
   await assert.rejects(
     start(
-      { command: process.execPath, args: ['--conditions=source', fixture('login-agent.ts')], login: 'Run `agent login`' },
+      { command: process.execPath, args: ['--conditions=subspace-source', fixture('login-agent.ts')], login: 'Run `agent login`' },
       { permissions: 'reject', handleSignals: false, quiet: true, env: { ...process.env, NO_LOGIN_METHODS: '1' } as Record<string, string> }
     ),
     /needs a login\. Run `agent login`/

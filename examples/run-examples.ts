@@ -13,7 +13,7 @@ for (const file of files) {
     console.log(`skip  ${file} (typecheck only)`);
     continue;
   }
-  const run = spawnSync(process.execPath, ['--conditions=source', file], { cwd: import.meta.dirname, encoding: 'utf8', timeout: 30_000 });
+  const run = spawnSync(process.execPath, ['--conditions=subspace-source', file], { cwd: import.meta.dirname, encoding: 'utf8', timeout: 30_000 });
   if (run.status === 0) console.log(`ok    ${file}`);
   else {
     failed++;

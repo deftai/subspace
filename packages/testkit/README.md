@@ -17,13 +17,13 @@ Test ACP agents and clients. Everything uses the kernel's trace format (`@deft-s
 ```bash
 cd packages/testkit
 # Plain turn
-node --conditions=source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
+node --conditions=subspace-source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
 # A write the reject policy refuses
 PROMPT="Create a file named hello.txt containing the word hi." MODE=default \
-  node --conditions=source scripts/record.ts claude-write-rejected npx -y @agentclientprotocol/claude-agent-acp
+  node --conditions=subspace-source scripts/record.ts claude-write-rejected npx -y @agentclientprotocol/claude-agent-acp
 # Cancel mid-stream, 300 ms after the first message
 PROMPT="Count from 1 to 300, one number per line. Do not use any tools." CANCEL_AFTER_MS=300 \
-  node --conditions=source scripts/record.ts claude-cancel npx -y @agentclientprotocol/claude-agent-acp
+  node --conditions=subspace-source scripts/record.ts claude-cancel npx -y @agentclientprotocol/claude-agent-acp
 # Codex: the same, with npx -y @agentclientprotocol/codex-acp and MODE=read-only for the write
 # (the deprecated @zed-industries/codex-acp fails every prompt)
 ```
@@ -33,7 +33,7 @@ PROMPT="Count from 1 to 300, one number per line. Do not use any tools." CANCEL_
 To run the conformance checks against a real agent (each prompt check is one model turn; `ONLY` limits them):
 
 ```bash
-ONLY=initialize.version,session.new,session.unknown node --conditions=source scripts/check-agent.ts grok --permission-mode default agent stdio
+ONLY=initialize.version,session.new,session.unknown node --conditions=subspace-source scripts/check-agent.ts grok --permission-mode default agent stdio
 ```
 
 `MODE` switches every session to that mode first. `scripts/check-claude-codex.sh` runs the checks against Claude and Codex in their ask-first modes, so `cancel.permission` runs instead of being skipped.

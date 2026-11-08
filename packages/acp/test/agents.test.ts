@@ -132,7 +132,7 @@ test('start() by a name from a file, with its quirk settings; unknown names list
   const fixture = new URL('./fixtures/echo-agent.ts', import.meta.url).pathname;
   const catalog = builtinCatalog(registry);
   catalog.layers.push(
-    parseAgentFile(`[agents.echo]\ncommand = "node"\nargs = ["--conditions=source", "${fixture}"]\n[agents.echo.quirks.needs-env]\nsummary = "Reads ECHO_PREFIX"\napply = { env = { ECHO_PREFIX = "q:" } }\n`, 'f.toml')
+    parseAgentFile(`[agents.echo]\ncommand = "node"\nargs = ["--conditions=subspace-source", "${fixture}"]\n[agents.echo.quirks.needs-env]\nsummary = "Reads ECHO_PREFIX"\napply = { env = { ECHO_PREFIX = "q:" } }\n`, 'f.toml')
   );
   const agent = await start('echo', { catalog, cwd: root, permissions: 'reject', quiet: true, handleSignals: false });
   try {

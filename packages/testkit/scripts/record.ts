@@ -1,12 +1,12 @@
 /**
  * Record one turn against a real agent into the quirks corpus.
  *
- *   node --conditions=source scripts/record.ts <name> <command> [args...]
+ *   node --conditions=subspace-source scripts/record.ts <name> <command> [args...]
  *
- *   node --conditions=source scripts/record.ts grok-plain grok --permission-mode default agent stdio
- *   PROMPT="Create hello.txt containing hi" node --conditions=source scripts/record.ts grok-write-rejected grok --permission-mode default agent stdio
- *   PROMPT="Count to 300" CANCEL_AFTER_MS=300 node --conditions=source scripts/record.ts grok-cancel grok --permission-mode default agent stdio
- *   node --conditions=source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
+ *   node --conditions=subspace-source scripts/record.ts grok-plain grok --permission-mode default agent stdio
+ *   PROMPT="Create hello.txt containing hi" node --conditions=subspace-source scripts/record.ts grok-write-rejected grok --permission-mode default agent stdio
+ *   PROMPT="Count to 300" CANCEL_AFTER_MS=300 node --conditions=subspace-source scripts/record.ts grok-cancel grok --permission-mode default agent stdio
+ *   node --conditions=subspace-source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
  *
  * Environment: PROMPT, PERMISSIONS (allow or reject, default reject), MODE
  * (a session mode to switch to first, e.g. Claude's "default" or Codex's

@@ -1,6 +1,6 @@
 /**
  * A whole ACP agent backed by Claude, with two tools. Any ACP client can use
- * it: Zed, Toad, or `subspace run "What is in src?" -- node --conditions=source examples/claude-agent.ts`.
+ * it: Zed, Toad, or `subspace run "What is in src?" -- node --conditions=subspace-source examples/claude-agent.ts`.
  * Needs Claude API credentials (ANTHROPIC_API_KEY, or `ant auth login`).
  * @typecheck-only (it waits for a client on stdin, and calls the Claude API)
  */

@@ -1,8 +1,8 @@
 /**
  * Run one turn against a real agent and print the normalized events.
  *
- *   node --conditions=source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
- *   node --conditions=source packages/acp/examples/live-turn.ts npx -y @agentclientprotocol/claude-agent-acp
+ *   node --conditions=subspace-source packages/acp/examples/live-turn.ts grok --permission-mode default agent stdio
+ *   node --conditions=subspace-source packages/acp/examples/live-turn.ts npx -y @agentclientprotocol/claude-agent-acp
  *
  * PROMPT and CWD can be set in the environment. CANCEL_AFTER_MS cancels the
  * turn that long after the first agent message.

@@ -56,10 +56,12 @@ export interface McpTool {
   [key: string]: unknown;
 }
 
-/** One served MCP server, as the agent sees it. */
+/** One MCP server of the session, as the agent sees it (any transport). */
 export interface McpServerClient {
   readonly name: string;
-  readonly serverId: string;
+  readonly type: McpServer['type'];
+  /** For `acp` servers: the id the client gave it. */
+  readonly serverId?: string;
   /** Any MCP request; resolves with the outcome (an inner error is `{ error }`, not a throw). */
   request(method: string, params?: Record<string, unknown> | null, options?: McpCallOptions): Promise<McpOutcome>;
   /** `server/discover`. */
@@ -122,30 +124,39 @@ export class McpCaller {
   }
 
   server(server: McpServer & { type: 'acp' }, defaults: Pick<McpCallOptions, 'signal'> = {}): McpServerClient {
-    const call = async (method: string, params: Record<string, unknown> | undefined, options: McpCallOptions = {}) => {
-      const outcome = await this.request(server.serverId, method, params, { ...defaults, ...options });
-      if ('error' in outcome) throw new McpError(outcome.error.code, outcome.error.message, outcome.error.data);
-      return isRecord(outcome.result) ? outcome.result : {};
-    };
-    return {
-      name: server.name,
-      serverId: server.serverId,
-      request: (method, params, options = {}) => this.request(server.serverId, method, params, { ...defaults, ...options }),
-      discover: (options) => call('server/discover', {}, options),
-      listTools: async (options) => {
-        const tools: McpTool[] = [];
-        let cursor: string | undefined;
-        for (let page = 0; page < 100; page++) {
-          const result = await call('tools/list', cursor ? { cursor } : {}, options);
-          if (Array.isArray(result.tools)) tools.push(...(result.tools.filter(isRecord) as McpTool[]));
-          cursor = typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : undefined;
-          if (!cursor) break;
-        }
-        return tools;
-      },
-      callTool: (name, args = {}, options) => call('tools/call', { name, arguments: args }, options),
-    };
+    return serverClient(server, (method, params, options) => this.request(server.serverId, method, params, options), defaults);
   }
+}
+
+/** Sends one MCP request to one server; an inner error is `{ error }`, not a throw. */
+export type McpSend = (method: string, params: Record<string, unknown> | null | undefined, options: McpCallOptions) => Promise<McpOutcome>;
+
+/** The `McpServerClient` helpers over any way of sending. */
+export function serverClient(server: McpServer, send: McpSend, defaults: Pick<McpCallOptions, 'signal'> = {}): McpServerClient {
+  const call = async (method: string, params: Record<string, unknown> | undefined, options: McpCallOptions = {}) => {
+    const outcome = await send(method, params, { ...defaults, ...options });
+    if ('error' in outcome) throw new McpError(outcome.error.code, outcome.error.message, outcome.error.data);
+    return isRecord(outcome.result) ? outcome.result : {};
+  };
+  return {
+    name: server.name,
+    type: server.type,
+    ...(server.type === 'acp' ? { serverId: server.serverId } : {}),
+    request: (method, params, options = {}) => send(method, params, { ...defaults, ...options }),
+    discover: (options) => call('server/discover', {}, options),
+    listTools: async (options) => {
+      const tools: McpTool[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const result = await call('tools/list', cursor ? { cursor } : {}, options);
+        if (Array.isArray(result.tools)) tools.push(...(result.tools.filter(isRecord) as McpTool[]));
+        cursor = typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : undefined;
+        if (!cursor) break;
+      }
+      return tools;
+    },
+    callTool: (name, args = {}, options) => call('tools/call', { name, arguments: args }, options),
+  };
 }
 
 const key = (serverId: string, requestId: string) => `${serverId}\u0000${requestId}`;

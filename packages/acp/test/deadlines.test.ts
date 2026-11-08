@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 test('a time limit and a request timeout are reported though nothing else keeps Node running', async () => {
   const fixture = fileURLToPath(new URL('./fixtures/deadline-alone.ts', import.meta.url));
-  const { stdout } = await promisify(execFile)(process.execPath, ['--conditions=source', fixture], { timeout: 20_000 });
+  const { stdout } = await promisify(execFile)(process.execPath, ['--conditions=subspace-source', fixture], { timeout: 20_000 });
   assert.match(stdout, /^turn: cancelled duration$/m);
   assert.match(stdout, /^request: timeout$/m);
 });

@@ -1,7 +1,7 @@
 /**
  * Record a realistic ACP trace in-process and open it in the viewer.
  *
- *   node --conditions=source packages/devtools/examples/sample-trace.ts
+ *   node --conditions=subspace-source packages/devtools/examples/sample-trace.ts
  *
  * An agent and a client (both @deft-subspace/acp) talk over a channel pair,
  * once on protocol v1 and once on v2, with streaming, a plan, tool calls,

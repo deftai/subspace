@@ -34,7 +34,8 @@ import {
 } from './extensions.ts';
 import { base64, SessionWork } from './background.ts';
 import { checkToolInput, toolOutputText, toolTitle, type ToolDefinition } from './tools.ts';
-import { McpCaller, type McpServerClient } from './mcp-caller.ts';
+import { McpCaller, serverClient, type McpServerClient } from './mcp-caller.ts';
+import { SessionMcpConnections, type ExternalMcpServer, type McpConnector } from './mcp-connections.ts';
 import { parseMcpServers, type McpServer } from './mcp.ts';
 import type { ContentBlock, PermissionOption, ProtocolVersion, StopReason, ToolCallContent, ToolCallStatus } from './model.ts';
 import { withTelemetry, type OtelTap } from './telemetry.ts';
@@ -113,9 +114,12 @@ export interface AgentTurn {
   /** The session's MCP servers, typed (from session/new, load or resume). */
   readonly mcpServers: readonly McpServer[];
   /**
-   * A server the client serves over this connection (`acp` in `mcpServers`),
-   * by name: `listTools()`, `callTool()`, `request()`. Calls are cancelled
-   * with the turn. Throws if the session has no `acp` server of that name.
+   * One of the session's MCP servers, by name: `listTools()`, `callTool()`,
+   * `request()`. `acp` servers go over this connection; `stdio`, `http` and
+   * `sse` ones through the agent's `mcpConnector`, connected on first use and
+   * kept for the session. Calls are cancelled with the turn. Throws if the
+   * session has no server of that name, or it is one the agent can't connect
+   * to (no connector, or not its transport).
    */
   mcp(name: string): McpServerClient;
   /** Read a file through the client (v1 `fs/read_text_file`). Throws a `CapabilityError` if it offers none. */
@@ -225,10 +229,16 @@ export interface AgentOptions {
   capabilities?: Record<string, unknown>;
   /**
    * MCP server transports to advertise. `acp` (servers the client serves over
-   * this connection) is handled here: use `turn.mcp(name)`. For the others the
-   * agent connects itself. v1 always takes stdio. Default: none (v1: stdio).
+   * this connection) is handled here; `stdio`, `http` and `sse` need an
+   * `mcpConnector` (or the agent connects itself). v1 always takes stdio.
+   * Default: the connector's transports, else none (v1: stdio).
    */
   mcpTransports?: Array<'stdio' | 'http' | 'sse' | 'acp'>;
+  /**
+   * Connects to the session's `stdio`, `http` and `sse` MCP servers for
+   * `turn.mcp(name)`: `mcpConnector()` from `@deft-subspace/acp/node`.
+   */
+  mcpConnector?: McpConnector;
   newSession?(request: {
     cwd: string;
     /** As sent. */
@@ -287,6 +297,8 @@ interface AgentSession {
   /** Settles when the last queued turn ends. */
   tail: Promise<void>;
   servers: McpServer[];
+  /** Open connections to its stdio, http and sse servers. */
+  connections: SessionMcpConnections;
   /** Background and cancellable work (v2). */
   work: SessionWork;
 }
@@ -310,12 +322,15 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     ...cancelRequest,
   });
   if (options.telemetry) void peer.closed.then(() => options.telemetry!.close());
+  // MCP servers the agent started (stdio) or connected to go with the connection.
+  void peer.closed.then(() => Promise.all([...sessions.values()].map((s) => s.connections.close())));
   const mcpCaller = new McpCaller(peer, { name: options.name, version: options.version ?? '0.0.0' });
-  const newSession = (id: string, servers: McpServer[] = []): AgentSession => ({
+  const newSession = (id: string, servers: McpServer[], cwd: string): AgentSession => ({
     id,
     waiting: new Set(),
     tail: Promise.resolve(),
     servers,
+    connections: new SessionMcpConnections(options.mcpConnector, cwd),
     work: new SessionWork((update) => peer.notify('session/update', { sessionId: id, update })),
   });
 
@@ -326,7 +341,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
     clientCapabilities = caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {};
     const info = { name: options.name, version: options.version ?? '0.0.0' };
-    const mcp = mcpCapabilities(protocol, options.mcpTransports);
+    const mcp = mcpCapabilities(protocol, options.mcpTransports ?? (options.mcpConnector ? [...options.mcpConnector.transports] : []));
     const extra = options.capabilities ?? {};
     if (protocol === 2) {
       const session = { ...((extra.session as Record<string, unknown> | undefined) ?? {}) };
@@ -355,7 +370,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     const { servers } = parseMcpServers(mcpServers);
     const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
     const id = (created && created.sessionId) || randomUUID();
-    sessions.set(id, newSession(id, servers));
+    sessions.set(id, newSession(id, servers, params.cwd));
     return { sessionId: id };
   });
 
@@ -366,7 +381,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
       if (typeof params.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
       const id = params.sessionId;
       const writer = replay
-        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller, undefined).api
+        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller, undefined, undefined).api
         : undefined;
       const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
       const { servers } = parseMcpServers(mcpServers);
@@ -379,8 +394,10 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
         ...(writer ? { replay: writer } : {}),
       });
       const existing = sessions.get(id);
-      if (existing) existing.servers = servers;
-      else sessions.set(id, newSession(id, servers));
+      if (existing) {
+        existing.servers = servers;
+        await existing.connections.reset(params.cwd);
+      } else sessions.set(id, newSession(id, servers, params.cwd));
       return result ?? {};
     };
     peer.onRequest<Record<string, unknown>>('session/load', (params) => open(params, true));
@@ -397,6 +414,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     // Closing stops background work too.
     session.work.closeAll();
     sessions.delete(session.id);
+    await session.connections.close();
     await options.closeSession?.(session.id);
     return {};
   });
@@ -429,7 +447,7 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
     if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, peer.signal]);
-    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller, session.work);
+    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller, session.work, session.connections);
     // Wait for the turn ahead (if any), in order.
     const ahead = session.tail;
     let release!: () => void;
@@ -509,7 +527,8 @@ class TurnWriter {
     clientCapabilities: Record<string, unknown>,
     servers: McpServer[],
     mcpCaller: McpCaller,
-    work: SessionWork | undefined
+    work: SessionWork | undefined,
+    connections: SessionMcpConnections | undefined
   ) {
     this.peer = peer;
     this.sessionId = sessionId;
@@ -528,12 +547,22 @@ class TurnWriter {
       clientSupports: supports,
       mcpServers: servers,
       mcp: (name) => {
-        const server = servers.find((s): s is McpServer & { type: 'acp' } => s.type === 'acp' && s.name === name);
+        const server = servers.find((s) => s.name === name);
         if (!server) {
-          const offered = servers.filter((s) => s.type === 'acp').map((s) => s.name);
-          throw new Error(`The session has no acp MCP server "${name}" (acp servers: ${offered.join(', ') || 'none'})`);
+          throw new Error(`The session has no MCP server "${name}" (servers: ${servers.map((s) => s.name).join(', ') || 'none'})`);
         }
-        return mcpCaller.server(server, { signal });
+        if (server.type === 'acp') return mcpCaller.server(server, { signal });
+        const external = server as ExternalMcpServer;
+        const problem = connections ? connections.problem(external) : `MCP server "${name}" can't be used here`;
+        if (problem) throw new Error(problem);
+        return serverClient(
+          external,
+          async (method, params, callOptions) => {
+            const connection = await connections!.get(external, callOptions.signal);
+            return connection.request(method, params, callOptions);
+          },
+          { signal }
+        );
       },
       prompt,
       text,

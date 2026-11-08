@@ -1,8 +1,8 @@
 /**
  * Run the agent conformance checks against a real agent program.
  *
- *   node --conditions=source scripts/check-agent.ts grok --permission-mode default agent stdio
- *   ONLY=initialize.version,session.new,session.unknown node --conditions=source scripts/check-agent.ts npx -y @agentclientprotocol/claude-agent-acp
+ *   node --conditions=subspace-source scripts/check-agent.ts grok --permission-mode default agent stdio
+ *   ONLY=initialize.version,session.new,session.unknown node --conditions=subspace-source scripts/check-agent.ts npx -y @agentclientprotocol/claude-agent-acp
  *
  * Each prompt check costs a real model turn; ONLY limits which run. MODE
  * switches every session to that mode first (e.g. Claude "default", Codex

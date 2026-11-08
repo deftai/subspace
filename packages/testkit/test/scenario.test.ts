@@ -9,7 +9,7 @@ import { applyWaivers, formatReport } from '@deft-subspace/acp-testkit';
 import { defineScenario, formatJUnit, formatScenarios, loadScenarios, runScenario, type Scenario } from '@deft-subspace/acp-testkit/node';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const agent = { command: process.execPath, args: ['--conditions=source', join(here, 'fixtures/writer-agent.ts')] };
+const agent = { command: process.execPath, args: ['--conditions=subspace-source', join(here, 'fixtures/writer-agent.ts')] };
 
 test('a passing scenario: workspace copied from a fixture, files, tool calls, permissions and text checked', async () => {
   const report = await runScenario(
@@ -103,7 +103,7 @@ test('./ agent paths are relative to the scenario file; sameAs compares two work
   const report = await runScenario(
     {
       name: 'relative agent',
-      agent: { command: process.execPath, args: ['--conditions=source', './fixtures/writer-agent.ts'] },
+      agent: { command: process.execPath, args: ['--conditions=subspace-source', './fixtures/writer-agent.ts'] },
       workspace: { from: 'fixtures/greeting' },
       permissions: 'allow',
       turns: [

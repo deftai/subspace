@@ -16,4 +16,30 @@ A client can give each session [MCP](https://modelcontextprotocol.io) servers fo
 
 ## On the agent side
 
-`serveAgent` gives your session hooks the servers typed (`servers`), and each turn `turn.mcpServers`. Advertise what you take with `mcpTransports`. For `stdio`, `http` and `sse` the agent connects itself, with any MCP client; for `acp`, use `turn.mcp(name)`.
+`serveAgent` gives your session hooks the servers typed (`servers`), and each turn `turn.mcpServers`. `turn.mcp(name)` uses one, whatever its transport: `listTools()`, `callTool()`, `discover()` and `request()`.
+
+- `acp` servers go over the ACP connection; nothing else is needed.
+- `stdio`, `http` and `sse` servers need a connector. `mcpConnector()` from `@deft-subspace/acp/node` uses the official MCP SDK; install `@modelcontextprotocol/client` (an optional peer dependency).
+
+```ts
+import { mcpConnector, serveStdio } from '@deft-subspace/acp/node';
+
+serveStdio({
+  name: 'my-agent',
+  mcpConnector: mcpConnector(),
+  async prompt(turn) {
+    const files = turn.mcp('files');
+    const tools = await files.listTools();
+    const result = await files.callTool('read', { path: 'README.md' });
+    // ...
+  },
+});
+```
+
+- **Advertised:** with a connector, `initialize` advertises its transports (stdio, http and sse by default), unless you set `mcpTransports`. Add `acp` to `mcpTransports` to take those too.
+- **Connected on first use:** a server is connected the first time a turn uses it, then kept for the session's later turns. It is closed when the session closes, when a load or resume sends new servers, or when the connection ends. A stdio server is stopped then.
+- **stdio servers** run in the session's `cwd`, with this process's environment plus the server's `env` (`env: 'minimal'` gives them the SDK's short safe list instead). Their stderr goes to the agent's stderr (`stderr: 'ignore'`, or a function per line); they can't write to stdout, which is the ACP channel.
+- **Versions:** the connection negotiates the MCP version, so 2026-07-28 servers and 2025 ones both work.
+- **Results as sent:** a tool that failed is a result with `isError: true`, not a throw. A protocol error is `{ error }` from `request()`, and an `McpError` from the helpers.
+- **Cancelling:** calls are cancelled with the turn, or with your own `signal`. Progress goes to `onNotification` as `notifications/progress`.
+- **Errors early:** `turn.mcp(name)` throws at once if the session has no server of that name, or you have no connector for its transport.

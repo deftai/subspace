@@ -2,8 +2,8 @@
  * deft-subspace quickstart: an agent and a client, both written with
  * @deft-subspace/acp, talking in one process. No external agent needed.
  *
- *   node --conditions=source packages/acp/examples/quickstart.ts
- *   PROTOCOL=1 node --conditions=source packages/acp/examples/quickstart.ts
+ *   node --conditions=subspace-source packages/acp/examples/quickstart.ts
+ *   PROTOCOL=1 node --conditions=subspace-source packages/acp/examples/quickstart.ts
  *
  * To talk to a real agent instead, replace `connect()` with:
  *

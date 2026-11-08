@@ -10,7 +10,7 @@ import { AcpClient, connectSession, PermissionDenied, serveAgent, type TurnEvent
 import { run, start } from '@deft-subspace/acp/node';
 
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
-const node = (file: string) => ({ command: process.execPath, args: ['--conditions=source', fixture(file)] });
+const node = (file: string) => ({ command: process.execPath, args: ['--conditions=subspace-source', fixture(file)] });
 
 /** An in-process agent: says two chunks, shows a tool call, asks permission. */
 function pair(protocol: 1 | 2 = 2) {

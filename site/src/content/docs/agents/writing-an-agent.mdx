@@ -30,7 +30,7 @@ The library answers `initialize`, `session/new`, `session/prompt`, `session/canc
 | `elicit({ message, requestedSchema })` | Ask the user a question through the client. |
 | `plan(entries)` | Show a plan. |
 | `showTerminal({ command, cwd })` | v2: show a terminal you run. See [Agent terminals](../../background/terminals/). |
-| `mcp(name)` | Call an MCP server the client serves. See [MCP-over-ACP](../../mcp/over-acp/). |
+| `mcp(name)` | Use one of the session's MCP servers: `acp` ones the client serves, and `stdio`, `http` or `sse` ones with an `mcpConnector`. See [MCP servers](../../mcp/servers/#on-the-agent-side). |
 | `readFile`, `writeFile`, `terminal` | v1: use the client's files and terminals, when it offers them (`turn.clientSupports`). |
 | `request(method, params)` | Call the client directly; aborted with the turn. |
 
@@ -38,6 +38,6 @@ The library answers `initialize`, `session/new`, `session/prompt`, `session/canc
 
 - `newSession`, `loadSession` and `closeSession` hooks. `loadSession` gets a `replay` writer for history, and providing it advertises loading and resuming.
 - `protocols`: the versions to accept (default both).
-- `mcpTransports`: the MCP server transports you take. `acp` is handled for you; for the others you connect yourself.
+- `mcpTransports`: the MCP server transports you take. `acp` is handled for you. For the others, pass `mcpConnector: mcpConnector()` (from `./node`) and `turn.mcp(name)` connects; its transports are then advertised by default.
 - `capabilities`: extra fields for `initialize`.
 - `extensions`: typed vendor methods. See [Extensions](../extensions/).
