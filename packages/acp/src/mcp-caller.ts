@@ -78,20 +78,22 @@ export interface McpServerClient {
 
 /** One per connection: sends `mcp/message` and routes its notifications. */
 export class McpCaller {
-  private readonly peer: RpcPeer;
+  private readonly peer: Pick<RpcPeer, 'request'>;
   private readonly clientInfo: { name: string; version: string };
   private readonly active = new Map<string, NonNullable<McpCallOptions['onNotification']> | undefined>();
   private counter = 0;
 
-  constructor(peer: RpcPeer, clientInfo: { name: string; version: string }) {
+  constructor(peer: Pick<RpcPeer, 'request'>, clientInfo: { name: string; version: string }) {
     this.peer = peer;
     this.clientInfo = clientInfo;
-    peer.onNotification('mcp/message', (params: unknown) => {
-      if (!isRecord(params) || typeof params.serverId !== 'string' || typeof params.requestId !== 'string' || typeof params.method !== 'string') return;
-      // Unknown or finished requests: dropped, never given to another call.
-      const listener = this.active.get(key(params.serverId, params.requestId));
-      listener?.({ method: params.method, ...(isRecord(params.params) ? { params: params.params } : {}) });
-    });
+  }
+
+  /** An `mcp/message` notification from the client: progress and the like for a call in flight. */
+  receive(params: unknown): void {
+    if (!isRecord(params) || typeof params.serverId !== 'string' || typeof params.requestId !== 'string' || typeof params.method !== 'string') return;
+    // Unknown or finished requests: dropped, never given to another call.
+    const listener = this.active.get(key(params.serverId, params.requestId));
+    listener?.({ method: params.method, ...(isRecord(params.params) ? { params: params.params } : {}) });
   }
 
   async request(serverId: string, method: string, params?: Record<string, unknown> | null, options: McpCallOptions = {}): Promise<McpOutcome> {

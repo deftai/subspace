@@ -97,6 +97,7 @@ export {
   type ServeMcpOptions,
 } from './mcp.ts';
 export { McpError, type McpCallOptions, type McpServerClient, type McpTool } from './mcp-caller.ts';
+export { type ExternalMcpServer, type McpConnection, type McpConnector } from './mcp-connections.ts';
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
 export {
   configOptionsFrom,

@@ -283,9 +283,29 @@ for a proxy that also wants `AcpClient`'s conveniences downstream.
 
 ## Plan
 
-Status (2026-11-08): steps 1 to 3 are built, except the parts of step 1 that
-belong to layers not extracted yet (teardown order, the `negotiate` wait
-rule, the lifecycle tables); those come with their layers in step 4.
+Status (2026-11-08): steps 1 to 4 are built.
+
+- `agentEndpoint` is in `packages/acp/src/endpoint.ts` with its contract
+  tests (`test/endpoint.test.ts`); the two-way proxy is `examples/proxy.ts`
+  and `test/proxy.test.ts` (v1 and v2).
+- Step 4: `serveAgent` is now `agentEndpoint` with five layers (`negotiate`,
+  `sessions` with the session lifecycle service, `mcp`, `turns`,
+  `extensions`), in `agent.ts`. The turn code sends through the endpoint's
+  client, so outbound hooks see everything. All existing tests pass
+  unchanged; new tests pin session-close order and connection close
+  (`test/agent-lifecycle.test.ts`, passing on the old code too). Streaming
+  throughput is the same as before (about 1.5 to 1.6 M chunks/s in a local
+  loop, old and new). Tracing stays peer configuration (wire tap and kernel
+  middleware), as planned.
+- Changes from the old code: a name in `methods` or `extensions` that a
+  built-in layer answers (`initialize`, `session/*`) now fails at startup
+  instead of one silently winning; `'*'` in `methods` or `extensions` still
+  answers whatever nothing else does.
+- Not yet: the layers are internal (not exported) until their options settle;
+  `negotiate` keeps today's rule (requests before `initialize` are served
+  with v1 defaults), and the wait/reject rule comes with a configurable
+  `negotiate`; the lifecycle transition tables are still implicit in the
+  parts. Wire hooks and `normalize` are step 5.
 `agentEndpoint` is in `packages/acp/src/endpoint.ts` with its contract tests
 (`test/endpoint.test.ts`); the two-way proxy is `examples/proxy.ts` and
 `test/proxy.test.ts` (v1 and v2).

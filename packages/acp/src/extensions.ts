@@ -112,7 +112,7 @@ export function registerExtensions(peer: RpcPeer, handlers: readonly ExtensionHa
 
 /** @internal Call an extension request, checking the result if a validator was given. */
 export async function callExtension<Params, Result>(
-  peer: RpcPeer,
+  peer: Pick<RpcPeer, 'request'>,
   extension: ExtensionRequest<Params, Result>,
   params: Params,
   options: { signal?: AbortSignal; timeoutMs?: number } = {}

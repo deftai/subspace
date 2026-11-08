@@ -101,7 +101,7 @@ export interface AgentEndpointOptions {
   /** Notifications no layer answered. Default: dropped. */
   notification?(call: EndpointCall, ctx: CallContext): unknown;
   /** Peer options (`tap`, `onDiagnostic`, `timeoutMs`, ...). `$/cancel_request` is on unless you pass your own cancel options. */
-  peer?: Omit<RpcPeerOptions, 'name' | 'inbound' | 'outbound'>;
+  peer?: Omit<RpcPeerOptions, 'name'>;
 }
 
 export interface AgentEndpoint {
@@ -161,8 +161,12 @@ export function agentEndpoint(channel: Channel<unknown>, options: AgentEndpointO
   // Notifications are serialized: hooks then write, one at a time.
   let notifyTail: Promise<unknown> = Promise.resolve();
 
+  const outboundHooks = layers.filter((l) => l.outbound);
+  const inboundHooks = layers.filter((l) => l.inbound);
+
   const outboundChain = (kind: 'request' | 'notification', call: EndpointCall, send: (call: EndpointCall) => Promise<unknown>) => {
-    const hooks = layers.filter((l) => l.outbound);
+    const hooks = outboundHooks;
+    if (!hooks.length) return send(call);
     const dispatch = (index: number, current: EndpointCall): Promise<unknown> => {
       const layer = hooks[index];
       if (!layer) return send(current);
@@ -177,6 +181,8 @@ export function agentEndpoint(channel: Channel<unknown>, options: AgentEndpointO
       return outboundChain('request', { method, params }, (c) => peer.request(c.method, c.params, requestOptions)) as Promise<Result>;
     },
     notify(method: string, params?: unknown) {
+      // No hooks, nothing to reorder: the peer writes in call order.
+      if (!outboundHooks.length) return peer.notify(method, params);
       const run = () => outboundChain('notification', { method, params }, (c) => peer.notify(c.method, c.params));
       const sent = notifyTail.then(run, run);
       notifyTail = sent.catch(() => {});
@@ -205,28 +211,34 @@ export function agentEndpoint(channel: Channel<unknown>, options: AgentEndpointO
   const states = new Map<AgentLayer<any>, unknown>();
   for (const layer of layers) states.set(layer, layer.create?.(context));
 
-  const handle = (kind: 'request' | 'notification', call: EndpointCall, ctx: CallContext): Promise<unknown> => {
-    const hooks = layers.filter((l) => l.inbound);
-    const dispatchMethod = async (current: EndpointCall): Promise<unknown> => {
-      for (const layer of layers) {
-        const handler = (kind === 'request' ? layer.requests : layer.notifications)?.[current.method];
-        if (handler) {
-          const next = once(`${options.name}/${layer.name} ${current.method}`, (c) => fallback(kind, c, ctx), current);
-          return handler(current, ctx, states.get(layer), next);
-        }
-      }
-      return fallback(kind, current, ctx);
-    };
-    const dispatch = async (index: number, current: EndpointCall): Promise<unknown> => {
-      const layer = hooks[index];
-      if (!layer) return dispatchMethod(current);
+  // Which layer answers each method (exclusive, checked above).
+  const answering = { request: new Map<string, AgentLayer<any>>(), notification: new Map<string, AgentLayer<any>>() };
+  for (const layer of layers) {
+    for (const method of Object.keys(layer.requests ?? {})) answering.request.set(method, layer);
+    for (const method of Object.keys(layer.notifications ?? {})) answering.notification.set(method, layer);
+  }
+
+  // Synchronous until a handler awaits: no extra steps when there are no hooks.
+  const dispatchMethod = (kind: 'request' | 'notification', current: EndpointCall, ctx: CallContext): unknown => {
+    const layer = answering[kind].get(current.method);
+    if (!layer) return fallback(kind, current, ctx);
+    const handler = (kind === 'request' ? layer.requests : layer.notifications)![current.method]!;
+    const next = once(`${options.name}/${layer.name} ${current.method}`, (c) => Promise.resolve(fallback(kind, c, ctx)), current);
+    return handler(current, ctx, states.get(layer), next);
+  };
+
+  const handle = (kind: 'request' | 'notification', call: EndpointCall, ctx: CallContext): unknown => {
+    if (!inboundHooks.length) return dispatchMethod(kind, call, ctx);
+    const dispatch = (index: number, current: EndpointCall): Promise<unknown> => {
+      const layer = inboundHooks[index];
+      if (!layer) return Promise.resolve().then(() => dispatchMethod(kind, current, ctx));
       const next = once(`${options.name}/${layer.name} inbound`, (c) => dispatch(index + 1, c), current);
-      return layer.inbound!({ ...current, kind }, ctx, states.get(layer), next);
+      return Promise.resolve(layer.inbound!({ ...current, kind }, ctx, states.get(layer), next));
     };
     return dispatch(0, call);
   };
 
-  const fallback = async (kind: 'request' | 'notification', call: EndpointCall, ctx: CallContext): Promise<unknown> => {
+  const fallback = (kind: 'request' | 'notification', call: EndpointCall, ctx: CallContext): unknown => {
     if (kind === 'request') {
       if (!options.request) throw RpcError.methodNotFound(call.method);
       return options.request(call, ctx);

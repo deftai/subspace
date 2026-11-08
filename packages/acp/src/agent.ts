@@ -20,14 +20,15 @@ import {
   RpcError,
   RpcPeer,
   type Channel,
+  type InboundContext,
   type RequestHandler,
   type RequestOptions,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
+import { agentEndpoint, stateKey, type AgentLayer, type CallContext, type EndpointCall, type EndpointClient, type EndpointContext } from './endpoint.ts';
 import { CapabilityError, clientSupport, type ClientSupport } from './capabilities.ts';
 import {
   callExtension,
-  registerExtensions,
   type ExtensionHandler,
   type ExtensionNotification,
   type ExtensionRequest,
@@ -292,221 +293,403 @@ const DEFAULT_OPTIONS: PermissionOption[] = [
   { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
 ];
 
-interface AgentSession {
-  id: string;
-  controller?: AbortController;
-  /** Prompts waiting for the running one (with `queuePrompts`). */
-  waiting: Set<AbortController>;
-  /** Settles when the last queued turn ends. */
-  tail: Promise<void>;
-  servers: McpServer[];
-  /** Open connections to its stdio, http and sse servers. */
-  connections: SessionMcpConnections;
-  /** Background and cancellable work (v2). */
-  work: SessionWork;
-}
-
 /** initialize's MCP capability, in each protocol's spelling. */
 function mcpCapabilities(protocol: ProtocolVersion, transports: AgentOptions['mcpTransports'] = []): Record<string, unknown> {
   if (protocol === 2) return Object.fromEntries(transports.filter((t) => t !== 'sse').map((t) => [t, {}]));
   return Object.fromEntries(transports.filter((t) => t !== 'stdio').map((t) => [t, true]));
 }
 
-export function serveAgent(channel: Channel<unknown>, options: AgentOptions): RpcPeer {
-  const accepted = options.protocols ?? [1, 2];
-  const sessions = new Map<string, AgentSession>();
-  let protocol: ProtocolVersion = 1;
-  let clientCapabilities: Record<string, unknown> = {};
+/** The client side of a connection, as the turn code uses it: requests and notifications, through the endpoint's layers. */
+type AgentChannel = Pick<EndpointClient, 'request' | 'notify'>;
 
-  const peer = new RpcPeer(channel, {
-    name: options.name,
-    ...options.peer,
-    ...withTelemetry(options.peer?.tap, options.telemetry, options.peer),
-    ...cancelRequest,
-  });
-  if (options.telemetry) void peer.closed.then(() => options.telemetry!.close());
-  // MCP servers the agent started (stdio) or connected to go with the connection.
-  void peer.closed.then(() => Promise.all([...sessions.values()].map((s) => s.connections.close())));
-  const mcpCaller = new McpCaller(peer, { name: options.name, version: options.version ?? '0.0.0' });
-  const newSession = (id: string, servers: McpServer[], cwd: string): AgentSession => ({
-    id,
-    waiting: new Set(),
-    tail: Promise.resolve(),
-    servers,
-    connections: new SessionMcpConnections(options.mcpConnector, cwd),
-    work: new SessionWork((update) => peer.notify('session/update', { sessionId: id, update })),
-  });
+/** What `initialize` settled. Before it: v1 and no client capabilities (today's default). */
+interface Negotiated {
+  protocol: ProtocolVersion;
+  clientCapabilities: Record<string, unknown>;
+}
+const NEGOTIATED = stateKey<Negotiated>('negotiated');
 
-  peer.onRequest('initialize', (params: { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown }) => {
-    const asked = Number(params?.protocolVersion);
-    const best = Math.max(...accepted) as ProtocolVersion;
-    protocol = (accepted.includes(asked as ProtocolVersion) ? asked : best) as ProtocolVersion;
-    const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
-    clientCapabilities = caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {};
-    const info = { name: options.name, version: options.version ?? '0.0.0' };
-    const mcp = mcpCapabilities(protocol, options.mcpTransports ?? (options.mcpConnector ? [...options.mcpConnector.transports] : []));
-    const extra = options.capabilities ?? {};
-    if (protocol === 2) {
-      const session = { ...((extra.session as Record<string, unknown> | undefined) ?? {}) };
-      if (Object.keys(mcp).length) session.mcp = { ...mcp, ...((session.mcp as Record<string, unknown> | undefined) ?? {}) };
-      return { protocolVersion: 2, info, capabilities: { ...extra, ...(Object.keys(session).length ? { session } : {}) }, authMethods: [] };
+/** One session: its servers and cwd, and what each part attached to it. */
+interface AgentSession {
+  id: string;
+  servers: McpServer[];
+  cwd: string;
+  parts: Map<string, unknown>;
+}
+
+/**
+ * Something that lives with a session (MCP connections, turns, background
+ * work). Close runs every `stop`, removes the session, then every `release`,
+ * then `closeSession`: today's order. A closed connection runs `disconnect`
+ * only (today: MCP connections close; turns stop through the connection's signal).
+ */
+interface SessionPart<T> {
+  name: string;
+  create(session: AgentSession): T;
+  reset?(value: T, session: AgentSession): void | Promise<void>;
+  stop?(value: T, session: AgentSession, reason: Error): void;
+  release?(value: T, session: AgentSession): void | Promise<void>;
+  disconnect?(value: T, session: AgentSession): void | Promise<void>;
+}
+
+class SessionLifecycle {
+  readonly sessions = new Map<string, AgentSession>();
+  private readonly parts: Array<SessionPart<any>> = [];
+  private readonly closeSession: ((sessionId: string) => Promise<void> | void) | undefined;
+
+  constructor(closeSession?: (sessionId: string) => Promise<void> | void) {
+    this.closeSession = closeSession;
+  }
+
+  attach<T>(part: SessionPart<T>): void {
+    this.parts.push(part);
+  }
+
+  part<T>(session: AgentSession, name: string): T {
+    return session.parts.get(name) as T;
+  }
+
+  /** The session, or -32002 (never a silently created one). */
+  require(sessionId: unknown): AgentSession {
+    const session = typeof sessionId === 'string' ? this.sessions.get(sessionId) : undefined;
+    if (!session) throw RpcError.notFound(`Unknown session ${String(sessionId)}`, { sessionId });
+    return session;
+  }
+
+  open(id: string, servers: McpServer[], cwd: string): AgentSession {
+    const session: AgentSession = { id, servers, cwd, parts: new Map() };
+    for (const part of this.parts) session.parts.set(part.name, part.create(session));
+    this.sessions.set(id, session);
+    return session;
+  }
+
+  /** Load or resume: an open session gets its new servers and cwd; otherwise it is opened. */
+  async reopen(id: string, servers: McpServer[], cwd: string): Promise<void> {
+    const existing = this.sessions.get(id);
+    if (!existing) {
+      this.open(id, servers, cwd);
+      return;
     }
-    return {
-      protocolVersion: 1,
-      agentInfo: info,
-      agentCapabilities: {
-        loadSession: !!options.loadSession,
-        sessionCapabilities: { close: {}, ...(options.loadSession ? { resume: {} } : {}) },
-        ...(Object.keys(mcp).length ? { mcpCapabilities: mcp } : {}),
-        ...extra,
+    existing.servers = servers;
+    existing.cwd = cwd;
+    for (const part of this.parts) await part.reset?.(existing.parts.get(part.name), existing);
+  }
+
+  async close(session: AgentSession): Promise<void> {
+    const reason = new Error('session closed');
+    for (const part of this.parts) part.stop?.(session.parts.get(part.name), session, reason);
+    this.sessions.delete(session.id);
+    for (const part of this.parts) await part.release?.(session.parts.get(part.name), session);
+    await this.closeSession?.(session.id);
+  }
+
+  async disconnect(): Promise<void> {
+    await Promise.all(
+      [...this.sessions.values()].flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session)))
+    );
+  }
+}
+const SESSIONS = stateKey<SessionLifecycle>('sessions');
+
+interface McpPart {
+  caller: McpCaller;
+}
+const MCP = stateKey<McpPart>('mcp');
+
+/** Today's handlers adapted to the endpoint: `(params, context)` as the peer would call them. */
+const asPeerHandler =
+  (handler: (params: any, context: InboundContext) => unknown) =>
+  (call: EndpointCall, ctx: CallContext): unknown =>
+    handler(call.params, { method: call.method, ...(call.id !== undefined ? { id: call.id } : {}), signal: ctx.signal, peer: ctx.peer });
+
+/** `initialize`: version choice and the agent's capabilities. */
+function negotiateLayer(options: AgentOptions, loadSession: boolean): AgentLayer {
+  const accepted = options.protocols ?? [1, 2];
+  return {
+    name: 'negotiate',
+    provides: [NEGOTIATED],
+    create: (ctx) => ctx.set(NEGOTIATED, { protocol: 1, clientCapabilities: {} }),
+    requests: {
+      initialize: (call, ctx) => {
+        const params = call.params as { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown } | undefined;
+        const asked = Number(params?.protocolVersion);
+        const best = Math.max(...accepted) as ProtocolVersion;
+        const protocol = (accepted.includes(asked as ProtocolVersion) ? asked : best) as ProtocolVersion;
+        const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
+        ctx.set(NEGOTIATED, { protocol, clientCapabilities: caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {} });
+        const info = { name: options.name, version: options.version ?? '0.0.0' };
+        const mcp = mcpCapabilities(protocol, options.mcpTransports ?? (options.mcpConnector ? [...options.mcpConnector.transports] : []));
+        const extra = options.capabilities ?? {};
+        if (protocol === 2) {
+          const session = { ...((extra.session as Record<string, unknown> | undefined) ?? {}) };
+          if (Object.keys(mcp).length) session.mcp = { ...mcp, ...((session.mcp as Record<string, unknown> | undefined) ?? {}) };
+          return { protocolVersion: 2, info, capabilities: { ...extra, ...(Object.keys(session).length ? { session } : {}) }, authMethods: [] };
+        }
+        return {
+          protocolVersion: 1,
+          agentInfo: info,
+          agentCapabilities: {
+            loadSession,
+            sessionCapabilities: { close: {}, ...(loadSession ? { resume: {} } : {}) },
+            ...(Object.keys(mcp).length ? { mcpCapabilities: mcp } : {}),
+            ...extra,
+          },
+          authMethods: [],
+        };
       },
-      authMethods: [],
-    };
-  });
+    },
+  };
+}
 
-  for (const [method, handler] of Object.entries(options.methods ?? {})) peer.onRequest(method, handler);
-  registerExtensions(peer, options.extensions);
-
-  peer.onRequest('session/new', async (params: { cwd?: string; mcpServers?: unknown[] } & Record<string, unknown>) => {
-    if (typeof params?.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
-    const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
-    const { servers } = parseMcpServers(mcpServers);
-    const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
-    const id = (created && created.sessionId) || randomUUID();
-    sessions.set(id, newSession(id, servers, params.cwd));
-    return { sessionId: id };
-  });
-
+/** `session/new`, `load`, `resume` and `close`, and the session lifecycle service. */
+function sessionsLayer(options: AgentOptions, replayWriter: (ctx: EndpointContext, sessionId: string) => ReplayWriter): AgentLayer<SessionLifecycle> {
+  const requests: AgentLayer<SessionLifecycle>['requests'] = {
+    'session/new': async (call, _ctx, sessions) => {
+      const params = call.params as { cwd?: string; mcpServers?: unknown[] } & Record<string, unknown>;
+      if (typeof params?.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
+      const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
+      const { servers } = parseMcpServers(mcpServers);
+      const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
+      const id = (created && created.sessionId) || randomUUID();
+      sessions.open(id, servers, params.cwd);
+      return { sessionId: id };
+    },
+    'session/close': async (call, _ctx, sessions) => {
+      await sessions.close(sessions.require((call.params as { sessionId?: unknown } | undefined)?.sessionId));
+      return {};
+    },
+  };
   if (options.loadSession) {
     const load = options.loadSession;
-    const open = async (params: Record<string, unknown>, replay: boolean) => {
+    const open = async (params: Record<string, unknown>, replay: boolean, ctx: EndpointContext, sessions: SessionLifecycle) => {
       if (typeof params?.sessionId !== 'string') throw RpcError.invalidParams('sessionId is required');
       if (typeof params.cwd !== 'string') throw RpcError.invalidParams('cwd is required');
       const id = params.sessionId;
-      const writer = replay
-        ? new TurnWriter(peer, id, protocol, [], new AbortController().signal, clientCapabilities, [], mcpCaller, undefined, undefined).api
-        : undefined;
+      const writer = replay ? replayWriter(ctx, id) : undefined;
       const mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
       const { servers } = parseMcpServers(mcpServers);
-      const result = await load({
-        sessionId: id,
-        cwd: params.cwd,
-        mcpServers,
-        servers,
-        params,
-        ...(writer ? { replay: writer } : {}),
-      });
-      const existing = sessions.get(id);
-      if (existing) {
-        existing.servers = servers;
-        await existing.connections.reset(params.cwd);
-      } else sessions.set(id, newSession(id, servers, params.cwd));
+      const result = await load({ sessionId: id, cwd: params.cwd, mcpServers, servers, params, ...(writer ? { replay: writer } : {}) });
+      await sessions.reopen(id, servers, params.cwd);
       return result ?? {};
     };
-    peer.onRequest<Record<string, unknown>>('session/load', (params) => open(params, true));
-    peer.onRequest<Record<string, unknown>>('session/resume', (params) =>
-      open(params, protocol === 2 && !!params?.replayFrom)
-    );
-  }
-
-  peer.onRequest('session/close', async (params: { sessionId?: string }) => {
-    const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
-    if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
-    session.controller?.abort(new Error('session closed'));
-    for (const waiting of session.waiting) waiting.abort(new Error('session closed'));
-    // Closing stops background work too.
-    session.work.closeAll();
-    sessions.delete(session.id);
-    await session.connections.close();
-    await options.closeSession?.(session.id);
-    return {};
-  });
-
-  // v2: stop one cancellable tool call or terminal (background work, or a step of the turn).
-  for (const [method, kind, key] of [
-    ['tool_call/cancel', 'tool_call', 'toolCallId'],
-    ['terminal/cancel', 'terminal', 'terminalId'],
-  ] as const) {
-    peer.onRequest(method, (params: Record<string, unknown>) => {
-      const session = typeof params?.sessionId === 'string' ? sessions.get(params.sessionId) : undefined;
-      if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
-      if (typeof params[key] !== 'string') throw RpcError.invalidParams(`${key} is required`);
-      session.work.cancel(kind, params[key] as string);
-      return {};
-    });
-  }
-
-  peer.onNotification('session/cancel', (params: { sessionId?: string }) => {
-    const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
-    session?.controller?.abort(new Error('cancelled by the client'));
-    // Queued prompts are cancelled too: the client asked for the session to stop.
-    for (const waiting of session?.waiting ?? []) waiting.abort(new Error('cancelled by the client'));
-  });
-
-  peer.onRequest('session/prompt', async (params: { sessionId?: string; prompt?: ContentBlock[] }, context) => {
-    const session = params?.sessionId ? sessions.get(params.sessionId) : undefined;
-    if (!session) throw RpcError.notFound(`Unknown session ${String(params?.sessionId)}`, { sessionId: params?.sessionId });
-    const busy = !!session.controller || session.waiting.size > 0;
-    if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
-    const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, peer.signal]);
-    const turn = new TurnWriter(peer, session.id, protocol, params.prompt ?? [], signal, clientCapabilities, session.servers, mcpCaller, session.work, session.connections);
-    // Wait for the turn ahead (if any), in order.
-    const ahead = session.tail;
-    let release!: () => void;
-    session.tail = new Promise<void>((resolve) => (release = resolve));
-    session.waiting.add(controller);
-
-    const run = async (onStart?: () => Promise<void>): Promise<StopReason> => {
-      await ahead;
-      session.waiting.delete(controller);
-      if (signal.aborted) {
-        release();
-        return 'cancelled';
-      }
-      session.controller = controller;
-      await onStart?.();
-      let stop: StopReason;
-      try {
-        stop = (await options.prompt(turn.api)) ?? 'end_turn';
-      } catch (error) {
-        if (signal.aborted) {
-          stop = 'cancelled';
-        } else if (error instanceof PermissionDenied) {
-          // The agent stopped because the user said no: a normal end.
-          stop = 'end_turn';
-        } else {
-          if (protocol === 1) throw error;
-          await turn.idle('error', { message: error instanceof Error ? error.message : String(error) });
-          return 'error';
-        }
-      } finally {
-        session.controller = undefined;
-        release();
-      }
-      if (signal.aborted) {
-        stop = 'cancelled';
-        await turn.failOpenToolCalls();
-      }
-      return stop;
+    requests['session/load'] = (call, ctx, sessions) => open(call.params as Record<string, unknown>, true, ctx, sessions);
+    requests['session/resume'] = (call, ctx, sessions) => {
+      const params = call.params as Record<string, unknown>;
+      return open(params, ctx.get(NEGOTIATED).protocol === 2 && !!params?.replayFrom, ctx, sessions);
     };
+  }
+  return {
+    name: 'sessions',
+    requires: [NEGOTIATED],
+    provides: [SESSIONS],
+    create: (ctx) => {
+      const sessions = new SessionLifecycle(options.closeSession);
+      ctx.set(SESSIONS, sessions);
+      return sessions;
+    },
+    requests,
+    closed: (_info, _ctx, sessions) => sessions.disconnect(),
+  };
+}
 
-    if (protocol === 1) return { stopReason: await run() };
+/** The session's MCP servers: `acp` ones over this connection, and the agent's own connections to the rest. */
+function mcpLayer(options: AgentOptions): AgentLayer<McpPart> {
+  return {
+    name: 'mcp',
+    requires: [SESSIONS],
+    provides: [MCP],
+    create: (ctx) => {
+      const part: McpPart = { caller: new McpCaller(ctx.client, { name: options.name, version: options.version ?? '0.0.0' }) };
+      ctx.set(MCP, part);
+      ctx.get(SESSIONS).attach<SessionMcpConnections>({
+        name: 'mcp',
+        create: (session) => new SessionMcpConnections(options.mcpConnector, session.cwd),
+        reset: (connections, session) => connections.reset(session.cwd),
+        release: (connections) => connections.close(),
+        // MCP servers the agent started (stdio) or connected to go with the connection.
+        disconnect: (connections) => connections.close(),
+      });
+      return part;
+    },
+    notifications: { 'mcp/message': (call, _ctx, part) => part.caller.receive(call.params) },
+  };
+}
 
-    // v2: answer at once with the user message id, then run; the end is an idle state update.
-    const userMessageId = randomUUID();
-    setTimeout(() => {
-      void (async () => {
-        const stop = await run(() => turn.state('running'));
-        if (stop !== 'error') await turn.idle(stop);
-      })().catch(() => {});
-    }, 0);
-    void context;
-    return { messageId: userMessageId };
+/** A session's turns: the running one, the queue, and background work (v2). */
+interface TurnsPart {
+  controller?: AbortController;
+  /** Prompts waiting for the running one (with `queuePrompts`). */
+  waiting: Set<AbortController>;
+  /** Settles when the last queued turn ends. */
+  tail: Promise<void>;
+  work: SessionWork;
+}
+
+/** `session/prompt` and the ways to stop work: the v1 and v2 turn lifecycles. */
+function turnsLayer(options: AgentOptions): AgentLayer {
+  return {
+    name: 'turns',
+    requires: [NEGOTIATED, SESSIONS],
+    create: (ctx) => {
+      ctx.get(SESSIONS).attach<TurnsPart>({
+        name: 'turns',
+        create: (session) => ({
+          waiting: new Set(),
+          tail: Promise.resolve(),
+          work: new SessionWork((update) => ctx.client.notify('session/update', { sessionId: session.id, update })),
+        }),
+        stop: (turns, _session, reason) => {
+          turns.controller?.abort(reason);
+          for (const waiting of turns.waiting) waiting.abort(reason);
+          // Closing stops background work too.
+          turns.work.closeAll();
+        },
+      });
+    },
+    requests: {
+      // v2: stop one cancellable tool call or terminal (background work, or a step of the turn).
+      'tool_call/cancel': (call, ctx) => cancelWork(call, ctx, 'tool_call', 'toolCallId'),
+      'terminal/cancel': (call, ctx) => cancelWork(call, ctx, 'terminal', 'terminalId'),
+      'session/prompt': async (call, ctx) => {
+        const params = call.params as { sessionId?: string; prompt?: ContentBlock[] };
+        const sessions = ctx.get(SESSIONS);
+        const session = sessions.require(params?.sessionId);
+        const turns = sessions.part<TurnsPart>(session, 'turns');
+        const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
+        const busy = !!turns.controller || turns.waiting.size > 0;
+        if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
+        const controller = new AbortController();
+        // The session's controller and the connection; not this request's own signal ($/cancel_request does not stop a turn).
+        const signal = AbortSignal.any([controller.signal, ctx.peer.signal]);
+        const turn = new TurnWriter(
+          ctx.client,
+          session.id,
+          protocol,
+          params.prompt ?? [],
+          signal,
+          clientCapabilities,
+          session.servers,
+          ctx.peek(MCP)?.caller,
+          turns.work,
+          sessions.part<SessionMcpConnections | undefined>(session, 'mcp')
+        );
+        // Wait for the turn ahead (if any), in order.
+        const ahead = turns.tail;
+        let release!: () => void;
+        turns.tail = new Promise<void>((resolve) => (release = resolve));
+        turns.waiting.add(controller);
+
+        const run = async (onStart?: () => Promise<void>): Promise<StopReason> => {
+          await ahead;
+          turns.waiting.delete(controller);
+          if (signal.aborted) {
+            release();
+            return 'cancelled';
+          }
+          turns.controller = controller;
+          await onStart?.();
+          let stop: StopReason;
+          try {
+            stop = (await options.prompt(turn.api)) ?? 'end_turn';
+          } catch (error) {
+            if (signal.aborted) {
+              stop = 'cancelled';
+            } else if (error instanceof PermissionDenied) {
+              // The agent stopped because the user said no: a normal end.
+              stop = 'end_turn';
+            } else {
+              if (protocol === 1) throw error;
+              await turn.idle('error', { message: error instanceof Error ? error.message : String(error) });
+              return 'error';
+            }
+          } finally {
+            turns.controller = undefined;
+            release();
+          }
+          if (signal.aborted) {
+            stop = 'cancelled';
+            await turn.failOpenToolCalls();
+          }
+          return stop;
+        };
+
+        if (protocol === 1) return { stopReason: await run() };
+
+        // v2: answer at once with the user message id, then run; the end is an idle state update.
+        const userMessageId = randomUUID();
+        setTimeout(() => {
+          void (async () => {
+            const stop = await run(() => turn.state('running'));
+            if (stop !== 'error') await turn.idle(stop);
+          })().catch(() => {});
+        }, 0);
+        return { messageId: userMessageId };
+      },
+    },
+    notifications: {
+      'session/cancel': (call, ctx) => {
+        const sessions = ctx.get(SESSIONS);
+        const sessionId = (call.params as { sessionId?: unknown } | undefined)?.sessionId;
+        const session = typeof sessionId === 'string' ? sessions.sessions.get(sessionId) : undefined;
+        if (!session) return;
+        const turns = sessions.part<TurnsPart>(session, 'turns');
+        turns.controller?.abort(new Error('cancelled by the client'));
+        // Queued prompts are cancelled too: the client asked for the session to stop.
+        for (const waiting of turns.waiting) waiting.abort(new Error('cancelled by the client'));
+      },
+    },
+  };
+}
+
+function cancelWork(call: EndpointCall, ctx: CallContext, kind: 'tool_call' | 'terminal', key: 'toolCallId' | 'terminalId'): Record<string, never> {
+  const params = call.params as Record<string, unknown> | undefined;
+  const sessions = ctx.get(SESSIONS);
+  const session = sessions.require(params?.sessionId);
+  if (typeof params?.[key] !== 'string') throw RpcError.invalidParams(`${key} is required`);
+  sessions.part<TurnsPart>(session, 'turns').work.cancel(kind, params[key] as string);
+  return {};
+}
+
+/** `methods` and typed `extensions`. */
+function extensionsLayer(options: AgentOptions): AgentLayer {
+  const requests: NonNullable<AgentLayer['requests']> = {};
+  const notifications: NonNullable<AgentLayer['notifications']> = {};
+  for (const [method, handler] of Object.entries(options.methods ?? {})) {
+    if (method !== '*') requests[method] = asPeerHandler(handler);
+  }
+  for (const h of options.extensions ?? []) {
+    if (h.method === '*') continue;
+    if (h.kind === 'request') requests[h.method] = asPeerHandler(h.handler);
+    else notifications[h.method] = asPeerHandler(h.handler);
+  }
+  return { name: 'extensions', requests, notifications };
+}
+
+/**
+ * `serveAgent`'s layers, in order. `serveAgent` is `agentEndpoint` with these;
+ * a stack of your own can take some of them.
+ */
+function agentLayers(options: AgentOptions): AgentLayer<any>[] {
+  const replayWriter = (ctx: EndpointContext, sessionId: string): ReplayWriter => {
+    const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
+    return new TurnWriter(ctx.client, sessionId, protocol, [], new AbortController().signal, clientCapabilities, [], ctx.peek(MCP)?.caller, undefined, undefined).api;
+  };
+  return [negotiateLayer(options, !!options.loadSession), sessionsLayer(options, replayWriter), mcpLayer(options), turnsLayer(options), extensionsLayer(options)];
+}
+
+export function serveAgent(channel: Channel<unknown>, options: AgentOptions): RpcPeer {
+  // A '*' among `methods` or `extensions` answers whatever nothing else does, as before.
+  const anyRequest = options.methods?.['*'] ?? options.extensions?.find((h) => h.kind === 'request' && h.method === '*')?.handler;
+  const anyNotification = options.extensions?.find((h) => h.kind === 'notification' && h.method === '*')?.handler;
+  const endpoint = agentEndpoint(channel, {
+    name: options.name,
+    layers: agentLayers(options),
+    ...(anyRequest ? { request: asPeerHandler(anyRequest) } : {}),
+    ...(anyNotification ? { notification: asPeerHandler(anyNotification) } : {}),
+    peer: { ...options.peer, ...withTelemetry(options.peer?.tap, options.telemetry, options.peer), ...cancelRequest },
   });
-
-  peer.start();
-  return peer;
+  if (options.telemetry) void endpoint.peer.closed.then(() => options.telemetry!.close());
+  return endpoint.peer;
 }
 
 class TurnWriter {
@@ -514,7 +697,7 @@ class TurnWriter {
   private segment = 0;
   private lastWasText = false;
   private readonly open = new Set<string>();
-  private readonly peer: RpcPeer;
+  private readonly peer: AgentChannel;
   private readonly sessionId: string;
   private readonly protocol: ProtocolVersion;
   private readonly turnId = randomUUID().slice(0, 8);
@@ -522,14 +705,14 @@ class TurnWriter {
   private readonly signal: AbortSignal;
 
   constructor(
-    peer: RpcPeer,
+    peer: AgentChannel,
     sessionId: string,
     protocol: ProtocolVersion,
     prompt: ContentBlock[],
     signal: AbortSignal,
     clientCapabilities: Record<string, unknown>,
     servers: McpServer[],
-    mcpCaller: McpCaller,
+    mcpCaller: McpCaller | undefined,
     work: SessionWork | undefined,
     connections: SessionMcpConnections | undefined
   ) {
@@ -554,7 +737,10 @@ class TurnWriter {
         if (!server) {
           throw new Error(`The session has no MCP server "${name}" (servers: ${servers.map((s) => s.name).join(', ') || 'none'})`);
         }
-        if (server.type === 'acp') return mcpCaller.server(server, { signal });
+        if (server.type === 'acp') {
+          if (!mcpCaller) throw new Error(`MCP server "${name}" is acp, and this agent has no mcp layer`);
+          return mcpCaller.server(server, { signal });
+        }
         const external = server as ExternalMcpServer;
         const problem = connections ? connections.problem(external) : `MCP server "${name}" can't be used here`;
         if (problem) throw new Error(problem);
