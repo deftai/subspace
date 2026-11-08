@@ -28,6 +28,20 @@ export {
 } from './agent.ts';
 export { Turn } from './turn.ts';
 export {
+  agentEndpoint,
+  stateKey,
+  type AgentEndpoint,
+  type AgentEndpointOptions,
+  type AgentLayer,
+  type CallContext,
+  type EndpointCall,
+  type EndpointClient,
+  type EndpointContext,
+  type EndpointReply,
+  type Next,
+  type StateKey,
+} from './endpoint.ts';
+export {
   allow,
   allowInside,
   firstOf,

@@ -274,7 +274,21 @@ wildcard only sees methods with no handler. The adapter **replaces** those
 handlers on the peer with pass-through ones, and adds `'*'` for the rest. A polished `clientEndpoint` with layers, with `AcpClient` as
 its preset, comes later.
 
+**As built (step 3):** the proxy's downstream half is a plain `RpcPeer` with
+`'*'` handlers and `$/cancel_request` on, not an `AcpClient`, so there are
+no fixed handlers to replace: the agent's requests go up through
+`endpoint.client.request(method, params, { signal })` and its notifications
+through `endpoint.client.notify()`. The `AcpClient` adapter is only needed
+for a proxy that also wants `AcpClient`'s conveniences downstream.
+
 ## Plan
+
+Status (2026-11-08): steps 1 to 3 are built, except the parts of step 1 that
+belong to layers not extracted yet (teardown order, the `negotiate` wait
+rule, the lifecycle tables); those come with their layers in step 4.
+`agentEndpoint` is in `packages/acp/src/endpoint.ts` with its contract tests
+(`test/endpoint.test.ts`); the two-way proxy is `examples/proxy.ts` and
+`test/proxy.test.ts` (v1 and v2).
 
 1. **Specify** this contract in tests first: continuation rules, exclusive
    handlers, per-endpoint state, close and teardown order, the `negotiate`
