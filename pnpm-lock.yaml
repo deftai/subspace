@@ -30,6 +30,12 @@ importers:
         specifier: workspace:*
         version: link:../packages/kernel
     devDependencies:
+      '@modelcontextprotocol/client':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@modelcontextprotocol/server':
+        specifier: 2.4.0
+        version: 2.4.0
       zod:
         specifier: ^4.1.0
         version: 4.6.7

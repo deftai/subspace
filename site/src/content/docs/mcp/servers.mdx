@@ -5,6 +5,7 @@ description: Give a session MCP servers, checked against the transports the agen
 
 import Example from '../../../components/Example.astro';
 import servers from '../../../../../examples/mcp-servers.ts?raw';
+import agentMcp from '../../../../../examples/agent-mcp.ts?raw';
 
 A client can give each session [MCP](https://modelcontextprotocol.io) servers for the agent to use: a program it starts (`stdio`), a URL it connects to (`http`, or `sse` on v1), or tools the client serves itself (`acp`, see [MCP-over-ACP](../over-acp/)).
 
@@ -21,20 +22,9 @@ A client can give each session [MCP](https://modelcontextprotocol.io) servers fo
 - `acp` servers go over the ACP connection; nothing else is needed.
 - `stdio`, `http` and `sse` servers need a connector. `mcpConnector()` from `@deft-subspace/acp/node` uses the official MCP SDK; install `@modelcontextprotocol/client` (an optional peer dependency).
 
-```ts
-import { mcpConnector, serveStdio } from '@deft-subspace/acp/node';
+In this example the client gives the session a stdio server (the same file, started with `mcp-server`), and the agent lists its tools and calls one:
 
-serveStdio({
-  name: 'my-agent',
-  mcpConnector: mcpConnector(),
-  async prompt(turn) {
-    const files = turn.mcp('files');
-    const tools = await files.listTools();
-    const result = await files.callTool('read', { path: 'README.md' });
-    // ...
-  },
-});
-```
+<Example file="agent-mcp.ts" ts={agentMcp} />
 
 - **Advertised:** with a connector, `initialize` advertises its transports (stdio, http and sse by default), unless you set `mcpTransports`. Add `acp` to `mcpTransports` to take those too.
 - **Connected on first use:** a server is connected the first time a turn uses it, then kept for the session's later turns. It is closed when the session closes, when a load or resume sends new servers, or when the connection ends. A stdio server is stopped then.
