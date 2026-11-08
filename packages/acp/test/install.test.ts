@@ -65,7 +65,7 @@ test('install: a checksummed tar.gz is unpacked under the cache, then reused; th
   catalog.binaries = installedBinaries(env);
   const resolved = resolveAgent(catalog, 'tool', host)!;
   assert.equal(resolved.command, first.command);
-  assert.equal(resolved.install, undefined);
+  assert.match(resolved.install!, /installed by `subspace agents install tool`/);
 });
 
 test('install: a zip works too', async () => {
@@ -100,4 +100,39 @@ test('without an install, a checksummed binary suggests `subspace agents install
   assert.match(resolveAgent(catalog, 'tool', host)!.install!, /^Run `subspace agents install tool`/);
   assert.equal(resolveAgent(catalog, 'tool', host)!.command, 'tool');
   assert.match(resolveAgent(catalog, 'plain', host)!.install!, /lists no checksum for it, so Subspace does not install it/);
+});
+
+test('install hints: the registry\'s beats a built-in one when Subspace can install or has installed it; your own beats both', async () => {
+  const env = cache();
+  const opencode = (binary: Record<string, unknown>, platform = target): RegistryAgent => ({
+    id: 'opencode',
+    name: 'OpenCode',
+    version: '1.0.0',
+    description: '',
+    distribution: { binary: { [platform]: { archive: 'https://example.com/opencode.tar.gz', cmd: './opencode', ...binary } as never } },
+  });
+  const hint = (agent: RegistryAgent, extra: Partial<Parameters<typeof resolveAgent>[0]> = {}) => {
+    const catalog = { ...loadCatalog({ env, builtinOnly: true }), ...extra };
+    catalog.registry = { version: '1', agents: [agent] };
+    return resolveAgent(catalog, 'opencode', host)!;
+  };
+  // Installable: say so, before the built-in "Install OpenCode".
+  assert.match(hint(opencode({ sha256: 'a'.repeat(64) })).install!, /^Run `subspace agents install opencode`, or install OpenCode/);
+  // No checksum, or no download for this machine: the built-in hint.
+  assert.match(hint(opencode({})).install!, /^Install OpenCode \(the `opencode` command\)/);
+  assert.match(hint(opencode({ sha256: 'a'.repeat(64) }, 'linux-x86_64')).install!, /^Install OpenCode \(the `opencode` command\)/);
+  // Installed: run from the cache, and the hint says how it got there.
+  const a = archive('tar.gz', { opencode: '#!/bin/sh\n' });
+  const agent = opencode({ sha256: a.sha256 });
+  const installed = await installAgent(agent, { env, ...host, fetch: serving(a.path).fetch });
+  const resolved = hint(agent, { binaries: installedBinaries(env) });
+  assert.equal(resolved.command, installed.command);
+  assert.match(resolved.install!, /^It was installed by `subspace agents install opencode` into .*; run that again if it is missing$/);
+  // Your own agents file: its hint wins; your own command drops the registry's hint.
+  const mine = { source: '/home/me/subspace.toml', agents: { opencode: { install: 'Ask IT for OpenCode' } } };
+  const layers = (layer: object) => ({ layers: [...loadCatalog({ env, builtinOnly: true }).layers, layer] as never });
+  assert.equal(hint(agent, { binaries: installedBinaries(env), ...layers(mine) }).install, 'Ask IT for OpenCode');
+  const ownCommand = hint(opencode({ sha256: 'a'.repeat(64) }), layers({ source: '/home/me/subspace.toml', agents: { opencode: { command: '/opt/opencode' } } }));
+  assert.equal(ownCommand.command, '/opt/opencode');
+  assert.match(ownCommand.install!, /^Install OpenCode \(the `opencode` command\)/);
 });

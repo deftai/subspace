@@ -238,22 +238,28 @@ function registryLaunch(
   platform: string,
   arch: string,
   binaries: Record<string, string> = {}
-): Pick<ResolvedAgent, 'command' | 'args' | 'env' | 'launch'> & { install?: string } {
+): Pick<ResolvedAgent, 'command' | 'args' | 'env' | 'launch'> & { install?: string; installable?: boolean; installed?: boolean } {
   const d = entry.distribution;
   if (d.npx) return { command: 'npx', args: ['-y', d.npx.package, ...(d.npx.args ?? [])], env: d.npx.env ?? {}, launch: 'npx' };
   if (d.uvx) return { command: 'uvx', args: [d.uvx.package, ...(d.uvx.args ?? [])], env: d.uvx.env ?? {}, launch: 'uvx' };
-  const target = d.binary?.[registryTarget(platform, arch)] ?? Object.values(d.binary ?? {})[0];
+  const own = d.binary?.[registryTarget(platform, arch)];
+  const target = own ?? Object.values(d.binary ?? {})[0];
   // Installed by `subspace agents install`: run it from there.
   const dir = binaries[`${entry.id}@${entry.version}`];
-  if (target && dir) return { command: `${dir.replace(/[\\/]+$/, '')}/${target.cmd.replace(/^\.\//, '')}`, args: target.args ?? [], env: target.env ?? {}, launch: 'binary' };
+  if (target && dir) {
+    const command = `${dir.replace(/[\\/]+$/, '')}/${target.cmd.replace(/^\.\//, '')}`;
+    const install = `It was installed by \`subspace agents install ${entry.id}\` into ${dir}; run that again if it is missing`;
+    return { command, args: target.args ?? [], env: target.env ?? {}, launch: 'binary', install, installed: true };
+  }
   // Otherwise it is expected on PATH under its command's name.
   const command = (target?.cmd ?? entry.id).split(/[\\/]/).pop()!;
-  const install = !target
+  // Only this machine's download can be installed.
+  const install = !own
     ? undefined
-    : target.sha256
-      ? `Run \`subspace agents install ${entry.id}\`, or install ${entry.name} so \`${command}\` is on PATH (download: ${target.archive})`
-      : `Install ${entry.name} so \`${command}\` is on PATH (download: ${target.archive}; the registry lists no checksum for it, so Subspace does not install it)`;
-  return { command, args: target?.args ?? [], env: target?.env ?? {}, launch: 'binary', ...(install ? { install } : {}) };
+    : own.sha256
+      ? `Run \`subspace agents install ${entry.id}\`, or install ${entry.name} so \`${command}\` is on PATH (download: ${own.archive})`
+      : `Install ${entry.name} so \`${command}\` is on PATH (download: ${own.archive}; the registry lists no checksum for it, so Subspace does not install it)`;
+  return { command, args: target?.args ?? [], env: target?.env ?? {}, launch: 'binary', ...(install ? { install, installable: !!own?.sha256 } : {}) };
 }
 
 /** Resolve a name (a defined name, an alias, or a registry id). Undefined when unknown. */
@@ -270,10 +276,13 @@ export function resolveAgent(
   const extraArgs: string[] = [];
   const env: Record<string, string> = {};
   const aliases = new Set<string>();
+  /** An install hint from the user's own files (not the built-in one). */
+  let ownInstall: string | undefined;
   for (const layer of catalog.layers) {
     const definition = layer.agents[id];
     if (!definition) continue;
     sources.push(layer.source);
+    if (layer.source !== 'built-in' && definition.install !== undefined) ownInstall = definition.install;
     const { quirks: q, extraArgs: extra, env: e, aliases: a, ...fields } = definition;
     // A layer that sets args starts the extra arguments over.
     if (fields.args) extraArgs.length = 0;
@@ -310,7 +319,12 @@ export function resolveAgent(
   const baseArgs = merged.args ?? (merged.command && merged.command !== launch?.command ? [] : (launch?.args ?? []));
   const waivers: Record<string, string> = {};
   for (const quirk of Object.values(enabled)) for (const check of quirk.waives ?? []) waivers[check] = quirk.summary;
-  const install = merged.install ?? launch?.install;
+  // Your own hint wins. A command of your own makes the registry's hint beside the point.
+  // Otherwise the registry knows better than the built-in hint when the binary is
+  // installed, or Subspace can install it; the built-in hint covers the rest.
+  const ownCommand = merged.command !== undefined && merged.command !== launch?.command;
+  const known = launch as { install?: string; installed?: boolean; installable?: boolean } | undefined;
+  const install = ownInstall ?? (ownCommand ? merged.install : known?.installed || known?.installable ? known.install : (merged.install ?? known?.install));
   return {
     id,
     name: merged.name ?? entry?.name ?? id,
