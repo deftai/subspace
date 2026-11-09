@@ -34,6 +34,7 @@ import {
   type TurnEvent,
   type TurnResult,
 } from '@deft-subspace/acp/node';
+import { checkToolInput, mergeToolInput, summarizeToolInput, type ToolInputSummary, type ToolInputThresholds } from './tool-input.ts';
 
 type OneOrMore<T> = T | T[];
 
@@ -58,6 +59,12 @@ export interface Expectations {
   files?: Record<string, { exists?: boolean; contains?: string; equals?: string; matches?: string; sameAs?: string }>;
   /** Session updates in the turn. */
   updates?: { min?: number; max?: number };
+  /**
+   * Tool-call argument robustness, from the outcomes the agent reports in
+   * `rawOutput.toolInput` (see tool-input.ts). Unrepaired invalid calls fail
+   * by default (`maxInvalidRate` 0); repairs are gated only if asked.
+   */
+  toolInput?: ToolInputThresholds;
 }
 
 export interface ScenarioTurn {
@@ -111,6 +118,8 @@ export interface TurnReport {
   outcome: TurnOutcome;
   updates: number;
   permissions: string[];
+  /** Tool-call argument outcomes, when the agent reported any. */
+  toolInput?: ToolInputSummary;
   durationMs: number;
 }
 
@@ -124,6 +133,8 @@ export interface ScenarioReport {
   trace: string;
   /** Where the failure bundle is, when it failed. */
   bundle?: string;
+  /** The turns' tool-call argument outcomes together, when the agent reported any. */
+  toolInput?: ToolInputSummary;
   /** Snapshot status: written (new or --update), matched, or differed. */
   snapshot?: 'written' | 'matched' | 'differed';
   durationMs: number;
@@ -213,6 +224,7 @@ export async function check(expect: Expectations, turn: { result: TurnResult; up
   const u = expect.updates;
   if (u?.min !== undefined && turn.updates < u.min) failures.push(`${turn.updates} updates, expected at least ${u.min}`);
   if (u?.max !== undefined && turn.updates > u.max) failures.push(`${turn.updates} updates, expected at most ${u.max}`);
+  if (expect.toolInput) failures.push(...checkToolInput(summarizeToolInput(result.toolCalls), expect.toolInput));
   return failures;
 }
 
@@ -267,7 +279,17 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
         },
       });
       const failures = step.expect ? await check(step.expect, { result, updates, permissions, workspace }) : [];
-      report.turns.push({ prompt: step.prompt, pass: !failures.length, failures, outcome: outcomeOf(result), updates, permissions, durationMs: Date.now() - turnStarted });
+      const toolInput = summarizeToolInput(result.toolCalls);
+      report.turns.push({
+        prompt: step.prompt,
+        pass: !failures.length,
+        failures,
+        outcome: outcomeOf(result),
+        updates,
+        permissions,
+        ...(toolInput.checked ? { toolInput } : {}),
+        durationMs: Date.now() - turnStarted,
+      });
     }
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);
@@ -275,6 +297,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     await agent?.close().catch(() => {});
   }
 
+  const reported = report.turns.flatMap((t) => (t.toolInput ? [t.toolInput] : []));
+  if (reported.length) report.toolInput = mergeToolInput(reported);
   if (scenario.snapshot && !report.error) report.snapshot = await compareSnapshot(resolve(baseDir, scenario.snapshot), report, options.updateSnapshots ?? false);
   report.pass = !report.error && report.turns.every((t) => t.pass) && report.snapshot !== 'differed';
   report.durationMs = Date.now() - started;

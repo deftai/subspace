@@ -5,3 +5,14 @@ export { normalizeTurn, type NormalizedTurn } from './normalize.ts';
 export { applyWaivers, failures, formatReport, type CheckResult } from './check.ts';
 export { AGENT_CHECKS, checkAgent, DEFAULT_PROMPTS, type CheckAgentOptions } from './check-agent.ts';
 export { acpClientDriver, CLIENT_CHECKS, checkClient, type CheckClientOptions, type ClientDriver, type ConnectClient } from './check-client.ts';
+export {
+  checkToolInput,
+  mergeToolInput,
+  summarizeToolInput,
+  toolInputOf,
+  type ToolInputCounts,
+  type ToolInputOutcome,
+  type ToolInputStatus,
+  type ToolInputSummary,
+  type ToolInputThresholds,
+} from './tool-input.ts';
