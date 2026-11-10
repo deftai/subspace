@@ -24,6 +24,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   allow,
   firstOf,
+  loadCatalog,
   readOnly,
   reject,
   start,
@@ -137,6 +138,8 @@ export interface ScenarioReport {
   toolInput?: ToolInputSummary;
   /** Snapshot status: written (new or --update), matched, or differed. */
   snapshot?: 'written' | 'matched' | 'differed';
+  /** How the run differs from the snapshot beyond single turns (a different number of turns). */
+  snapshotFailures?: string[];
   durationMs: number;
 }
 
@@ -259,6 +262,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   try {
     agent = await start(target, {
       cwd: workspace,
+      // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace.
+      ...(typeof target === 'string' ? { catalog: loadCatalog({ cwd: baseDir }) } : {}),
       permissions: permissionPolicy(scenario.permissions),
       trace: tracePath,
       quiet: true,
@@ -321,8 +326,13 @@ async function compareSnapshot(path: string, report: ScenarioReport, update: boo
   if (existing.length !== outcomes.length) differences.push(`${outcomes.length} turns, the snapshot has ${existing.length}`);
   if (!differences.length) return 'matched';
   report.turns.forEach((t, i) => {
-    if (differences.some((d) => d.startsWith(`turn ${i + 1} `))) t.failures.push('differs from the snapshot (rerun with --update to accept)');
+    if (!differences.some((d) => d.startsWith(`turn ${i + 1} `))) return;
+    t.failures.push('differs from the snapshot (rerun with --update to accept)');
+    t.pass = false;
   });
+  if (existing.length !== outcomes.length) {
+    report.snapshotFailures = [`${outcomes.length} turns, the snapshot has ${existing.length} (rerun with --update to accept)`];
+  }
   return 'differed';
 }
 
@@ -360,6 +370,7 @@ export function formatScenarios(reports: ScenarioReport[]): string {
       lines.push(`  ${t.pass ? 'ok ' : 'no '} ${i + 1}. ${JSON.stringify(t.prompt.length > 60 ? `${t.prompt.slice(0, 57)}...` : t.prompt)}  ${t.outcome.end}, ${t.outcome.toolCalls.length} tool calls`);
       for (const f of t.failures) lines.push(`        - ${f}`);
     });
+    for (const f of r.snapshotFailures ?? []) lines.push(`        snapshot: ${f}`);
     if (r.bundle) lines.push(`        failure bundle: ${r.bundle}`);
   }
   const failed = reports.filter((r) => !r.pass).length;
@@ -378,7 +389,11 @@ export function formatJUnit(reports: ScenarioReport[]): string {
       return `    <testcase classname="${xml(r.name)}" name="${name}" time="${(t.durationMs / 1000).toFixed(3)}">${failure}</testcase>`;
     });
     if (r.error) cases.push(`    <testcase classname="${xml(r.name)}" name="start"><error message="${xml(r.error)}"/></testcase>`);
-    const failures = r.turns.filter((t) => !t.pass).length;
+    const snapshot = r.snapshotFailures ?? [];
+    if (snapshot.length) {
+      cases.push(`    <testcase classname="${xml(r.name)}" name="snapshot"><failure message="${xml(snapshot[0]!)}">${xml(snapshot.join('\n'))}</failure></testcase>`);
+    }
+    const failures = r.turns.filter((t) => !t.pass).length + (snapshot.length ? 1 : 0);
     return `  <testsuite name="${xml(r.name)}" tests="${cases.length}" failures="${failures}" errors="${r.error ? 1 : 0}" time="${(r.durationMs / 1000).toFixed(3)}">\n${cases.join('\n')}\n  </testsuite>`;
   });
   return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n${suites.join('\n')}\n</testsuites>\n`;

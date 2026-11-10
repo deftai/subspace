@@ -68,6 +68,35 @@ test('snapshots: written once, matched after, a change differs until accepted wi
   assert.equal((await runScenario(scenario('hello'), { baseDir: dir })).snapshot, 'matched');
 });
 
+test('snapshots: a differing turn fails in every report, and so does a different number of turns', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshot-reports-'));
+  const scenario = (...prompts: string[]): Scenario => ({ name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: prompts.map((prompt) => ({ prompt })) });
+  assert.equal((await runScenario(scenario('hi', 'hi'), { baseDir: dir })).snapshot, 'written');
+  const changed = await runScenario(scenario('hello', 'hi'), { baseDir: dir, artifacts: dir });
+  assert.deepEqual(changed.turns.map((t) => t.pass), [false, true]);
+  assert.match(formatScenarios([changed]), /no {2}1\./);
+  assert.match(formatJUnit([changed]), /failures="1"/);
+  const shorter = await runScenario(scenario('hi'), { baseDir: dir, artifacts: dir });
+  assert.equal(shorter.pass, false);
+  assert.deepEqual(shorter.turns.map((t) => t.pass), [true]);
+  assert.match(formatScenarios([shorter]), /snapshot: 1 turns, the snapshot has 2/);
+  const junit = formatJUnit([shorter]);
+  assert.match(junit, /failures="1"/);
+  assert.match(junit, /name="snapshot"><failure message="1 turns, the snapshot has 2/);
+});
+
+test("a named agent is looked up in the scenario's project, not the temporary workspace", async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario-catalog-'));
+  const toml = (s: string) => JSON.stringify(s);
+  await writeFile(
+    join(dir, 'subspace.toml'),
+    `[agents.local-writer]\ncommand = ${toml(agent.command)}\nargs = [${agent.args.map(toml).join(', ')}]\n`
+  );
+  const report = await runScenario({ name: 'local', agent: 'local-writer' as never, turns: [{ prompt: 'hi' }] }, { baseDir: dir, artifacts: dir });
+  assert.equal(report.error, undefined);
+  assert.equal(report.pass, true);
+});
+
 test('loadScenarios reads JSON files; text and JUnit reports', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'scenario-files-'));
   const file = join(dir, 'suite.json');
