@@ -68,6 +68,14 @@ test('json(): finds JSON in a fence, checks it with a Standard Schema, asks agai
   await s.close();
 });
 
+test('findJson: fenced JSON after blank lines or a CRLF, and linear time on a fence that never closes', () => {
+  assert.deepEqual(findJson('Here:\n```json\n\n{"a": 1}\n```'), { a: 1 });
+  assert.deepEqual(findJson('Here:\r\n```json  \r\n[1]\r\n```'), [1]);
+  const started = Date.now();
+  assert.throws(() => findJson(`\`\`\`\n${'\n '.repeat(200_000)}`), /no JSON value/);
+  assert.ok(Date.now() - started < 1000);
+});
+
 test('prompt signal and timeoutMs cancel the turn', async () => {
   const s = await connectSession(
     agentReplying(async (turn) => {

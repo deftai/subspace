@@ -128,6 +128,12 @@ test('install hints: the registry\'s beats a built-in one when Subspace can inst
   const resolved = hint(agent, { binaries: installedBinaries(env) });
   assert.equal(resolved.command, installed.command);
   assert.match(resolved.install!, /^It was installed by `subspace agents install opencode` into .*; run that again if it is missing$/);
+  // Trailing separators on the folder are trimmed, in linear time (the old regex was quadratic on a long run of them).
+  const withDirs = (f: (dir: string) => string) => Object.fromEntries(Object.entries(installedBinaries(env)).map(([key, dir]) => [key, f(dir)]));
+  assert.equal(hint(agent, { binaries: withDirs((dir) => `${dir}//`) }).command, installed.command);
+  const trimStarted = Date.now();
+  hint(agent, { binaries: withDirs((dir) => `${dir}${'/'.repeat(100_000)}x`) });
+  assert.ok(Date.now() - trimStarted < 1000);
   // Your own agents file: its hint wins; your own command drops the registry's hint.
   const mine = { source: '/home/me/subspace.toml', agents: { opencode: { install: 'Ask IT for OpenCode' } } };
   const layers = (layer: object) => ({ layers: [...loadCatalog({ env, builtinOnly: true }).layers, layer] as never });

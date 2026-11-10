@@ -65,7 +65,8 @@ export interface SessionConveniences {
 /** The first JSON value in a reply: all of it, a ```json fence, or the first balanced object or array. */
 export function findJson(reply: string): unknown {
   const attempts: string[] = [reply.trim()];
-  for (const match of reply.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)) attempts.push(match[1]!.trim());
+  // [ \t]* (not \s*) before the newline: one way to match, so it stays linear (blank lines are trimmed below).
+  for (const match of reply.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)```/g)) attempts.push(match[1]!.trim());
   const start = reply.search(/[[{]/);
   if (start >= 0) {
     // Scan for the matching close, minding strings.

@@ -247,7 +247,7 @@ function registryLaunch(
   // Installed by `subspace agents install`: run it from there.
   const dir = binaries[`${entry.id}@${entry.version}`];
   if (target && dir) {
-    const command = `${dir.replace(/[\\/]+$/, '')}/${target.cmd.replace(/^\.\//, '')}`;
+    const command = `${trimTrailingSeparators(dir)}/${target.cmd.replace(/^\.\//, '')}`;
     const install = `It was installed by \`subspace agents install ${entry.id}\` into ${dir}; run that again if it is missing`;
     return { command, args: target.args ?? [], env: target.env ?? {}, launch: 'binary', install, installed: true };
   }
@@ -353,4 +353,11 @@ export function listAgents(catalog: AgentCatalog): ResolvedAgent[] {
   const claimed = new Set(defined.flatMap((a) => [a.id, ...(a.registry ? [a.registry] : [])]));
   const others = catalog.registry.agents.filter((a) => !claimed.has(a.id)).map((a) => resolveAgent(catalog, a.id)).filter((a): a is ResolvedAgent => !!a);
   return [...defined, ...others];
+}
+
+/** `dir` without trailing slashes or backslashes (a loop, not a regex: linear on any input). */
+function trimTrailingSeparators(dir: string): string {
+  let end = dir.length;
+  while (end > 0 && (dir[end - 1] === '/' || dir[end - 1] === '\\')) end--;
+  return dir.slice(0, end);
 }
