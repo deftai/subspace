@@ -141,6 +141,16 @@ export interface ClientOptions extends TurnHandlers {
    * agents then list only methods they handle themselves.
    */
   terminalAuth?: boolean;
+  /**
+   * Show the terminals a v1 agent runs itself, as v2 does: advertise the
+   * terminal extension (`_meta.terminal_output` and `terminal_output_delta`,
+   * as codex-acp and claude-agent-acp read them), so such an agent streams a
+   * command's output into a terminal while it runs. The app gets the same
+   * `terminal` events and `session.terminals` on v1 and v2. Default true;
+   * false advertises neither, and the agent puts command output in the tool
+   * call's content instead.
+   */
+  agentTerminals?: boolean;
   timeouts?: {
     /** initialize. Default 60 s (agents often install on first run). */
     initializeMs?: number;
@@ -337,6 +347,7 @@ export class AcpClient {
       fs: { readTextFile: !!options.files, writeTextFile: !!options.files },
       terminal: !!options.terminals,
       ...(options.terminalAuth ? { auth: { terminal: true } } : {}),
+      ...(options.agentTerminals !== false ? { _meta: { terminal_output: true, terminal_output_delta: true } } : {}),
       ...(elicitation ? { elicitation } : {}),
     };
     const v2Capabilities: v2.ClientCapabilities = {
