@@ -2,10 +2,16 @@
   "name": "subspace",
   "private": true,
   "type": "module",
-  "description": "Deft Subspace \u2014 multi-protocol agent infrastructure (ACP-first)",
+  "description": "Deft Subspace: ACP for apps and agents (kernel, acp, testkit, devtools)",
   "scripts": {
-    "test": "node --experimental-strip-types --test --test-force-exit tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts tests/phase4_acp_testkit.test.ts tests/phase5_acp_harness.test.ts tests/host_progressive_helper.test.ts",
-    "typecheck": "node --experimental-strip-types --check packages/subspace-foundation/src/index.ts packages/acp-wire/src/index.ts packages/acp-client/src/index.ts packages/acp-agent/src/index.ts packages/acp-agent/src/helpers.ts packages/acp-probe/src/index.ts packages/acp-testkit/src/index.ts packages/acp-testkit/src/assert.ts packages/acp-testkit/src/harness.ts packages/acp-testkit/src/scenarios.ts packages/acp-harness/src/index.ts packages/acp-harness/src/model.ts packages/acp-harness/src/session.ts packages/acp-harness/src/options.ts packages/acp-harness/src/handlers.ts packages/acp-harness/src/listen.ts packages/acp-harness/bin/stub-harness-agent.ts tests/option_c_dual_transport_echo.test.ts tests/phase2_session_product.test.ts tests/phase3_acp_probe.test.ts tests/phase4_acp_testkit.test.ts tests/phase5_acp_harness.test.ts tests/host_progressive_helper.test.ts"
+    "build": "pnpm --filter \"./packages/*\" run build",
+    "typecheck": "pnpm --filter \"./packages/*\" --filter ./examples run typecheck",
+    "test": "pnpm --filter \"./packages/*\" --filter ./examples run test",
+    "docs:dev": "pnpm run build && pnpm --filter ./site run dev",
+    "docs:build": "pnpm run build && pnpm --filter ./site run build",
+    "proto:build": "pnpm run build",
+    "proto:typecheck": "pnpm run typecheck",
+    "proto:test": "pnpm run test"
   },
   "engines": {
     "node": ">=22"
@@ -14,5 +20,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/deftai/subspace.git"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.19.0"
   }
 }

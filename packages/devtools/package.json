@@ -1,0 +1,51 @@
+{
+  "name": "@deft-subspace/devtools",
+  "version": "0.0.0-experiment",
+  "description": "See what an ACP connection did: a trace analyzer, a self-contained browser trace viewer, and OpenTelemetry export for Subspace traces.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "deft-subspace-trace": "./bin/deft-subspace-trace.js"
+  },
+  "exports": {
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "subspace-source": "./src/cli.ts",
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./otlp": {
+      "subspace-source": "./src/otlp.ts",
+      "types": "./dist/otlp.d.ts",
+      "default": "./dist/otlp.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts",
+    "sample": "node --conditions=subspace-source examples/sample-trace.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.12.0"
+  }
+}

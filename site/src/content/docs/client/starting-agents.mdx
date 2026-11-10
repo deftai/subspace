@@ -1,0 +1,63 @@
+---
+title: Starting agents
+description: start() and run() - known agents, sensible defaults, and what they do for you.
+---
+
+import Example from '../../../components/Example.astro';
+import firstTurn from '../../../../../examples/first-turn.ts?raw';
+
+<Example file="first-turn.ts" ts={firstTurn} />
+
+## Known agents
+
+| Name | Starts | Mode it switches to |
+|---|---|---|
+| `claude` | `npx -y @agentclientprotocol/claude-agent-acp@<registry version>` | `default` (asks first) |
+| `codex` | `npx -y @agentclientprotocol/codex-acp@<registry version>` | `read-only` (asks first; acts once allowed) |
+| `grok` | `grok --permission-mode default agent stdio` | (asks first through its flag) |
+| `gemini` | `npx -y @google/gemini-cli@<registry version> --acp` | |
+| `opencode` | `opencode acp` | |
+
+Any [ACP registry](/subspace/client/agents-file/) id works too, and so do agents of your own in `agents.toml` or a project's `subspace.toml`. [Known agents and agents files](/subspace/client/agents-file/) covers those, and the quirks behind each mode. Or pass `{ command, args, mode }`. Adapters run through `npx`, so the first start may take a while to download them.
+
+## What `start()` does for you
+
+- **Asks-first modes.** In their starting modes Claude and Codex write and run without asking, so your permission answers would never be consulted. `start()` switches them; `mode` picks another, and `mode: false` keeps the agent's own. A mode the agent does not offer is a warning (`agent.modeWarning`), not a failure.
+- **One folder.** `cwd` (default `process.cwd()`) is the agent's working directory, the workspace its file requests are confined to, and the session's cwd.
+- **A session, ready.** `agent.session`, `agent.run(prompt, handlers)` and `agent.prompt(prompt, handlers)`; `agent.newSession()` opens more, in the same mode.
+- **Login when needed.** If opening the session fails because the agent needs a login and it offers exactly one method it handles itself, that method is used, once.
+- **Questions.** Form questions from the agent are advertised; a turn's `onQuestion` answers them, and without one they are declined.
+- **Clean exits.** Ctrl-C cancels the running turn and stops the agent's process group before exiting (`handleSignals: false` to opt out). `agent.close()`, or `await using agent = await start(...)` on Node 24 and later.
+
+## Permissions are required
+
+`start()` throws unless you say how to answer permission questions: `onPermission: (request) => ...`, or a fixed `permissions: 'allow'` or `'reject'`. Agents ask before writing files and running commands, and a silent refusal is the most confusing first experience there is.
+
+## `run()`
+
+`run(agent, prompt, options)` is `start()`, one `run()`, and `close()`. It takes the same options, plus `limits`.
+
+## A connection you already have
+
+`connectSession(channel, options)` is `start()` for any channel: a socket, a pipe, an in-process agent. It connects, opens a ready session (logging in once if needed, switching to `mode` if offered), and gives the same `run`, `prompt` and `close`. It needs a permission answer too, and `cwd` defaults to `process.cwd()` where there is one.
+
+```ts
+import { connectSession } from '@deft-subspace/acp';
+
+const { run, close } = await connectSession(channel, {
+  cwd: '/work',
+  onPermission: (request) => (request.toolCall?.kind === 'read' ? 'allow' : 'reject'),
+  onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
+});
+await run('What does this repo do?');
+await close();
+```
+
+## Seeing what happened, and errors that help
+
+- `trace: 'run.jsonl'` records the whole connection; open it with `deft-subspace-trace run.jsonl` (or `subspace trace run.jsonl`) to see every request, answer, tool call and permission, with timing.
+- A missing program says how to install it; an agent that needs a login says how to log in (`codex login`, ...); a slow first start through `npx` says it is downloading the adapter (`quiet: true` to silence notices).
+
+## Options
+
+Everything `connectAgent` takes (timeouts, `env`, `onStderr`, ...), plus `extraArgs` (after the preset's), `mode`, `session: { mcpServers, additionalDirectories }`, `files: false` to serve no files, and any [handler](../handlers/) as a default for every turn.

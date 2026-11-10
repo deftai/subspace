@@ -1,0 +1,25 @@
+---
+title: A tiny agent of your own
+description: An agent that counts words, asking before it reads, and a client for it.
+---
+
+import Example from '../../../components/Example.astro';
+import agent from '../../../../../examples/word-count-agent.ts?raw';
+import client from '../../../../../examples/word-count.ts?raw';
+
+The agent:
+
+<Example file="word-count-agent.ts" ts={agent} />
+
+A client for it:
+
+<Example file="word-count.ts" ts={client} />
+
+Output:
+
+```
+  (agent asks: Read in-process.ts) yes
+in-process.ts has 88 words.
+  (agent asks: Read word-count.ts) yes
+word-count.ts has 75 words.
+```

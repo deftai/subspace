@@ -1,0 +1,153 @@
+/**
+ * An ACP agent backed by a model: the turn loop, written once.
+ *
+ *   import { claude } from '@deft-subspace/claude';
+ *   serveStdio(modelAgent({ name: 'helper', model: claude(), system: 'You are terse.', tools: { listFiles } }));
+ *
+ * Each ACP session gets its own conversation with the model. Per turn: the
+ * prompt goes to the model; its text streams as agent messages and its
+ * thinking as thoughts; each tool call is checked, shown, asked about if the
+ * tool says so, run, and its result sent back; until the model stops calling
+ * tools (or `maxSteps`). A refused tool is reported to the model, which
+ * decides what to do next. Cancelling the turn stops the model and the tools.
+ *
+ * The model side is an adapter (`ModelAdapter`), so any model fits;
+ * `@deft-subspace/claude` provides one for the Claude API.
+ */
+import { PermissionDenied, type AgentOptions, type AgentTurn } from './agent.ts';
+import type { ContentBlock, StopReason } from './model.ts';
+import { checkToolInput, toolInputSchema, toolOutputText, toolTitle, type ToolSet } from './tools.ts';
+
+/** A tool as the model sees it. */
+export interface ModelTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  /** The tool checks its input itself (so the adapter may stream inputs unchecked). */
+  validated: boolean;
+}
+
+export interface ModelToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export interface ModelReply {
+  /** Why the model stopped: end_turn, tool_use, max_tokens, refusal, ... */
+  stopReason: string;
+  toolCalls: ModelToolCall[];
+}
+
+/** What goes to the model next: the user's prompt, or the results of its tool calls. */
+export type ModelInput =
+  | { prompt: ContentBlock[] }
+  | { toolResults: Array<{ id: string; content: string; isError?: boolean }> };
+
+/** One conversation with a model (one ACP session). It keeps its own history. */
+export interface ModelConversation {
+  send(
+    input: ModelInput,
+    stream: { onText(delta: string): unknown; onThinking(delta: string): unknown; signal: AbortSignal }
+  ): Promise<ModelReply>;
+}
+
+export interface ModelAdapter {
+  conversation(setup: { system?: string; tools: ModelTool[]; cwd: string }): ModelConversation;
+}
+
+export interface ModelAgentOptions extends Omit<AgentOptions, 'prompt' | 'newSession'> {
+  model: ModelAdapter;
+  /** The system prompt; it may use the session's folder. */
+  system?: string | ((session: { cwd: string }) => string);
+  tools?: ToolSet;
+  /** Model calls per turn before it is stopped (`max_turn_requests`). Default 50. */
+  maxSteps?: number;
+}
+
+/** serveAgent options for an agent backed by a model. */
+export function modelAgent(options: ModelAgentOptions): AgentOptions {
+  const { model, system, tools = {}, maxSteps = 50, ...agentOptions } = options;
+  const conversations = new Map<string, ModelConversation>();
+  const cwds = new Map<string, string>();
+  const modelTools: ModelTool[] = Object.entries(tools).map(([name, definition]) => ({
+    name,
+    description: definition.description,
+    inputSchema: toolInputSchema(definition),
+    validated: !!definition.schema,
+  }));
+  const conversationFor = (turn: AgentTurn): ModelConversation => {
+    let conversation = conversations.get(turn.sessionId);
+    if (!conversation) {
+      const cwd = cwds.get(turn.sessionId) ?? '.';
+      const prompt = typeof system === 'function' ? system({ cwd }) : system;
+      conversation = model.conversation({ ...(prompt ? { system: prompt } : {}), tools: modelTools, cwd });
+      conversations.set(turn.sessionId, conversation);
+    }
+    return conversation;
+  };
+
+  return {
+    ...agentOptions,
+    newSession: ({ cwd }) => {
+      const sessionId = globalThis.crypto.randomUUID();
+      cwds.set(sessionId, cwd);
+      return { sessionId };
+    },
+    closeSession: async (sessionId) => {
+      conversations.delete(sessionId);
+      cwds.delete(sessionId);
+      await agentOptions.closeSession?.(sessionId);
+    },
+    async prompt(turn): Promise<StopReason> {
+      const conversation = conversationFor(turn);
+      let input: ModelInput = { prompt: turn.prompt };
+      for (let step = 0; step < maxSteps; step++) {
+        const reply = await conversation.send(input, {
+          onText: (delta) => turn.say(delta),
+          onThinking: (delta) => turn.think(delta),
+          signal: turn.signal,
+        });
+        if (turn.signal.aborted) return 'cancelled';
+        if (!reply.toolCalls.length) return stopReasonOf(reply.stopReason);
+        const results: Array<{ id: string; content: string; isError?: boolean }> = [];
+        for (const call of reply.toolCalls) {
+          if (turn.signal.aborted) return 'cancelled';
+          results.push(await runToolCall(turn, tools, call));
+        }
+        input = { toolResults: results };
+      }
+      return 'max_turn_requests';
+    },
+  };
+}
+
+async function runToolCall(turn: AgentTurn, tools: ToolSet, call: ModelToolCall): Promise<{ id: string; content: string; isError?: boolean }> {
+  const definition = tools[call.name];
+  if (!definition) return { id: call.id, content: `There is no tool named ${call.name}.`, isError: true };
+  const checked = await checkToolInput(definition, call.input);
+  if ('problems' in checked) return { id: call.id, content: `Invalid input: ${checked.problems.join('; ')}`, isError: true };
+  try {
+    const output = await turn.tool(
+      {
+        id: call.id,
+        title: toolTitle(call.name, definition, checked.value),
+        kind: definition.kind ?? 'other',
+        rawInput: checked.value,
+        ...(definition.ask ? { ask: definition.ask } : {}),
+      },
+      async (handle) => toolOutputText(await definition.run(checked.value, { signal: handle.signal }))
+    );
+    return { id: call.id, content: output };
+  } catch (error) {
+    if (error instanceof PermissionDenied) return { id: call.id, content: 'The user did not allow this tool call.', isError: true };
+    return { id: call.id, content: error instanceof Error ? error.message : String(error), isError: true };
+  }
+}
+
+function stopReasonOf(reason: string): StopReason {
+  if (reason === 'end_turn' || reason === 'tool_use' || reason === 'pause_turn' || reason === 'stop_sequence') return 'end_turn';
+  if (reason === 'max_tokens') return 'max_tokens';
+  if (reason === 'refusal') return 'refusal';
+  return 'end_turn';
+}

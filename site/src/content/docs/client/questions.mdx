@@ -1,0 +1,17 @@
+---
+title: Questions from the agent
+description: Form and URL elicitation, and how answers are checked against the agent's schema.
+---
+
+import Example from '../../../components/Example.astro';
+import elicitation from '../../../../../examples/elicitation.ts?raw';
+
+An agent can ask the user a question through the client (`elicitation/create`): a **form** described by a JSON Schema, or a **URL** to open (for example, to authorize something).
+
+<Example file="elicitation.ts" ts={elicitation} />
+
+- Without an `elicitation` handler, the client advertises none, and agents should not ask.
+- `elicitationModes` limits what is advertised (default both). Requests in other modes are declined without calling your handler.
+- An accepted form answer is checked against the agent's `requestedSchema` (`validateElicitation`: required and unknown fields, types, lengths, ranges, formats, allowed choices). One that does not fit is sent as a decline.
+- A cancelled turn answers its open questions `cancel`.
+- For URL mode, `onElicitationComplete` tells you when the agent says the user finished.

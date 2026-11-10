@@ -1,0 +1,15 @@
+---
+title: Vendor extensions
+description: Typed extension requests and notifications between client and agent.
+---
+
+import Example from '../../../components/Example.astro';
+import extensions from '../../../../../examples/extensions.ts?raw';
+
+ACP lets either side add methods, as long as their names start with `_`. Subspace types them once and uses them on both sides:
+
+<Example file="extensions.ts" ts={extensions} />
+
+- `extensionRequest<Params, Result>(name, { params, result })` and `extensionNotification<Params>(name, { params })` declare one. The optional validators check params where they arrive and results where they return.
+- On the agent: `extensions: [handle(ext, handler)]`, and `turn.call(ext, params)` or `turn.notify(ext, params)` to call the client.
+- On the client: `extensions: [...]` the same way, and `client.call(ext, params)` or `client.notify(ext, params)`.

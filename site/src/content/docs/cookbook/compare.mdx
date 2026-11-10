@@ -1,0 +1,11 @@
+---
+title: Ask several agents
+description: The same question to several agents at once.
+---
+
+import Example from '../../../components/Example.astro';
+import compare from '../../../../../examples/compare.ts?raw';
+
+`Promise.allSettled` keeps one agent failing (not installed, not logged in) from hiding the others; `timeoutMs` bounds each.
+
+<Example file="compare.ts" ts={compare} />

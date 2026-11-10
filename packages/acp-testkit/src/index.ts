@@ -1,50 +1,18 @@
-/**
- * @deft/acp-testkit — importable multi-turn scenarios + asserts over
- * defineAcpClientProduct.
- *
- * Owns: public barrel re-exports only (assert, harness, scenarios, client types).
- * Does not own: wire framing, a second client, or CLI smoke (sibling of acp-probe).
- */
+export { recorder, redactKeys, replaceStrings, tapChannel, messagesOf, type Recorder } from './record.ts';
+export { replayAgent, ReplayDivergence, type Replay, type ReplayOptions } from './replay.ts';
+export { closeWhen, coalesce, delay, disconnectAfter, faultChannel, injectLines, isUpdate, merge, rechunk } from './faults.ts';
+export { normalizeTurn, type NormalizedTurn } from './normalize.ts';
+export { applyWaivers, failures, formatReport, type CheckResult } from './check.ts';
+export { AGENT_CHECKS, checkAgent, DEFAULT_PROMPTS, type CheckAgentOptions } from './check-agent.ts';
+export { acpClientDriver, CLIENT_CHECKS, checkClient, type CheckClientOptions, type ClientDriver, type ConnectClient } from './check-client.ts';
 export {
-  textChunks,
-  findPromptDone,
-  permissionEvents,
-  assertHasUpdate,
-  assertPromptDone,
-  assertCancelled,
-  assertTextIncludes,
-  assertPermissionOutcome,
-} from "./assert.ts";
-
-export {
-  sessionEchoAgentPath,
-  withLinkedProduct,
-  withStdioProduct,
-  type LinkedHarness,
-  type StdioHarness,
-  type ProductHarness,
-  type TestkitPermissionPolicy,
-} from "./harness.ts";
-
-export {
-  runMultiTurn,
-  runCancelMidPrompt,
-  runPermissionReverse,
-  scenarioMultiTurnLinked,
-  scenarioMultiTurnStdio,
-  scenarioCancelMidPromptLinked,
-  scenarioCancelMidPromptStdio,
-  scenarioPermissionReverseLinked,
-  runMinimumScenarios,
-  type ScenarioName,
-  type ScenarioResult,
-} from "./scenarios.ts";
-
-// Re-export product helpers consumers need alongside scenarios
-export {
-  collectEvents,
-  defineAcpClientProduct,
-  type AgentEvent,
-  type AcpClientProduct,
-  type PermissionPolicy,
-} from "@deft/acp-client";
+  checkToolInput,
+  mergeToolInput,
+  summarizeToolInput,
+  toolInputOf,
+  type ToolInputCounts,
+  type ToolInputOutcome,
+  type ToolInputStatus,
+  type ToolInputSummary,
+  type ToolInputThresholds,
+} from './tool-input.ts';

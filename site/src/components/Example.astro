@@ -1,0 +1,40 @@
+---
+/**
+ * A code example from the examples/ folder of each SDK, in language tabs.
+ * Pass the file's text (import it with `?raw`); each language is a prop, so
+ * a Python or Rust SDK adds its own without touching the pages. One language
+ * shows as plain code; several show as tabs synced across the site.
+ */
+import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
+
+interface Props {
+  /** The example's file name in examples/. */
+  file: string;
+  ts: string;
+  py?: string;
+  rs?: string;
+}
+
+const { file, ts, py, rs } = Astro.props;
+// The marker the example runner reads is not for readers.
+const clean = (code: string) => code.replace(/^\s*\*\s*@typecheck-only.*\n/m, '').trimEnd();
+const languages = [
+  { label: 'TypeScript', lang: 'ts', code: ts },
+  ...(py ? [{ label: 'Python', lang: 'py', code: py }] : []),
+  ...(rs ? [{ label: 'Rust', lang: 'rs', code: rs }] : []),
+];
+---
+
+{
+  languages.length === 1 ? (
+    <Code code={clean(ts)} lang="ts" title={`examples/${file}`} />
+  ) : (
+    <Tabs syncKey="language">
+      {languages.map((l) => (
+        <TabItem label={l.label}>
+          <Code code={clean(l.code)} lang={l.lang} title={`examples/${file}`} />
+        </TabItem>
+      ))}
+    </Tabs>
+  )
+}

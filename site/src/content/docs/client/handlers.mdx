@@ -1,0 +1,70 @@
+---
+title: Handlers
+description: Handler options on any turn - callbacks per event kind instead of a for-await loop.
+---
+
+import Example from '../../../components/Example.astro';
+import handlers from '../../../../../examples/handlers.ts?raw';
+
+Every turn takes handler options. They work with `start()`, and with `session.prompt()` on any client:
+
+<Example file="handlers.ts" ts={handlers} />
+
+## How they run
+
+- In event order, one at a time. An async handler is awaited before the next event.
+- `turn.done` settles after every handler has run, so `await prompt(...).done` means the turn is over and you have seen all of it.
+- A handler that throws cancels the turn, and `done` rejects with its error.
+- Handlers and `for await` mix: the turn is still async-iterable.
+
+## The handlers
+
+| Handler | Called with |
+|---|---|
+| `onMessage`, `onThought`, `onUserMessage` | `(delta, info, event)`: what is new; `info` has the whole `text` so far, `messageId`, `first` (the message's first chunk), `index` (which message in the turn), and `separator` |
+| `onMessageEnd`, `onThoughtEnd`, `onUserMessageEnd` | `(text, info, event)`: the message stopped, with its final text; `info` has `messageId`, `index` and `complete`. See [Whole messages](#whole-messages) |
+| `onToolCall` | `(toolCall, { created }, event)`: a snapshot, each time it changes |
+| `onPlan` | `(entries, event)` |
+| `onUsage` | `({ used, size, cost }, event)` |
+| `onTerminal` | `(event)`: an agent terminal changed (v2) |
+| `onState` | `(state, background, event)` (v2) |
+| `onPermissionAnswered` | `(event)`: a permission question was answered |
+| `onLimit` | `(event)`: a turn limit fired |
+| `onEvent` | `(event)`: every event, after its own handler |
+
+Two handlers answer rather than observe:
+
+- `onPermission(request, signal)` answers this turn's permission questions, in place of the client's `permissions`.
+- `onQuestion(request, signal)` answers this turn's questions to the user, in place of the client's `elicitation`. The client must advertise elicitation: `start()` does; with `AcpClient.connect`, pass an `elicitation` option.
+
+## Streaming text
+
+An agent often sends more than one message in a turn ("I'll check the README.", then tool calls, then the answer). Write `separator` before each chunk and the stream reads like `result.text`: a blank line before each later message, unless the previous one already ended a line.
+
+```ts
+onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
+```
+
+For messages streamed one after another, which is what agents do, the concatenated stream is exactly `result.text`.
+
+## Whole messages
+
+When you want each message once it is finished (to log it, store it, or swap streamed text for rendered markdown), use the end handlers:
+
+```ts
+onMessageEnd: (text, { index, complete }) => transcript.push({ index, text, complete }),
+```
+
+ACP has no "message finished" signal, so Subspace infers one. A message ends when other text, a tool call, a plan, a permission question or a terminal comes after it, or when the turn ends. Usage, state and title updates do not end it. The end handler always runs before `turn.done` settles.
+
+- `text` is the final text, even when a v2 agent rewrote the whole message instead of adding to it. A stream of deltas can't show a rewrite; the end can.
+- `complete` is false when the turn was cancelled, failed or stopped for any reason other than `end_turn` while the message was still open.
+- If an agent goes back to the same message after something else, it ends again, with the longer text. This is rare; agents usually start a new message.
+- Some v1 agents send no message ids. Subspace then treats the text between two pieces of content (a tool call, a plan, a terminal) as one message; notices in between don't split it.
+- History replayed by `loadSession` has no end events; group it by `messageId`.
+
+## Defaults for every turn
+
+Handler options given when connecting apply to every turn: flat on `AcpClient.connect`, `connectSession` and `start()`, or under `handlers`. A prompt's own handlers replace them one by one: a prompt with only `onMessage` keeps the default `onToolCall`.
+
+An `onQuestion` given when connecting also tells the agent it may ask form questions, so you do not need a separate `elicitation` option.

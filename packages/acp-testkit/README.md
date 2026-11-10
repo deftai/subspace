@@ -1,0 +1,55 @@
+# @deft-subspace/acp-testkit (experiment)
+
+Test ACP agents and clients. Everything uses the kernel's trace format (`@deft-subspace/kernel` `trace.ts`: a header, then `{ t, dir, msg }` records, as JSON Lines).
+
+| What | API |
+|---|---|
+| Record | `recorder()` gives a `tap` for `RpcPeer`/`AcpClient`; `tapChannel()` records any channel; `recordAgent()` (`./node`) records a real agent started with `connectAgent`. `replaceStrings()` redacts paths. |
+| Replay | `replayAgent(channel, trace)` plays the agent side of a trace to a live client. It remaps ids, matches client calls by method in order, tolerates different params, and rejects `done` with a `ReplayDivergence` (expected vs got) instead of hanging. |
+| Faults | `faultChannel(channel, { read, write })` with `delay`, `disconnectAfter`, `closeWhen(isUpdate(...))`, and for bytes `rechunk`, `merge`, `coalesce`, `injectLines`. |
+| Conformance | `checkAgent(channel)` drives any agent; `checkClient(connect)` plays the agent against any client (`acpClientDriver()` for ours). Both return `[{ id, title, pass, skipped?, detail }]`; see `formatReport`. `checkAgentProcess()` (`./node`) starts a program and checks it. |
+| Tool-input robustness | For agents that validate their model's tool-call arguments and report the outcome on the tool call's `rawOutput.toolInput` (`{ status: valid \| repaired \| invalid, tool, backend?, model?, repairs?, issues? }`, shapes and paths, never values). `summarizeToolInput(toolCalls)` counts and rates outcomes by backend, model and tool, with repair kinds and unrepaired `tool:path`; `checkToolInput(summary, { maxInvalidRate, maxRepairRate, minChecked })` gates them (invalid calls fail by default, repairs only if gated; an agent that reports nothing is not checked). In a scenario: `"expect": { "toolInput": { "maxRepairRate": 0.25 } }`; each turn report and the scenario report carry `toolInput`. |
+| Corpus | `corpus/*.trace.jsonl`: real agents' traces. `test/corpus.test.ts` replays each to `AcpClient` and compares the normalized `TurnResult` with the one recorded live (`meta.expected` in the header). |
+
+## Recording more of the corpus
+
+`scripts/record-claude-codex.sh` records all six Claude and Codex traces in one go (pass `claude` or `codex` for one agent, `--write-only` for just the write traces). `scripts/record.ts` runs one turn against a real agent and saves `corpus/<name>.trace.jsonl`. The temp workspace and the home directory are replaced with `/workspace` and `~`; account details (email, organization, plan), the agent's available commands (your own skills and plugins; only their count is kept), Grok's subscription tier and your hook runs are redacted. Check a new trace for anything else private before committing it.
+
+```bash
+cd packages/acp-testkit
+# Plain turn
+node --conditions=subspace-source scripts/record.ts claude-plain npx -y @agentclientprotocol/claude-agent-acp
+# A write the reject policy refuses
+PROMPT="Create a file named hello.txt containing the word hi." MODE=default \
+  node --conditions=subspace-source scripts/record.ts claude-write-rejected npx -y @agentclientprotocol/claude-agent-acp
+# Cancel mid-stream, 300 ms after the first message
+PROMPT="Count from 1 to 300, one number per line. Do not use any tools." CANCEL_AFTER_MS=300 \
+  node --conditions=subspace-source scripts/record.ts claude-cancel npx -y @agentclientprotocol/claude-agent-acp
+# Codex: the same, with npx -y @agentclientprotocol/codex-acp and MODE=read-only for the write
+# (the deprecated @zed-industries/codex-acp fails every prompt)
+```
+
+`PERMISSIONS=allow` allows instead of rejecting. `MODE` switches the session mode before the turn: in their starting modes Claude (`auto`) and Codex (`agent`) write without asking, so the reject policy is never consulted. The corpus test picks up new files on its own.
+
+To run the conformance checks against a real agent (each prompt check is one model turn; `ONLY` limits them):
+
+```bash
+ONLY=initialize.version,session.new,session.unknown node --conditions=subspace-source scripts/check-agent.ts grok --permission-mode default agent stdio
+```
+
+`MODE` switches every session to that mode first. `scripts/check-claude-codex.sh` runs the checks against Claude and Codex in their ask-first modes, so `cancel.permission` runs instead of being skipped.
+
+## Known quirks (Grok Build, recorded 2026-11-07)
+
+- A write rejected by the permission policy ends the turn with `stopReason: "cancelled"`, though the client did not cancel (`grok-write-rejected`).
+- A prompt for an unknown session is answered `-32602 Invalid params`, not `-32002` (seen with `checkAgent`; not in a trace).
+- Many `_x.ai/*` extension notifications arrive around `session/new` and each turn; the client ignores them.
+
+## Known quirks (Claude and Codex adapters, recorded 2026-11-07)
+
+- Both start in a mode that writes without asking (Claude `auto`, Codex `agent`); switch to Claude `default` or Codex `read-only` to be asked.
+- Claude's adapter (`@agentclientprotocol/claude-agent-acp` 0.101.0) speaks protocol v2. A rejected write ends the turn with `end_turn` and the tool call `failed` (`claude-write-rejected`).
+- Codex, like Grok, ends a turn whose write was rejected with `stopReason: "cancelled"` though the client did not cancel, and leaves the tool call `pending` (`codex-write-rejected`). `TurnResult.refused` counts refused requests, and `turnEnd(result)` gives `refused` for such a turn rather than `cancelled`. Its reject option is named `cancel` (kind `reject_once`).
+- Both send `_auth/status_update` with the signed-in account's email, organization and plan; the recorder redacts it.
+- Both confirm a cancel mid-stream with `stopReason: "cancelled"`; neither turn is forced (`claude-cancel`, `codex-cancel`).
+- `checkAgent` (`scripts/check-claude-codex.sh`, Claude in `default`, Codex in `read-only`): all 10 checks pass for both, on protocol v2 (2026-11-07). Claude lists no login methods; Codex lists two `agent` ones (API key, ChatGPT). Both offer `session/delete`, and a deleted session is gone from `session/list`.

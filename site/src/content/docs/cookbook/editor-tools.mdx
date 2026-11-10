@@ -1,0 +1,11 @@
+---
+title: Tools from your app
+description: Give an agent your app's own state with serveTools().
+---
+
+import Example from '../../../components/Example.astro';
+import editor_tools from '../../../../../examples/editor-tools.ts?raw';
+
+The app serves a tool over the ACP connection; the agent calls it with `turn.mcp()`. Here both ends are in one process; with a real agent, it must take the `acp` MCP transport.
+
+<Example file="editor-tools.ts" ts={editor_tools} />

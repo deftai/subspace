@@ -1,0 +1,77 @@
+---
+title: Getting started
+description: Install Subspace and run a first turn, in one process and then with a real agent.
+---
+
+import Example from '../../components/Example.astro';
+import inProcess from '../../../../examples/in-process.ts?raw';
+import firstTurn from '../../../../examples/first-turn.ts?raw';
+import oneLiner from '../../../../examples/one-liner.ts?raw';
+
+## Packages
+
+| Package | What it is |
+|---|---|
+| `@deft-subspace/acp` | The ACP client (`AcpClient`) and agent (`serveAgent`). `@deft-subspace/acp/node` adds starting agent programs, and file and terminal access confined to a workspace. |
+| `@deft-subspace/kernel` | Channels, NDJSON framing, and a JSON-RPC peer with timeouts and cancellation. No ACP in it; runs in Node, Bun, Deno and browsers. |
+| `@deft-subspace/acp-testkit` | Recording and replay of traces, fault injection, and conformance checks for agents and clients. |
+| `@deft-subspace/devtools` | A trace analyzer and a standalone HTML trace viewer. |
+
+Subspace builds on the official [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) for its types, and adds the behaviour on top: turns, cancellation, permissions, one model for both protocol versions, and the testkit.
+
+## Install
+
+The packages are not on npm yet. Use them from a checkout:
+
+```sh
+git clone https://github.com/deftai/subspace && cd subspace
+git checkout experiment/deft-subspace-prototype
+pnpm install && pnpm test
+```
+
+From another project, link them (pnpm shown), and run `pnpm run build` in Subspace after pulling so the linked `dist/` is current:
+
+```json
+"dependencies": {
+  "@deft-subspace/acp": "link:../subspace/packages/acp",
+  "@deft-subspace/kernel": "link:../subspace/packages/kernel"
+}
+```
+
+Inside the repository, examples and tests run the TypeScript sources directly: `node --conditions=subspace-source file.ts` (Node 22.19 or later).
+
+## A first turn
+
+`start()` starts a known agent (`claude`, `codex`, `grok`, `gemini`, `opencode`, or any `{ command, args }`) in the mode where it asks before acting, opens a session in the current folder, and runs turns with handler options:
+
+<Example file="first-turn.ts" ts={firstTurn} />
+
+It needs one thing from you: how to answer the agent's permission questions (`onPermission`, or `permissions: 'allow'` / `'reject'`). See [Starting agents](../client/starting-agents/) for what else it does for you.
+
+## One prompt, one line
+
+<Example file="one-liner.ts" ts={oneLiner} />
+
+## In one process
+
+An agent and a client joined by an in-memory channel: nothing to install, and the way most tests are written.
+
+<Example file="in-process.ts" ts={inProcess} />
+
+## Start a project
+
+```sh
+npx create-subspace my-app                            # a script that uses an agent
+npx create-subspace my-agent --template agent         # an agent of your own
+npx create-subspace my-agent --template claude-agent  # an agent backed by Claude
+```
+
+The packages are not on npm yet: until they are, add `--subspace <path to a checkout>` to link a local one. Or skip code entirely: `subspace run claude "..."` (see [The subspace command](../cli/)).
+
+## Three layers
+
+- **`run()` and `start()`** (`@deft-subspace/acp/node`): known agents, sensible defaults, handlers.
+- **Handler options** on any turn: `session.prompt(text, { onMessage, onToolCall, onPermission })`. See [Handlers](../client/handlers/).
+- **The model underneath**: `AcpClient`, `Session`, `Turn` (async-iterable events and a result), for full control. The rest of these pages.
+
+Every example on this site is a file in [`examples/`](https://github.com/deftai/subspace/tree/experiment/deft-subspace-prototype/examples). All of them are typechecked, and those that need no outside agent run as part of `pnpm test`, so the code here keeps working.
