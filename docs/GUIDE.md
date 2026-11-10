@@ -237,7 +237,7 @@ The handler has the same shape as the official SDK's `McpRequestHandler`. So a s
 
 ## Agent terminals
 
-v2 agents can show the client terminals they run themselves. These are display only. Each change is a `terminal` event, and the session keeps every terminal, across turns:
+Agents can show the client terminals they run themselves. These are display only. Each change is a `terminal` event, and the session keeps every terminal, across turns:
 
 ```ts
 for await (const event of turn) {
@@ -250,6 +250,8 @@ session.terminals.get(terminalId);   // { command, cwd, size, output: Uint8Array
 ```
 
 Output is bytes, and a chunk may split a UTF-8 character or an escape sequence. `terminalText(terminal)` decodes the whole output for a transcript.
+
+v2 has these terminals in the protocol. On v1 the client advertises the terminal extension that claude-agent-acp and codex-acp read (`_meta.terminal_output` and `terminal_output_delta`), and their `_meta.terminal_*` keys become the same events, so a command's output streams on v1 too. `agentTerminals: false` advertises neither; such an agent then puts command output in the tool call's content.
 
 ## Background work (v2)
 

@@ -15,6 +15,26 @@ type Update = Record<string, unknown> & { sessionUpdate?: unknown };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const TERMINAL_KEYS = ['terminal_info', 'terminal_output', 'terminal_output_delta', 'terminal_exit'];
+
+/**
+ * Whether a v1 `tool_call_update` carries only terminal extension keys (and
+ * the stamps an agent repeats in `_meta`): no field of the tool call itself.
+ */
+function terminalOnly(update: Update): boolean {
+  if (update.sessionUpdate !== 'tool_call_update' || !isRecord(update._meta)) return false;
+  if (!TERMINAL_KEYS.some((key) => key in (update._meta as Record<string, unknown>))) return false;
+  return Object.keys(update).every((key) => key === 'sessionUpdate' || key === 'toolCallId' || key === '_meta');
+}
+
+/** Text as the base64 of its UTF-8 bytes, as a v2 terminal carries output (any runtime). */
+function base64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 const textOf = (block: unknown): string =>
   isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? block.text : '';
 
@@ -50,6 +70,8 @@ export class TurnProjection {
   private readonly prefix: string;
   /** Agent terminals (v2), shared with the session so they outlive the turn. */
   readonly terminals: Terminals;
+  /** The terminal of each v1 tool call that named one (`_meta.terminal_info`), by tool call id. */
+  private readonly v1Terminals = new Map<string, string>();
 
   constructor(prefix: string, terminals: Terminals = new Terminals(), toolCalls: Map<string, ToolCall> = new Map()) {
     this.prefix = prefix;
@@ -194,7 +216,64 @@ export class TurnProjection {
     this.lastKind = 'other';
     if (typeof update.toolCallId !== 'string') return [];
     const { toolCall, created } = this.upsert(update, create);
-    return [{ type: 'tool_call', toolCall: { ...toolCall }, created }];
+    // The terminal before the tool call that shows it, as on v2.
+    const terminal = this.v1Terminal(update, toolCall);
+    // A v1 report that only carries terminal output changes nothing about the
+    // tool call (v2 sends such output as terminal updates alone).
+    if (!create && !created && terminalOnly(update)) return terminal;
+    return [...terminal, { type: 'tool_call', toolCall: { ...toolCall }, created }];
+  }
+
+  /**
+   * The terminal events of a v1 tool call report that carries the terminal
+   * extension in `_meta` (codex-acp, claude-agent-acp): `terminal_info` names
+   * the terminal, `terminal_output` is a snapshot, `terminal_output_delta` a
+   * chunk, and `terminal_exit` the exit. They become the v2 updates they stand
+   * for, so a v1 agent's terminal is the same `terminal` event and
+   * `session.terminals` entry as a v2 one. The extension names no command:
+   * it is the tool call's `rawInput.command`.
+   */
+  private v1Terminal(update: Update, call: ToolCall): TurnEvent[] {
+    // A report without `_meta` can still give a known terminal its command:
+    // the first report of a streamed tool use has no input yet.
+    const meta = isRecord(update._meta) ? update._meta : {};
+    const info = isRecord(meta.terminal_info) ? meta.terminal_info : undefined;
+    const output = isRecord(meta.terminal_output) ? meta.terminal_output : undefined;
+    const delta = isRecord(meta.terminal_output_delta) ? meta.terminal_output_delta : undefined;
+    const exit = isRecord(meta.terminal_exit) ? meta.terminal_exit : undefined;
+    const idOf = (part: Record<string, unknown> | undefined) => (typeof part?.terminal_id === 'string' && part.terminal_id ? part.terminal_id : undefined);
+    const terminalId = idOf(info) ?? idOf(output) ?? idOf(delta) ?? idOf(exit) ?? this.v1Terminals.get(call.id);
+    if (!terminalId) return [];
+    this.v1Terminals.set(call.id, terminalId);
+    const updates: Record<string, unknown>[] = [];
+    const command = isRecord(call.rawInput) && typeof call.rawInput.command === 'string' && call.rawInput.command ? call.rawInput.command : undefined;
+    const known = this.terminals.get(terminalId);
+    const head: Record<string, unknown> = { sessionUpdate: 'terminal_update', terminalId };
+    if (command !== undefined && command !== known?.command) head.command = command;
+    if (output) head.output = { data: base64(typeof output.data === 'string' ? output.data : '') };
+    if (!known || Object.keys(head).length > 2) updates.push(head);
+    if (delta && typeof delta.data === 'string' && delta.data) {
+      updates.push({ sessionUpdate: 'terminal_output_chunk', terminalId, data: base64(delta.data) });
+    }
+    // Output first, then the exit, when one report carries both.
+    if (exit) {
+      updates.push({
+        sessionUpdate: 'terminal_update',
+        terminalId,
+        exitStatus: {
+          ...(typeof exit.exit_code === 'number' ? { exitCode: exit.exit_code } : {}),
+          ...(typeof exit.signal === 'string' ? { signal: exit.signal } : {}),
+        },
+      });
+    }
+    const events: TurnEvent[] = [];
+    for (const next of updates) {
+      const applied = this.terminals.apply(next);
+      if (!applied) continue;
+      const { terminal, appended, replaced } = applied;
+      events.push({ type: 'terminal', terminal: { ...terminal }, ...(appended ? { appended } : {}), replaced });
+    }
+    return events;
   }
 
   private toolChunk(update: Update): TurnEvent[] {
