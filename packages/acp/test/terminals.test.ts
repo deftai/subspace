@@ -135,8 +135,9 @@ test('v1 agent terminals: the terminal extension is advertised and becomes the s
   }
   const result = await turn.done;
 
-  // The terminal is known before the tool call that shows it.
-  assert.deepEqual(order.slice(0, 2), ['terminal', 'tool_call']);
+  // The terminal is known before the tool call that shows it, and a report
+  // that only carries output is a terminal event alone, as on v2.
+  assert.deepEqual(order, ['terminal', 'tool_call', 'terminal', 'terminal', 'terminal', 'terminal', 'tool_call']);
   assert.deepEqual(result.toolCalls[0]?.content, [{ type: 'terminal', terminalId: 'toolu_1' }]);
   const [first, chunk1, chunk2, snapshot, exit] = terminalEvents;
   assert.equal(terminalEvents.length, 5);
@@ -158,5 +159,31 @@ test('v1 agent terminals: agentTerminals false advertises no terminal extension'
   v1TerminalAgent(link, seen);
   const client = await AcpClient.connect(link.client, { agentTerminals: false });
   assert.equal(seen.meta, undefined);
+  await client.close();
+});
+
+test('v1 agent terminals: a terminal gets its command when the tool call gets its input', async () => {
+  const link = byteLink();
+  officialV1
+    .agent({ name: 'terminals-v1-late-input' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's' }))
+    .onRequest('session/prompt', async ({ params, client }) => {
+      const send = (update: Record<string, unknown>) =>
+        client.notify('session/update', { sessionId: params.sessionId, update } as never);
+      // A streamed tool use: its first report has no input yet.
+      await send({ sessionUpdate: 'tool_call', toolCallId: 't', title: 'Terminal', kind: 'execute', status: 'pending', _meta: { terminal_info: { terminal_id: 't' } } });
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 't', title: 'npm test', rawInput: { command: 'npm test' } });
+      return { stopReason: 'end_turn' };
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/work' });
+  const turn = session.prompt('go');
+  const commands: Array<string | undefined> = [];
+  for await (const event of turn) if (event.type === 'terminal') commands.push(event.terminal.command);
+  await turn.done;
+  assert.deepEqual(commands, [undefined, 'npm test']);
+  assert.equal(session.terminals.get('t')?.command, 'npm test');
   await client.close();
 });
