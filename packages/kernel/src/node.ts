@@ -170,7 +170,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
 
   const channel: Channel<Uint8Array> = {
     readable: Readable.toWeb(child.stdout!) as unknown as ReadableStream<Uint8Array>,
-    writable: Writable.toWeb(child.stdin!) as unknown as WritableStream<Uint8Array>,
+    writable: webWritable(child.stdin!),
   };
 
   return {
@@ -182,4 +182,28 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     stderrTail: () => stderr.trim(),
     stop,
   };
+}
+
+/**
+ * A Node writable as a web WritableStream, without `Writable.toWeb()`: on
+ * Node 22 its end-of-stream callback can run twice when the other side dies
+ * (an error, then the close) and throw an uncaught TypeError the second time.
+ * Here each write settles through its own callback, so a broken pipe rejects
+ * the write and nothing throws. Keep an 'error' listener on `stream`.
+ */
+export function webWritable(stream: Writable): WritableStream<Uint8Array> {
+  return new WritableStream<Uint8Array>({
+    write: (chunk) =>
+      new Promise<void>((resolve, reject) => {
+        stream.write(chunk, (error) => (error ? reject(error) : resolve()));
+      }),
+    close: () =>
+      new Promise<void>((resolve) => {
+        if (stream.writableEnded) resolve();
+        else stream.end(() => resolve());
+      }),
+    abort: (reason) => {
+      stream.destroy(reason instanceof Error ? reason : undefined);
+    },
+  });
 }

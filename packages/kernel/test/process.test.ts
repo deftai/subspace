@@ -26,6 +26,37 @@ test('a reply written just before exit is not lost', async () => {
   assert.deepEqual(got, { last: true });
 });
 
+test('stop() then closing the channel does not throw (Node 22 Writable.toWeb() bug)', async () => {
+  // On Node 22, Writable.toWeb() threw an uncaught TypeError when its stream was closed
+  // after the Node stream had already been ended, as stop() does.
+  const uncaught: unknown[] = [];
+  const onUncaught = (error: unknown) => void uncaught.push(error);
+  process.on('uncaughtException', onUncaught);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const child = await spawnProcess(node, { args: ['-e', 'setTimeout(() => {}, 5000)'], killGraceMs: 200 });
+      const writer = child.channel.writable.getWriter();
+      const stopping = child.stop();
+      await writer.close().catch(() => {});
+      await stopping;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  } finally {
+    process.off('uncaughtException', onUncaught);
+  }
+  assert.deepEqual(uncaught, []);
+});
+
+test('writing to a process that died rejects the write', async () => {
+  const child = await spawnProcess(node, { args: ['-e', 'process.exit(1)'] });
+  await child.exited;
+  const writer = child.channel.writable.getWriter();
+  const big = new Uint8Array(1024 * 1024);
+  await assert.rejects(async () => {
+    for (let i = 0; i < 8; i++) await writer.write(big);
+  });
+});
+
 test('stop() ends the whole process group, even a child that ignores SIGTERM', async () => {
   // The leader starts a grandchild that ignores SIGTERM, like `npx some-agent`.
   const script = `
