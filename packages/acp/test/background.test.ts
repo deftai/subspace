@@ -228,3 +228,41 @@ test('v2: background work that ends before the agent starts the next prompt does
   assert.deepEqual(session.background, []);
   await client.close();
 });
+
+test('v2: a background terminal that exits before the agent starts the next prompt does not end that turn', async () => {
+  const link = byteLink();
+  let prompts = 0;
+  officialV2
+    .agent({ name: 'late-terminal' })
+    .onRequest('initialize', () => ({ protocolVersion: 2, info: { name: 'late-terminal', version: '1' }, capabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's' }))
+    .onRequest('session/prompt', ({ params, client }) => {
+      const send = (update: officialV2.SessionUpdate) => client.notify('session/update', { sessionId: params.sessionId, update });
+      const n = ++prompts;
+      setTimeout(async () => {
+        if (n === 2) {
+          // The first turn's background terminal prints, exits and leaves the list before this prompt starts.
+          await send({ sessionUpdate: 'terminal_output_chunk', terminalId: 'dev', data: Buffer.from('bye\n').toString('base64') });
+          await send({ sessionUpdate: 'terminal_update', terminalId: 'dev', exitStatus: { exitCode: 0 } });
+          await send({ sessionUpdate: 'state_update', state: 'idle', background: [] });
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        await send({ sessionUpdate: 'state_update', state: 'running' });
+        if (n === 1) await send({ sessionUpdate: 'terminal_update', terminalId: 'dev', command: 'npm run dev', cwd: '/work' });
+        await send({ sessionUpdate: 'agent_message_chunk', messageId: `m${n}`, content: { type: 'text', text: `turn ${n}` } });
+        const background = n === 1 ? [{ type: 'terminal' as const, terminalId: 'dev' }] : [];
+        await send({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn', background });
+      }, 5);
+      return { messageId: `u${n}` };
+    })
+    .connect(officialV2.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/work' });
+  assert.equal((await session.prompt('one').done).text, 'turn 1');
+  assert.deepEqual(session.background, [{ type: 'terminal', terminalId: 'dev' }]);
+  const second = await session.prompt('two').done;
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(second.text, 'turn 2');
+  assert.deepEqual(session.terminals.get('dev')?.exitStatus, { exitCode: 0 });
+  await client.close();
+});

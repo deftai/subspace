@@ -558,6 +558,8 @@ export class AcpClient {
     const request: PermissionRequest = {
       sessionId: '',
       title: typeof definition.ask === 'string' ? definition.ask : label,
+      // The tool's kind and checked input, so rules such as readOnly or path and command rules apply.
+      toolCall: { id: `served:${toolName}`, name: toolName, title: label, kind: definition.kind ?? 'other', status: 'pending', content: [], locations: [], rawInput: input },
       options: [
         { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
         { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
@@ -1114,8 +1116,13 @@ export class Session {
   }
 
   private ofEarlierTurn(update: unknown): boolean {
-    const u = update as { sessionUpdate?: unknown; toolCallId?: unknown } | null;
-    if (!u || typeof u.toolCallId !== 'string') return false;
+    const u = update as { sessionUpdate?: unknown; toolCallId?: unknown; terminalId?: unknown } | null;
+    if (!u) return false;
+    // A background terminal's own updates (its output, its exit) belong to the turn that started it.
+    if ((u.sessionUpdate === 'terminal_update' || u.sessionUpdate === 'terminal_output_chunk') && typeof u.terminalId === 'string') {
+      return !!this.currentBackground?.some((item) => item.type === 'terminal' && item.terminalId === u.terminalId);
+    }
+    if (typeof u.toolCallId !== 'string') return false;
     if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update' && u.sessionUpdate !== 'tool_call_content_chunk') return false;
     return this.idleProjection.toolCalls.has(u.toolCallId) && !this.active?.projection.toolCalls.has(u.toolCallId);
   }

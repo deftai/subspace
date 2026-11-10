@@ -6,6 +6,7 @@ import { channelPair } from '@deft-subspace/kernel';
 import {
   AcpClient,
   modelAgent,
+  readOnly,
   serveAgent,
   tool,
   type ModelAdapter,
@@ -175,4 +176,41 @@ test("client.serveTools(): a tool with ask runs only when the client's permissio
   assert.equal(allowed.ran, 1);
   assert.deepEqual([allowed.result.isError, allowed.result.content[0]!.text], [false, 'wiped 1']);
   assert.deepEqual(titles, ['Wipe the buffer?']);
+});
+
+test('client.serveTools(): the ask question carries the tool, so readOnly and path rules apply to it', async () => {
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  const seen: Array<{ isError: boolean }> = [];
+  serveAgent(agentEnd, {
+    name: 'user',
+    mcpTransports: ['acp'],
+    async prompt(turn) {
+      const editor = turn.mcp('editor');
+      seen.push((await editor.callTool('peek', { path: 'notes.md' })) as { isError: boolean });
+      seen.push((await editor.callTool('wipe', { path: 'notes.md' })) as { isError: boolean });
+    },
+  });
+  const asked: unknown[] = [];
+  const client = await AcpClient.connect(clientEnd, {
+    onPermission: (request) => {
+      asked.push({ kind: request.toolCall?.kind, name: request.toolCall?.name, input: request.toolCall?.rawInput });
+      return readOnly(request, new AbortController().signal);
+    },
+  });
+  const path = { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] };
+  const editor = client.serveTools({
+    name: 'editor',
+    tools: {
+      peek: tool({ description: 'Read a file', kind: 'read', ask: true, input: path, run: () => 'contents' }),
+      wipe: tool({ description: 'Delete a file', kind: 'delete', ask: true, input: path, run: () => 'gone' }),
+    },
+  });
+  const session = await client.newSession({ cwd: '/', mcpServers: [editor] });
+  await session.prompt('go').done;
+  await client.close();
+  assert.deepEqual(seen.map((r) => r.isError), [false, true]);
+  assert.deepEqual(asked, [
+    { kind: 'read', name: 'peek', input: { path: 'notes.md' } },
+    { kind: 'delete', name: 'wipe', input: { path: 'notes.md' } },
+  ]);
 });
