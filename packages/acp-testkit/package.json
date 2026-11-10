@@ -1,37 +1,43 @@
 {
-  "name": "@deft/acp-testkit",
-  "version": "0.1.0",
-  "description": "Importable ACP scenarios + asserts on the client product (no separate acp-tester package)",
+  "name": "@deft-subspace/acp-testkit",
+  "version": "0.0.0-experiment",
+  "description": "Test ACP agents and clients: record and replay traces, inject faults, run conformance checks, and keep a corpus of real agents' quirks.",
   "type": "module",
   "license": "MIT",
+  "sideEffects": false,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "subspace-source": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
+    "dist",
     "src",
-    "LICENSE",
-    "README.md"
+    "corpus"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts",
+    "record": "node --conditions=subspace-source scripts/record.ts"
+  },
   "dependencies": {
-    "@deft/acp-agent": "workspace:*",
-    "@deft/acp-client": "workspace:*",
-    "@deft/acp-wire": "workspace:*"
+    "@deft-subspace/kernel": "workspace:*",
+    "@deft-subspace/acp": "workspace:*"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/deftai/subspace.git",
-    "directory": "packages/acp-testkit"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "keywords": [
-    "acp",
-    "testkit",
-    "scenarios",
-    "subspace"
-  ]
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "zod": "^4.1.0"
+  }
 }

@@ -1,0 +1,30 @@
+---
+title: Cancelling and limits
+description: Cancel a turn, bound it with limits, and what happens when an agent ignores a cancel.
+---
+
+import Example from '../../../components/Example.astro';
+import cancel from '../../../../../examples/cancel.ts?raw';
+
+<Example file="cancel.ts" ts={cancel} />
+
+## What `turn.cancel()` does
+
+1. Answers any open permission question `cancelled`, as the spec requires.
+2. Sends `session/cancel`.
+3. Waits for the agent to end the turn. If it has not within `timeouts.cancelGraceMs` (default 10 s), the turn ends here with `forced: true`, and tool calls still open are marked failed.
+
+v2 [background work](../../background/background-work/) is not part of the turn, so cancelling leaves it running.
+
+## Limits
+
+`session.prompt(text, { limits })`, or the client option `limits` for every turn:
+
+| Limit | Cancels the turn when |
+|---|---|
+| `maxDurationMs` | it runs longer than this |
+| `idleMs` | the agent sends nothing for this long |
+| `maxToolCalls` | it starts more tool calls than this |
+| `maxUsage` | the agent reports more context use than this |
+
+A limit cancels the turn the normal way, emits an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`.

@@ -1,0 +1,26 @@
+---
+title: MCP-over-ACP
+description: Serve MCP tools from the client over the ACP connection itself, and call them from the agent.
+---
+
+import Example from '../../../components/Example.astro';
+import overAcp from '../../../../../examples/mcp-over-acp.ts?raw';
+
+A client can serve MCP tools over the ACP connection it already has: no extra process, no network port. This follows the ACP RFD "MCP-over-ACP: Stateless MCP Requests over ACP" (MCP 2026-07-28). The agent sends `mcp/message` requests addressed by `serverId`; each is one self-contained MCP request, with its own protocol version and capabilities in `params._meta`, and no MCP handshake.
+
+<Example file="mcp-over-acp.ts" ts={overAcp} />
+
+## Serving (client)
+
+- `client.serveMcp({ name, handler })` returns a registration; put it (or its `declaration`) in `mcpServers`. It serves as soon as it returns, and `dispose()` stops it.
+- The handler has the official SDK's `McpRequestHandler` shape, so a server built with `@modelcontextprotocol/server` plugs in through `fromMcpServer()` from `@agentclientprotocol/sdk/experimental/mcp-server`.
+- `notify(method, params)` sends a notification scoped to the request (progress); none is sent after the answer.
+- Errors follow the RFD: an inner MCP error is a successful ACP answer carrying `{ error }`; binding failures are ACP errors (`-33001` unknown server, `-33000` too many requests, `-33002` handler failure, `-32800` cancelled).
+
+## Calling (agent)
+
+- Advertise `mcpTransports: ['acp']`.
+- `turn.mcp(name)` gives `listTools()` (following pages), `callTool(name, args)`, `discover()` and `request(method, params)`. An inner MCP error throws `McpError`; a tool that failed is a result with `isError: true`.
+- Calls are cancelled with the turn (`$/cancel_request`), and progress notifications go to the call's `onNotification`.
+
+No widely used agent advertises the `acp` transport yet (as of November 2026, the Claude and Codex adapters take stdio and http; Grok Build takes stdio, http and sse).

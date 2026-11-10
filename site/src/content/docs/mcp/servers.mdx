@@ -1,0 +1,36 @@
+---
+title: MCP servers
+description: Give a session MCP servers, checked against the transports the agent takes.
+---
+
+import Example from '../../../components/Example.astro';
+import servers from '../../../../../examples/mcp-servers.ts?raw';
+import agentMcp from '../../../../../examples/agent-mcp.ts?raw';
+
+A client can give each session [MCP](https://modelcontextprotocol.io) servers for the agent to use: a program it starts (`stdio`), a URL it connects to (`http`, or `sse` on v1), or tools the client serves itself (`acp`, see [MCP-over-ACP](../over-acp/)).
+
+<Example file="mcp-servers.ts" ts={servers} />
+
+- Each server is written in the agent's protocol: v1 stdio has no `type` and needs `args` and `env`; v2 stdio needs an absolute command.
+- `client.supports.mcp` says which transports the agent takes. A server of another transport throws a `CapabilityError` before `session/new` is sent. v1 agents always take stdio; v2 agents say so.
+- `env` and `headers` are plain objects here, and name/value lists on the wire.
+
+## On the agent side
+
+`serveAgent` gives your session hooks the servers typed (`servers`), and each turn `turn.mcpServers`. `turn.mcp(name)` uses one, whatever its transport: `listTools()`, `callTool()`, `discover()` and `request()`.
+
+- `acp` servers go over the ACP connection; nothing else is needed.
+- `stdio`, `http` and `sse` servers need a connector. `mcpConnector()` from `@deft-subspace/acp/node` uses the official MCP SDK; install `@modelcontextprotocol/client` (an optional peer dependency).
+
+In this example the client gives the session a stdio server (the same file, started with `mcp-server`), and the agent lists its tools and calls one:
+
+<Example file="agent-mcp.ts" ts={agentMcp} />
+
+- **Advertised:** with a connector, `initialize` advertises its transports (stdio, http and sse by default), unless you set `mcpTransports`. Add `acp` to `mcpTransports` to take those too.
+- **Connected on first use:** a server is connected the first time a turn uses it, then kept for the session's later turns. It is closed when the session closes, when a load or resume sends new servers, or when the connection ends. A stdio server is stopped then.
+- **stdio servers** run in the session's `cwd`, with this process's environment plus the server's `env` (`env: 'minimal'` gives them the SDK's short safe list instead). Their stderr goes to the agent's stderr (`stderr: 'ignore'`, or a function per line); they can't write to stdout, which is the ACP channel.
+- **Versions:** the connection negotiates the MCP version, so 2026-07-28 servers and 2025 ones both work.
+- **Timeouts:** a connect may take 60 s (`connectTimeoutMs`); a stdio server that doesn't start in time is stopped. Requests have no timeout by default (`timeoutMs` sets one, per connector or per call).
+- **Results as sent:** a tool that failed is a result with `isError: true`, not a throw. A protocol error is `{ error }` from `request()`, and an `McpError` from the helpers.
+- **Cancelling:** calls are cancelled with the turn, or with your own `signal`. Progress goes to `onNotification` as `notifications/progress`.
+- **Errors early:** `turn.mcp(name)` throws at once if the session has no server of that name, or you have no connector for its transport.

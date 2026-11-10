@@ -1,0 +1,56 @@
+{
+  "name": "@deft-subspace/acp",
+  "version": "0.0.0-experiment",
+  "description": "ACP for apps: one model over protocol v1 and v2, turns you can await, cancellation that works, permissions that fail closed. Types come from the official @agentclientprotocol/sdk.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "subspace-source": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts",
+    "registry:update": "node --conditions=subspace-source scripts/update-registry.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "@deft-subspace/kernel": "workspace:*",
+    "smol-toml": "1.9.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/context-async-hooks": "2.12.0",
+    "@opentelemetry/core": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.12.0",
+    "zod": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/client": {
+      "optional": true
+    }
+  }
+}

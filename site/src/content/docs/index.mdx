@@ -1,0 +1,39 @@
+---
+title: Subspace
+description: ACP for apps and agents. One model over protocol v1 and v2, turns you can await, cancellation that works, permissions that fail closed.
+template: splash
+banner:
+  content: 'Experiment: the packages are versioned 0.0.0-experiment and are not on npm yet.'
+hero:
+  tagline: A library for the Agent Client Protocol, for both sides. Clients connect to agents, open sessions and run turns; agents answer them.
+  actions:
+    - text: Get started
+      link: getting-started/
+      icon: right-arrow
+    - text: How it models ACP
+      link: concepts/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="One model, v1 and v2" icon="random">
+    The client asks for v2 and accepts v1. Your code sees the same events and results either way.
+  </Card>
+  <Card title="Turns you can await" icon="rocket">
+    A turn is async-iterable (its events, in order) and has `done`, the result. Iterate it again and get the same events.
+  </Card>
+  <Card title="Cancellation that works" icon="warning">
+    Open questions are answered `cancelled`, and if the agent never confirms, the turn ends here anyway.
+  </Card>
+  <Card title="Fails closed" icon="approve-check">
+    Nothing is allowed unless you say so. A permission handler that throws, or picks an option the agent did not offer, is a rejection.
+  </Card>
+  <Card title="Current ACP" icon="list-format">
+    Sessions, modes, config options and models, login, elicitation, MCP servers including MCP-over-ACP, agent terminals, and v2 background work.
+  </Card>
+  <Card title="Tested against real agents" icon="seti:test">
+    Grok Build and the Claude and Codex adapters, recorded as traces that replay in the test suite, plus conformance checks you can run against any agent or client.
+  </Card>
+</CardGrid>

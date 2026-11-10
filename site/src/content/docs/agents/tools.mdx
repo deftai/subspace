@@ -1,0 +1,35 @@
+---
+title: Tools
+description: One tool definition, used by model-backed agents, by any agent as a step, and served from a client.
+---
+
+import Example from '../../../components/Example.astro';
+import editorTools from '../../../../../examples/editor-tools.ts?raw';
+
+```ts
+import { tool } from '@deft-subspace/acp';
+import { z } from 'zod';
+
+const listFiles = tool({
+  description: 'List the files in a folder',
+  input: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  schema: z.object({ path: z.string() }), // optional: checks the input and types it
+  kind: 'read',                            // how clients show it, and how permission rules match it
+  title: ({ path }) => `List ${path}`,     // what the client shows for a call
+  run: ({ path }, { signal }) => readdir(path),
+});
+```
+
+- `input` is the JSON Schema the model or MCP client sees. With a validator that can produce JSON Schema itself, it may be left out.
+- `ask: true` (or a question) asks the user before each call.
+- Output: a string is used as it is; anything else becomes JSON.
+
+## Three ways to use it
+
+- **A model-backed agent** offers it to the model: `modelAgent({ model, tools: { listFiles } })`. See [Agents backed by a model](../model-agents/).
+- **Any agent** runs it as a step: `await turn.useTool(listFiles, { path: 'src' })`. It is checked, shown with its title and kind, asked about if it says so, and its output is shown in the tool call.
+- **A client** serves a set to the agent over the ACP connection, with no MCP handler to write:
+
+<Example file="editor-tools.ts" ts={editorTools} />
+
+`client.serveTools({ name, tools })` answers MCP discovery, `tools/list` and `tools/call` (checking the input; a failing tool is an `isError` result), and marks read kinds read-only. The agent must take the `acp` MCP transport; see [MCP-over-ACP](../../mcp/over-acp/).

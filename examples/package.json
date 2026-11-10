@@ -1,0 +1,21 @@
+{
+  "name": "@deft-subspace/examples",
+  "private": true,
+  "type": "module",
+  "description": "The code in the Subspace docs, as real files: typechecked, and run when they need no outside agent.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=subspace-source run-examples.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/acp-testkit": "workspace:*",
+    "@deft-subspace/claude": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "^4.1.0"
+  }
+}

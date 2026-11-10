@@ -1,0 +1,21 @@
+---
+title: Protocol versions
+description: What differs between ACP v1 and v2 on the wire, and how Subspace covers it.
+---
+
+The client asks for v2 and accepts v1 (`protocol: 'auto'`, the default). `protocol: 1` or `2` insists on one. `client.protocol` says which is in use. An agent built with `serveAgent` accepts both unless told otherwise (`protocols`).
+
+| | v1 | v2 | In Subspace |
+|---|---|---|---|
+| End of a turn | the `session/prompt` answer | an `idle` state update; the prompt is answered at once | `turn.done` either way |
+| Tool calls | `tool_call` creates, `tool_call_update` patches | `tool_call_update` upserts; content streams in chunks | `tool_call` events with a full snapshot |
+| Messages | chunks, ids optional | chunks with ids, and whole-message upserts | `message` events with `delta` and `text` |
+| Plans | `plan` | `plan_update` | `plan` events |
+| Capabilities | booleans, `sessionCapabilities` | marker objects under `session`; some methods required | `client.supports` |
+| Load a session | `session/load` | `session/resume` with replay | `client.loadSession()` |
+| Modes | `modes` and `session/set_mode`, or a config option | a config option with category `mode` | `session.modes`, `session.setMode()` |
+| Login | `authenticate`, `logout` | `auth/login`, `auth/logout` | `client.authenticate()`, `client.logout()` |
+| Client files and terminals | `fs/*`, `terminal/*` | removed | v1 only: `workspaceFiles`, `workspaceTerminals` |
+| Agent terminals | none | `terminal_update`, `terminal_output_chunk` | `terminal` events, `session.terminals` |
+| Background work | none | `background` on state updates, `tool_call/cancel`, `terminal/cancel` | `session.background`, `cancelToolCall()`, `cancelTerminal()` |
+| Permission subject | `toolCall` | `title` and `subject` (tool call or command) | `request.title`, `request.toolCall`, `request.command` |

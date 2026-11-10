@@ -1,0 +1,38 @@
+---
+title: Conformance
+description: The checks the testkit runs against agents and clients, and what passing means.
+---
+
+import { AGENT_CHECKS, CLIENT_CHECKS } from '@deft-subspace/acp-testkit';
+
+The testkit's checks define behaviour Subspace relies on, independent of any one implementation or language. Any ACP agent or client can be checked, and a Subspace in another language would pass the same checks.
+
+## Agent checks
+
+`checkAgent` and `check-agent.ts` run these against an agent. Checks that need a feature the agent does not offer, or a situation it never gets into (asking permission), are reported as skipped.
+
+<table>
+  <thead><tr><th>Check</th><th>What it checks</th></tr></thead>
+  <tbody>
+    {Object.entries(AGENT_CHECKS).map(([id, title]) => (
+      <tr><td><code>{id}</code></td><td>{title}</td></tr>
+    ))}
+  </tbody>
+</table>
+
+## Client checks
+
+`checkClient` plays an agent against a client:
+
+<table>
+  <thead><tr><th>Check</th><th>What it checks</th></tr></thead>
+  <tbody>
+    {Object.entries(CLIENT_CHECKS).map(([id, title]) => (
+      <tr><td><code>{id}</code></td><td>{title}</td></tr>
+    ))}
+  </tbody>
+</table>
+
+## Real agents
+
+As of November 2026, all ten agent checks pass against the Claude and Codex ACP adapters on protocol v2 (Claude in its `default` mode, Codex in `read-only`, so that both ask before writing). Grok Build answers a prompt for an unknown session with `-32602` rather than `-32002`; see [Quirks](../quirks/).

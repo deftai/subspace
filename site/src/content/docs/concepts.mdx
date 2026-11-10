@@ -1,0 +1,44 @@
+---
+title: How Subspace models ACP
+description: Connections, sessions, turns, events and results, and how one model covers protocol v1 and v2.
+---
+
+ACP connects a **client** (an editor, a terminal, an orchestrator) to an **agent** (a coding agent) over JSON-RPC, usually on the agent's stdio. Subspace gives each side a small model of it.
+
+## Three layers
+
+`start()` and `run()` start known agents with sensible defaults; handler options run on any turn; underneath is the model below, for full control. See [Getting started](../getting-started/).
+
+## The client side
+
+- **`AcpClient`**: one connection. It sends `initialize`, records what the agent offers in `client.supports` (one shape for v1 and v2), and answers the agent's requests: permission questions, elicitation, files and terminals (v1), and MCP-over-ACP.
+- **`Session`**: one conversation. It keeps what the agent reports between turns: modes, config options, the title, the agent's terminals and its background work.
+- **`Turn`**: one prompt and everything the agent does for it. A turn is async-iterable, so you can stream its **events**, and has `done`, its **result**.
+
+```ts
+const session = await client.newSession({ cwd });
+const turn = session.prompt('Fix the failing test');
+for await (const event of turn) render(event);
+const result = await turn.done;
+```
+
+## The agent side
+
+**`serveAgent(channel, { name, prompt })`**: you write one `prompt` handler per turn, with a `turn` object to talk back (`say`, `think`, `toolCall`, `requestPermission`, `elicit`, `showTerminal`, `mcp`). The library answers `initialize`, sessions and cancellation, and writes v1 or v2 on the wire for you.
+
+## One model for two protocol versions
+
+ACP v1 and v2 differ on the wire:
+
+- **The end of a turn.** v1 answers the prompt request. v2 answers at once and ends the turn with an `idle` state update.
+- **Tool calls.** v1 creates one with `tool_call` and patches it with `tool_call_update`. v2 upserts every change with `tool_call_update` and streams content in chunks.
+- **Capabilities.** v1 uses booleans and `sessionCapabilities`; v2 uses marker objects under `session`, and makes some methods required.
+
+Subspace hides these differences: the same events, the same results, the same `supports`. `client.protocol` says which version is in use when you need to know. See [Protocol versions](../behaviour/protocol-versions/) for the full list.
+
+## Defaults that fail safe
+
+- Permissions default to `reject`.
+- A cancel answers open questions `cancelled`. If the agent never confirms the cancel, the turn ends here after a grace period, with `forced: true`.
+- Calls the agent did not offer throw a `CapabilityError` before anything is sent.
+- File access through `workspaceFiles` cannot leave the workspace, symbolic links included.

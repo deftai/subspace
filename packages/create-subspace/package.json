@@ -1,0 +1,31 @@
+{
+  "name": "create-subspace",
+  "version": "0.0.0-experiment",
+  "description": "npm create subspace: start a Subspace project (a script that uses an agent, an agent, or a Claude-backed agent).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "create-subspace": "./bin/create-subspace.js"
+  },
+  "exports": {
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts"
+  }
+}
