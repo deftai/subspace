@@ -143,18 +143,40 @@ test('start() requires a permission answer, and rejects unknown agents', async (
   await assert.rejects(start('nope' as never, { permissions: 'reject' }), /Unknown agent "nope"/);
 });
 
-test('start(): logs in once when needed, switches to the requested mode, runs turns, closes with await using', async () => {
+test("a fixed onPermission answer is kept: for start(), and for one prompt over the client's policy", async () => {
+  const { command, args } = node('login-agent.ts');
+  const rejecting = await start({ command, args, mode: 'ask' }, { onPermission: 'reject', handleSignals: false });
+  try {
+    assert.equal((await rejecting.run('go')).text, 'mode=ask allowed=false');
+  } finally {
+    await rejecting.close();
+  }
+  const allowing = await start({ command, args, mode: 'ask' }, { permissions: 'allow', handleSignals: false });
+  try {
+    assert.equal((await allowing.run('go', { onPermission: 'reject' })).text, 'mode=ask allowed=false');
+    assert.equal((await allowing.run('go')).text, 'mode=ask allowed=true');
+  } finally {
+    await allowing.close();
+  }
+});
+
+test('start(): logs in once when needed, switches to the requested mode, runs turns, closes with Symbol.asyncDispose', async () => {
   const { command, args } = node('login-agent.ts');
   {
-    await using agent = await start({ command, args, mode: 'ask' }, { onPermission: () => 'allow', handleSignals: false });
-    assert.equal(agent.client.agent.name, 'login-agent');
-    assert.equal(agent.session.modes?.current, 'ask');
-    const deltas: string[] = [];
-    const result = await agent.run('go', { onMessage: (d) => void deltas.push(d) });
-    assert.equal(result.text, 'mode=ask allowed=true');
-    assert.deepEqual(deltas, ['mode=ask allowed=true']);
-    const second = await agent.newSession();
-    assert.equal(second.modes?.current, 'ask');
+    // What `await using` calls (Node 24+); called directly so the test runs on Node 22.
+    const agent = await start({ command, args, mode: 'ask' }, { onPermission: () => 'allow', handleSignals: false });
+    try {
+      assert.equal(agent.client.agent.name, 'login-agent');
+      assert.equal(agent.session.modes?.current, 'ask');
+      const deltas: string[] = [];
+      const result = await agent.run('go', { onMessage: (d) => void deltas.push(d) });
+      assert.equal(result.text, 'mode=ask allowed=true');
+      assert.deepEqual(deltas, ['mode=ask allowed=true']);
+      const second = await agent.newSession();
+      assert.equal(second.modes?.current, 'ask');
+    } finally {
+      await agent[Symbol.asyncDispose]();
+    }
   }
   // A mode the agent does not offer is a warning, not a failure.
   const agent = await start({ command, args, mode: 'yolo' }, { permissions: 'reject', handleSignals: false });

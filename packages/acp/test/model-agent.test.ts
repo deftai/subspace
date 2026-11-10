@@ -144,3 +144,35 @@ test('turn.useTool() runs a defined tool as a step; client.serveTools() serves t
   assert.deepEqual(seen[5], ['2026-07-28']);
   await client.close();
 });
+
+test("client.serveTools(): a tool with ask runs only when the client's permission policy allows it", async () => {
+  const run = async (onPermission: 'allow' | 'reject' | ((r: { title: string }) => 'allow' | 'reject')) => {
+    const [agentEnd, clientEnd] = channelPair<unknown>();
+    const seen: unknown[] = [];
+    let ran = 0;
+    serveAgent(agentEnd, {
+      name: 'user',
+      mcpTransports: ['acp'],
+      async prompt(turn) {
+        seen.push(await turn.mcp('editor').callTool('wipe', {}));
+      },
+    });
+    const client = await AcpClient.connect(clientEnd, { onPermission });
+    const editor = client.serveTools({
+      name: 'editor',
+      tools: { wipe: tool({ description: 'Wipe the buffer', kind: 'delete', ask: 'Wipe the buffer?', run: () => `wiped ${++ran}` }) },
+    });
+    const session = await client.newSession({ cwd: '/', mcpServers: [editor] });
+    await session.prompt('go').done;
+    await client.close();
+    return { result: seen[0] as { content: Array<{ text: string }>; isError: boolean }, ran };
+  };
+  const refused = await run('reject');
+  assert.equal(refused.ran, 0);
+  assert.deepEqual([refused.result.isError, refused.result.content[0]!.text], [true, 'Not allowed']);
+  const titles: string[] = [];
+  const allowed = await run((r) => (titles.push(r.title), 'allow'));
+  assert.equal(allowed.ran, 1);
+  assert.deepEqual([allowed.result.isError, allowed.result.content[0]!.text], [false, 'wiped 1']);
+  assert.deepEqual(titles, ['Wipe the buffer?']);
+});

@@ -116,7 +116,9 @@ export function mergeHandlers(defaults: TurnHandlers | undefined, options: objec
   const merged: TurnHandlers = { ...(defaults ?? {}) };
   for (const key of HANDLER_KEYS) {
     const value = (options as Record<string, unknown>)[key];
-    if (typeof value === 'function') (merged as Record<string, unknown>)[key] = value;
+    // onPermission may also be a fixed answer.
+    const fixed = key === 'onPermission' && (value === 'allow' || value === 'reject');
+    if (typeof value === 'function' || fixed) (merged as Record<string, unknown>)[key] = value;
   }
   return Object.keys(merged).length ? merged : undefined;
 }

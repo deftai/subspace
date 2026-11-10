@@ -524,6 +524,14 @@ export class AcpClient {
           if ('problems' in checked) {
             return { result: { resultType: 'complete', content: [{ type: 'text', text: `Invalid input: ${checked.problems.join('; ')}` }], isError: true } };
           }
+          // `ask`: the client's own permission policy answers first (an MCP call names no session).
+          if (definition.ask) {
+            const answer = await this.askToServe(call.name!, definition, checked.value, params, signal);
+            if (!answer.allowed) {
+              const text = answer.outcome === 'cancelled' ? 'Cancelled' : 'Not allowed';
+              return { result: { resultType: 'complete', content: [{ type: 'text', text }], isError: true } };
+            }
+          }
           try {
             const output = await definition.run(checked.value, { signal });
             const structured = output !== null && typeof output === 'object' ? { structuredContent: output } : {};
@@ -536,6 +544,29 @@ export class AcpClient {
         return { error: { code: -32601, message: `No method ${method}` } };
       },
     });
+  }
+
+  /** The question for a served tool with `ask`, answered by the client's permission policy. */
+  private async askToServe(
+    toolName: string,
+    definition: ToolSet[string],
+    input: unknown,
+    raw: unknown,
+    signal: AbortSignal
+  ): Promise<{ allowed: boolean; outcome: string }> {
+    const label = typeof definition.title === 'function' ? definition.title(input) : (definition.title ?? toolName);
+    const request: PermissionRequest = {
+      sessionId: '',
+      title: typeof definition.ask === 'string' ? definition.ask : label,
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+      ],
+      protocol: this.protocol,
+      raw,
+    };
+    const outcome = await decide(this.options.handlers?.onPermission ?? this.options.permissions ?? 'reject', request, signal);
+    return { allowed: outcome.outcome === 'selected' && outcome.allowed, outcome: outcome.outcome };
   }
 
   private mcpServers(servers: SessionMcpServers | undefined): unknown[] {
@@ -642,6 +673,8 @@ interface ActiveTurn {
   permissions?: PermissionPolicy;
   question?: ElicitationHandler;
   promptAnswered: boolean;
+  /** An update of this turn's own has arrived (the agent has started it). */
+  started?: boolean;
   idle?: { stopReason: string; error?: unknown };
   cancelController: AbortController;
   limits: TurnLimits;
@@ -1042,8 +1075,10 @@ export class Session {
   receive(update: unknown): void {
     this.trackModes(update);
     const active = this.active;
-    // Updates to tool calls of earlier turns (background work) are not this turn's.
-    if (!active || this.ofEarlierTurn(update)) {
+    // Updates to tool calls of earlier turns (background work) are not this turn's, nor is
+    // an idle with no stop reason before this turn began: background work finished
+    // while the agent had not started the new prompt yet.
+    if (!active || this.ofEarlierTurn(update) || (!active.started && isBackgroundIdle(update))) {
       const { events } = this.idleProjection.apply(update);
       for (const event of events) {
         this.idleHistory.push({ event, raw: update });
@@ -1052,6 +1087,7 @@ export class Session {
       }
       return;
     }
+    active.started = true;
     const { events, state } = active.projection.apply(update);
     active.turn.push(...events);
     this.restartIdle(active);
@@ -1192,4 +1228,10 @@ export class Session {
     queueMicrotask(() => this.startNext());
     active.turn.fail(error);
   }
+}
+
+/** A v2 idle state with no stop reason: a snapshot of background work, not the end of a turn. */
+function isBackgroundIdle(update: unknown): boolean {
+  const u = update as { sessionUpdate?: unknown; state?: unknown; stopReason?: unknown } | null;
+  return !!u && u.sessionUpdate === 'state_update' && u.state === 'idle' && u.stopReason === undefined;
 }
