@@ -96,7 +96,8 @@ export {
   type McpServer,
   type ServeMcpOptions,
 } from './mcp.ts';
-export { McpError, type McpCallOptions, type McpServerClient, type McpTool } from './mcp-caller.ts';
+// McpCaller: MCP-over-ACP from the agent side outside serveAgent (for example, a proxy with its own endpoint).
+export { McpCaller, McpError, serverClient, type McpCallOptions, type McpSend, type McpServerClient, type McpTool } from './mcp-caller.ts';
 export { type ExternalMcpServer, type McpConnection, type McpConnector } from './mcp-connections.ts';
 export { terminalText, type TerminalExit, type TerminalState, type Terminals } from './terminals.ts';
 export {
