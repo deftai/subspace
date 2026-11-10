@@ -6,7 +6,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as unstableV1 from '@agentclientprotocol/sdk/unstable';
-import { AcpClient, McpError, serveAgent, type McpOperationContext, type McpServer, type McpTool } from '@deft-subspace/acp';
+import { channelPair } from '@deft-subspace/kernel';
+import { AcpClient, agentEndpoint, McpCaller, McpError, parseMcpServers, serveAgent, tool, type McpOperationContext, type McpServer, type McpTool } from '@deft-subspace/acp';
 import { byteLink } from './helpers.ts';
 
 /** Two pages of tools, an echo that reports progress, a tool that fails, an unknown tool, and one that waits to be cancelled. */
@@ -145,4 +146,45 @@ test("our agent calls tools served by the official SDK's McpOverAcpProvider (v1)
   assert.equal(done.stopReason, 'end_turn');
   assert.deepEqual(answers, [['echo'], { content: [{ type: 'text', text: 'from the SDK' }], isError: false }]);
   await connection.close();
+});
+
+test("McpCaller on a raw agentEndpoint: an agent outside serveAgent calls the client's acp MCP server", async () => {
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  let servers: unknown;
+  let caller!: McpCaller;
+  const seen: unknown[] = [];
+  const endpoint = agentEndpoint(agentEnd, {
+    name: 'raw-proxy',
+    async request(call) {
+      if (call.method === 'initialize') {
+        return { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { acp: true } }, agentInfo: { name: 'raw-proxy', version: '1' }, authMethods: [] };
+      }
+      if (call.method === 'session/new') {
+        servers = (call.params as { mcpServers?: unknown }).mcpServers;
+        return { sessionId: 's' };
+      }
+      if (call.method === 'session/prompt') {
+        const { servers: parsed } = parseMcpServers(servers);
+        const editor = caller.server(parsed[0] as McpServer & { type: 'acp' });
+        seen.push((await editor.listTools()).map((t) => t.name));
+        seen.push(await editor.callTool('shout', { text: 'hi' }));
+        return { stopReason: 'end_turn' };
+      }
+      throw new Error(`unexpected ${call.method}`);
+    },
+    notification(call) {
+      if (call.method === 'mcp/message') caller.receive(call.params);
+    },
+  });
+  caller = new McpCaller(endpoint.client, { name: 'raw-proxy', version: '1' });
+  const client = await AcpClient.connect(clientEnd, { permissions: 'reject' });
+  const editor = client.serveTools({
+    name: 'editor',
+    tools: { shout: tool({ description: 'Upper-case', input: { type: 'object', properties: { text: { type: 'string' } } }, run: (i: { text: string }) => i.text.toUpperCase() }) },
+  });
+  const session = await client.newSession({ cwd: '/', mcpServers: [editor] });
+  await session.prompt('go').done;
+  assert.deepEqual(seen[0], ['shout']);
+  assert.deepEqual(seen[1], { resultType: 'complete', content: [{ type: 'text', text: 'HI' }], isError: false });
+  await client.close();
 });
