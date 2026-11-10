@@ -86,9 +86,9 @@ export class SessionWork {
     work.controller.abort(new Error('cancelled by the client'));
   }
 
-  /** session/close: stop everything. */
-  closeAll(): void {
-    for (const work of this.items.values()) work.controller.abort(new Error('session closed'));
+  /** session/close, or the connection gone: stop everything. */
+  closeAll(reason: Error = new Error('session closed')): void {
+    for (const work of this.items.values()) work.controller.abort(reason);
   }
 
   snapshot(): Promise<void> {

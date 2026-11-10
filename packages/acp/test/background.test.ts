@@ -117,6 +117,27 @@ test('v2: session/close stops background work', async () => {
   await client.close();
 });
 
+test('v2: a closed connection stops background work', async () => {
+  const link = byteLink();
+  let reason: unknown;
+  serveAgent(link.agent, {
+    name: 'background',
+    protocols: [2],
+    async prompt(turn) {
+      const job = await turn.toolCall({ id: 'job', title: 'Nightly job', status: 'pending', cancellable: true });
+      job.signal.addEventListener('abort', () => (reason = job.signal.reason));
+      await job.detach();
+    },
+  });
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/work' });
+  await session.prompt('go').done;
+  assert.deepEqual(session.background, [{ type: 'tool_call', toolCallId: 'job' }]);
+  await client.close();
+  await until(() => reason !== undefined);
+  assert.match(String((reason as Error).message), /connection closed/);
+});
+
 test('v1: no background work: detach only keeps it from failing with the turn; nothing is cancellable', async () => {
   const link = byteLink();
   serveAgent(link.agent, {
@@ -169,5 +190,41 @@ test("v2: an official-SDK agent's background list and tool_call/cancel", async (
   assert.deepEqual(session.background, [{ type: 'tool_call', toolCallId: 'w' }]);
   await session.cancelToolCall('w');
   assert.deepEqual(cancels, [{ sessionId: 's', toolCallId: 'w' }]);
+  await client.close();
+});
+
+test('v2: background work that ends before the agent starts the next prompt does not end that turn', async () => {
+  const link = byteLink();
+  let prompts = 0;
+  officialV2
+    .agent({ name: 'late-background' })
+    .onRequest('initialize', () => ({ protocolVersion: 2, info: { name: 'late-background', version: '1' }, capabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's' }))
+    .onRequest('session/prompt', ({ params, client }) => {
+      const send = (update: officialV2.SessionUpdate) => client.notify('session/update', { sessionId: params.sessionId, update });
+      const n = ++prompts;
+      setTimeout(async () => {
+        if (n === 2) {
+          // The first turn's background job finishes before this prompt starts: an idle snapshot, no stop reason.
+          await send({ sessionUpdate: 'tool_call_update', toolCallId: 'job', status: 'completed' });
+          await send({ sessionUpdate: 'state_update', state: 'idle', background: [] });
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        await send({ sessionUpdate: 'state_update', state: 'running' });
+        if (n === 1) await send({ sessionUpdate: 'tool_call_update', toolCallId: 'job', title: 'Job', kind: 'other', status: 'in_progress' });
+        await send({ sessionUpdate: 'agent_message_chunk', messageId: `m${n}`, content: { type: 'text', text: `turn ${n}` } });
+        const background = n === 1 ? [{ type: 'tool_call' as const, toolCallId: 'job' }] : [];
+        await send({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn', background });
+      }, 5);
+      return { messageId: `u${n}` };
+    })
+    .connect(officialV2.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/work' });
+  assert.equal((await session.prompt('one').done).text, 'turn 1');
+  const second = await session.prompt('two').done;
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(second.text, 'turn 2');
+  assert.deepEqual(session.background, []);
   await client.close();
 });

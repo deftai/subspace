@@ -321,7 +321,7 @@ interface AgentSession {
  * Something that lives with a session (MCP connections, turns, background
  * work). Close runs every `stop`, removes the session, then every `release`,
  * then `closeSession`: today's order. A closed connection runs `disconnect`
- * only (today: MCP connections close; turns stop through the connection's signal).
+ * only (MCP connections close; turns and their background work stop).
  */
 interface SessionPart<T> {
   name: string;
@@ -543,6 +543,13 @@ function turnsLayer(options: AgentOptions): AgentLayer {
           for (const waiting of turns.waiting) waiting.abort(reason);
           // Closing stops background work too.
           turns.work.closeAll();
+        },
+        // The client gone: detached work no longer follows the turn's signal, so stop it here.
+        disconnect: (turns) => {
+          const reason = new Error('connection closed');
+          turns.controller?.abort(reason);
+          for (const waiting of turns.waiting) waiting.abort(reason);
+          turns.work.closeAll(reason);
         },
       });
     },
