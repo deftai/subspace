@@ -46,7 +46,7 @@ import {
 } from './extensions.ts';
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
-import { backgroundOf, TurnProjection } from './projection.ts';
+import { backgroundOf, snapshotToolCall, TurnProjection } from './projection.ts';
 import { McpProvider, mcpServersParam, MCP_PROTOCOL_VERSION, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
 import { checkToolInput, toolInputSchema, toolOutputText, type ToolSet } from './tools.ts';
 import { READ_KINDS } from './policies.ts';
@@ -1004,7 +1004,7 @@ export class Session {
     const projection = new TurnProjection(id, this.terminals);
     const turn = new Turn(id, () => this.cancelTurn(active), {
       text: () => projection.text,
-      toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
+      toolCalls: () => [...projection.toolCalls.values()].map(snapshotToolCall),
     });
     const active: ActiveTurn = {
       turn,
@@ -1324,7 +1324,7 @@ export class Session {
     return {
       sessionId: this.id,
       title,
-      toolCall: toolCall ? { ...toolCall } : undefined,
+      toolCall: toolCall ? snapshotToolCall(toolCall) : undefined,
       command,
       options,
       protocol: this.client.protocol,
@@ -1357,7 +1357,7 @@ export class Session {
     active.turn.finish({
       stopReason,
       text: active.projection.text,
-      toolCalls: [...active.projection.toolCalls.values()].map((c) => ({ ...c })),
+      toolCalls: [...active.projection.toolCalls.values()].map((c) => ({ ...c, content: [...c.content] })),
       cancelled,
       ...(forced ? { forced: true } : {}),
       ...(error !== undefined ? { error } : {}),

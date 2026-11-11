@@ -61,9 +61,80 @@ export function backgroundOf(update: Record<string, unknown>): BackgroundItem[] 
   });
 }
 
+/** The last copy made of each content list, by list: reading a snapshot twice gives the same array. */
+const contentCopies = new WeakMap<object, { length: number; copy: ToolCall['content'] }>();
+
+/**
+ * A tool call as it is now, unchanged by later updates. A tool call's
+ * content list only grows by appending (a replacement is a new list), so the
+ * snapshot keeps the list and its length and copies that much when read.
+ */
+export function snapshotToolCall(call: Readonly<ToolCall>): ToolCall {
+  const { content, ...rest } = call;
+  const length = content.length;
+  const snapshot = rest as ToolCall;
+  Object.defineProperty(snapshot, 'content', {
+    get: () => {
+      const last = contentCopies.get(content);
+      if (last?.length === length) return last.copy;
+      const copy = content.slice(0, length);
+      contentCopies.set(content, { length, copy });
+      return copy;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  return snapshot;
+}
+
+/**
+ * A message's text: appended deltas, joined when read. An event keeps the
+ * log and the length it had, so a turn's events do not each hold a copy of
+ * the message so far. A rewrite (v2 whole message) starts a new log.
+ */
+class TextLog {
+  private joined: string;
+  private pending: string[] = [];
+  length: number;
+
+  constructor(text = '') {
+    this.joined = text;
+    this.length = text.length;
+  }
+
+  append(delta: string): void {
+    this.pending.push(delta);
+    this.length += delta.length;
+  }
+
+  /** The text, or its first `length` characters (the text when an event was made). */
+  text(length = this.length): string {
+    if (this.pending.length) {
+      this.joined += this.pending.join('');
+      this.pending = [];
+    }
+    return length === this.joined.length ? this.joined : this.joined.slice(0, length);
+  }
+}
+
+/** A message, thought or user message event whose `text` is read from the log. */
+function textEvent(kind: TextKind, messageId: string, delta: string, log: TextLog): TurnEvent {
+  const length = log.length;
+  return {
+    type: kind,
+    messageId,
+    delta,
+    get text() {
+      return log.text(length);
+    },
+  };
+}
+
 export class TurnProjection {
   readonly toolCalls: Map<string, ToolCall>;
-  private readonly messages = new Map<string, { kind: TextKind; text: string }>();
+  private readonly messages = new Map<string, { kind: TextKind; log: TextLog }>();
+  /** `text`, until a message changes. */
+  private textCache?: string;
   private readonly messageOrder: string[] = [];
   private segment = 0;
   private lastKind: 'text' | 'other' = 'other';
@@ -154,7 +225,7 @@ export class TurnProjection {
     for (const call of this.toolCalls.values()) {
       if ((call.status === 'pending' || call.status === 'in_progress' || call.status === 'paused') && !keep(call)) {
         call.status = 'failed';
-        events.push({ type: 'tool_call', toolCall: { ...call }, created: false });
+        events.push({ type: 'tool_call', toolCall: snapshotToolCall(call), created: false });
       }
     }
     return events;
@@ -165,13 +236,15 @@ export class TurnProjection {
    * except where the earlier one already ends a line.
    */
   get text(): string {
+    if (this.textCache !== undefined) return this.textCache;
     let out = '';
     for (const id of this.messageOrder) {
       const message = this.messages.get(id)!;
-      if (message.kind !== 'message' || !message.text) continue;
+      if (message.kind !== 'message' || !message.log.length) continue;
       if (out && !out.endsWith('\n')) out += '\n\n';
-      out += message.text;
+      out += message.log.text();
     }
+    this.textCache = out;
     return out;
   }
 
@@ -186,8 +259,10 @@ export class TurnProjection {
     const messageId = this.messageId(update, kind);
     this.lastKind = 'text';
     const message = this.message(messageId, kind);
-    message.text += delta;
-    return delta ? [{ type: kind, messageId, delta, text: message.text }] : [];
+    if (!delta) return [];
+    message.log.append(delta);
+    if (message.kind === 'message') this.textCache = undefined;
+    return [textEvent(kind, messageId, delta, message.log)];
   }
 
   /** v2 whole-message upsert: report only what is new, so streamed text is never shown twice. */
@@ -196,15 +271,19 @@ export class TurnProjection {
     this.lastKind = 'text';
     const text = Array.isArray(update.content) ? update.content.map(textOf).join('') : '';
     const message = this.message(messageId, kind);
-    const delta = text.startsWith(message.text) ? text.slice(message.text.length) : text;
-    message.text = text;
-    return delta ? [{ type: kind, messageId, delta, text }] : [];
+    const before = message.log.text();
+    const delta = text.startsWith(before) ? text.slice(before.length) : text;
+    if (text !== before) {
+      message.log = new TextLog(text);
+      if (message.kind === 'message') this.textCache = undefined;
+    }
+    return delta ? [textEvent(kind, messageId, delta, message.log)] : [];
   }
 
   private message(id: string, kind: TextKind) {
     let message = this.messages.get(id);
     if (!message) {
-      message = { kind, text: '' };
+      message = { kind, log: new TextLog() };
       this.messages.set(id, message);
       this.messageOrder.push(id);
     }
@@ -220,7 +299,7 @@ export class TurnProjection {
     // A v1 report that only carries terminal output changes nothing about the
     // tool call (v2 sends such output as terminal updates alone).
     if (!create && !created && terminalOnly(update)) return terminal;
-    return [...terminal, { type: 'tool_call', toolCall: { ...toolCall }, created }];
+    return [...terminal, { type: 'tool_call', toolCall: snapshotToolCall(toolCall), created }];
   }
 
   /**
@@ -284,8 +363,9 @@ export class TurnProjection {
     this.lastKind = 'other';
     if (typeof update.toolCallId !== 'string') return [];
     const { toolCall, created } = this.upsert({ toolCallId: update.toolCallId }, false);
+    // Appended in place: snapshots keep the length they had, so they do not change.
     if (update.content !== undefined) toolCall.content.push(update.content as ToolCall['content'][number]);
-    return [{ type: 'tool_call', toolCall: { ...toolCall, content: [...toolCall.content] }, created }];
+    return [{ type: 'tool_call', toolCall: snapshotToolCall(toolCall), created }];
   }
 
   private upsert(update: Record<string, unknown>, create: boolean): { toolCall: ToolCall; created: boolean } {
