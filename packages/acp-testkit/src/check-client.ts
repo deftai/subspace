@@ -10,7 +10,7 @@
  */
 import { channelPair, ErrorCode, RpcError, type Channel, type Call, type InboundContext, type RpcPeer } from '@deft-subspace/kernel';
 import { AcpClient, serveAgent, type AgentTurn, type ClientOptions, type ProtocolVersion, type Turn } from '@deft-subspace/acp';
-import { runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
+import { defaultTempDir, runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
 
 export interface ClientDriver {
   /** Send a prompt and resolve when the client considers the turn over. */
@@ -25,7 +25,10 @@ export type ConnectClient = (channel: Channel<unknown>) => Promise<ClientDriver>
 export interface CheckClientOptions {
   /** Protocol the agent speaks. Default 1. */
   protocol?: ProtocolVersion;
-  /** An existing file outside the client's workspace, to try reading. Without it only writes are tried. */
+  /**
+   * An existing file outside the client's workspace, to try reading. Without
+   * it only writes are tried (and a client that can only read is skipped).
+   */
   outsideFile?: string;
   /** How long to wait for an answer or a turn. Default 10 s. */
   timeoutMs?: number;
@@ -34,7 +37,7 @@ export interface CheckClientOptions {
 
 export const CLIENT_CHECKS = {
   'permission.answered': 'answers a permission request with an option it was offered',
-  'permission.cancelled-on-cancel': 'answers "cancelled" for a permission request open when the turn is cancelled',
+  'permission.cancelled-on-cancel': 'answers "cancelled" for a permission request open when the turn is cancelled, and sends session/cancel',
   'fs.outside-workspace': 'refuses file paths outside its workspace (if it advertises fs)',
   'unknown-method': 'answers an unknown method with MethodNotFound (-32601)',
 } as const;
@@ -50,7 +53,20 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
   const protocol = options.protocol ?? 1;
   const timeout = options.timeoutMs ?? 10_000;
   const wanted = (id: keyof typeof CLIENT_CHECKS) => !options.only || options.only.includes(id);
-  const [agentEnd, clientEnd] = channelPair<unknown>();
+  const [agentEnd, rawClientEnd] = channelPair<unknown>();
+  // Watch what the client reads, to cancel only once it has the permission request.
+  let onPermissionRead: (() => void) | undefined;
+  const clientEnd: Channel<unknown> = {
+    readable: rawClientEnd.readable.pipeThrough(
+      new TransformStream<unknown, unknown>({
+        transform(message, controller) {
+          controller.enqueue(message);
+          if ((message as { method?: unknown } | null)?.method === 'session/request_permission') onPermissionRead?.();
+        },
+      })
+    ),
+    writable: rawClientEnd.writable,
+  };
 
   let init: Record<string, unknown> = {};
   let cwd = '';
@@ -85,15 +101,26 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
     },
     'permission.cancelled-on-cancel': async (turn) => {
       const call = await turn.toolCall({ title: 'Write notes.txt', kind: 'edit' });
-      const answer = within(agent.request('session/request_permission', permissionParams(turn, call.id)), timeout, TIMED_OUT);
-      // The request is on its way; now the user cancels the turn.
+      const read = new Promise<void>((resolve) => (onPermissionRead = resolve));
+      let settled = false;
+      const answer = within(agent.request('session/request_permission', permissionParams(turn, call.id)), timeout, TIMED_OUT).finally(() => (settled = true));
+      // Once the client has read the request (and had a moment to handle it), the user cancels the turn.
+      const delivered = await within(read, timeout, TIMED_OUT);
+      onPermissionRead = undefined;
+      if (delivered !== TIMED_OUT) await new Promise((resolve) => setTimeout(resolve, 0));
+      if (settled) {
+        // Answered at once (a fixed policy): no request was open to cancel.
+        const result = await answer.catch((error) => `error ${String(error)}`);
+        return { pass: true, skipped: true, detail: `the client answered ${JSON.stringify(result)} before the cancel; nothing was open to cancel` };
+      }
       void driver!.cancel();
       const result = await answer;
       const cancelSeen = await within(aborted(turn.signal), timeout, TIMED_OUT);
       if (result === TIMED_OUT) return { pass: false, detail: `the permission request was not answered within ${timeout} ms` };
       const outcome = (result as { outcome?: { outcome?: string } })?.outcome?.outcome;
+      // Both: the open request answered cancelled, and the turn itself cancelled with session/cancel.
       return {
-        pass: outcome === 'cancelled',
+        pass: outcome === 'cancelled' && cancelSeen !== TIMED_OUT,
         detail: `answered ${JSON.stringify(result)}; session/cancel ${cancelSeen === TIMED_OUT ? 'not sent' : 'sent'}`,
       };
     },
@@ -149,10 +176,12 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
         const base = cwd.replace(/[\\/]+$/, '');
         const tried: string[] = [];
         let pass = true;
+        const written: string[] = [];
         const attempt = async (method: string, params: Record<string, unknown>) => {
           try {
             await agent.request(method, { sessionId, ...params }, { timeoutMs: timeout });
             pass = false;
+            if (method === 'fs/write_text_file') written.push(String(params.path));
             tried.push(`${method} ${String(params.path)}: allowed`);
           } catch {
             tried.push(`${method} ${String(params.path)}: refused`);
@@ -163,6 +192,9 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
           await attempt('fs/write_text_file', { path: `${base}-deft-testkit-outside/escape.txt`, content: 'deft-testkit' });
         }
         if (fs.readTextFile && options.outsideFile) await attempt('fs/read_text_file', { path: options.outsideFile });
+        // A client that let the writes through leaves files behind: remove them (when it shares our file system).
+        if (written.length) await removeWritten(written, `${base}-deft-testkit-outside`);
+        if (!tried.length) return { pass: true, skipped: true, detail: 'the client can only read files; pass outsideFile to try a read outside the workspace' };
         return { pass, detail: tried.join('; ') };
       })
     );
@@ -187,6 +219,17 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
   return report;
 }
 
+/** Best effort, and only in Node (this module also runs elsewhere): the test files, then the folder made for one. */
+async function removeWritten(paths: string[], folder: string): Promise<void> {
+  const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
+  if (!node) return;
+  const specifier = 'node:fs/promises';
+  const fs = (await import(/* @vite-ignore */ specifier).catch(() => undefined)) as typeof import('node:fs/promises') | undefined;
+  if (!fs) return;
+  for (const path of paths) await fs.rm(path, { force: true }).catch(() => {});
+  await fs.rmdir(folder).catch(() => {});
+}
+
 function aborted(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) resolve();
@@ -198,7 +241,7 @@ function aborted(signal: AbortSignal): Promise<void> {
 export function acpClientDriver(options: ClientOptions & { cwd?: string } = {}): ConnectClient {
   return async (channel) => {
     const client = await AcpClient.connect(channel, options);
-    const session = await client.newSession({ cwd: options.cwd ?? '/tmp' });
+    const session = await client.newSession({ cwd: options.cwd ?? defaultTempDir() });
     let turn: Turn | undefined;
     return {
       prompt: (text) => (turn = session.prompt(text)).done,
