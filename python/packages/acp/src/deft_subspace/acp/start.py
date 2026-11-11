@@ -441,6 +441,8 @@ class _StdioChannel:
     _unwritten: int = 0
     #: The first write that failed; later sends raise it.
     _failure: BaseException | None = None
+    #: The atexit hook that lets the writer finish; unregistered once close() has flushed.
+    _drain: Callable[[], None] | None = None
 
     def _start(self) -> None:
         if self._started:
@@ -535,6 +537,7 @@ class _StdioChannel:
             self._writes.put(None)
             thread.join()
 
+        self._drain = drain
         atexit.register(drain)
 
     def _enqueue(self, data: bytes | None) -> asyncio.Future[None]:
@@ -582,6 +585,9 @@ class _StdioChannel:
             await flushed
         except ChannelClosed:
             pass
+        if self._drain is not None:
+            atexit.unregister(self._drain)
+            self._drain = None
 
     async def abort(self) -> None:
         """Stop sending, and return at once instead of waiting for what was already sent.

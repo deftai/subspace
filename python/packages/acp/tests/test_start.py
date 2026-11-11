@@ -246,7 +246,9 @@ async def test_stdio_send_returns_once_queued_waits_past_the_window_and_raises_a
     assert not large.done()
     out.go.set()
     await asyncio.wait_for(large, 5)
+    assert channel._drain is not None  # the exit hook, while the writer may still have work
     await channel.close()
+    assert channel._drain is None  # flushed: nothing left for the hook to wait for
 
     class Broken:
         def write(self, data: bytes) -> None:
