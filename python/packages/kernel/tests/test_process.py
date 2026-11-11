@@ -262,7 +262,7 @@ def test_windows_runs_a_cmd_shim_found_through_pathext_via_cmd_exe():
     from deft_subspace.kernel.process import _windows_launch
 
     line = _windows_launch("npx", ["-y", "some agent"], WIN_ENV, _files(r"C:\nodejs\npx.cmd"))
-    assert line == r'C:\nodejs\npx.CMD ^"-y^" ^"some^ agent^"'
+    assert line == r'"C:\nodejs\npx.CMD" -y "some agent"'
 
 
 def test_windows_runs_an_exe_as_given():
@@ -283,14 +283,62 @@ def test_windows_follows_path_order_then_pathext_order():
     assert _windows_find("tool", {"PATH": r"C:\bin"}, _files(r"C:\bin\tool.cmd")) == r"C:\bin\tool.CMD"  # default PATHEXT
 
 
-def test_windows_escapes_cmd_metacharacters_in_arguments():
+def test_windows_quotes_cmd_metacharacters_in_arguments():
     from deft_subspace.kernel.process import _cmd_line
 
-    assert _cmd_line(r"C:\Program Files\nodejs\npx.cmd", ['a&b|c"d', "100%", "end\\"]) == (
-        r'C:\Program^ Files\nodejs\npx.cmd ^"a^&b^|c\^"d^" ^"100^%^" ^"end\\^"'
+    assert _cmd_line(r"C:\Program Files\nodejs\npx.cmd", ['a&b|c"d', "100%", "end\\", "", "plain-1.0/x:y@z", 'a\\"b']) == (
+        r'"C:\Program Files\nodejs\npx.cmd" "a&b|c""d" "100%%cd:~,%" "end\\" "" plain-1.0/x:y@z "a\\""b"'
     )
-    # npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
-    assert _cmd_line(r"C:\p\node_modules\.bin\agent.cmd", ["a&b"]) == r'C:\p\node_modules\.bin\agent.cmd ^^^"a^^^&b^^^"'
+
+
+def _cmd_read(line: str) -> tuple[str, str]:
+    """How cmd.exe reads a line, as far as quoting goes: the metacharacters it would act on
+    (outside quotes, not ^-escaped), and the line as it hands it on (escaping carets gone)."""
+    quoted = False
+    meta: list[str] = []
+    out: list[str] = []
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == '"':
+            quoted = not quoted
+        elif not quoted and c == "^":
+            i += 1
+            out.append(line[i : i + 1])
+            i += 1
+            continue
+        elif not quoted and c in "&|<>()":
+            meta.append(c)
+        out.append(c)
+        i += 1
+    return "".join(meta), "".join(out)
+
+
+def test_windows_no_argument_escapes_the_quoting_wherever_the_shim_is():
+    # BatBadBut: a shim like C:\Program Files\nodejs\npx.cmd or %APPDATA%\npm\agent.cmd hands %* to
+    # cmd.exe a second time, so the arguments must stay inert when read again, not only once.
+    from deft_subspace.kernel.process import _cmd_line
+
+    attacks = ['a"&calc&"b', '"&calc', 'x\\"&calc&\\"', '"^&calc', '""&calc&""', 'a" | calc | "b', ")&calc&(", '^"&calc']
+    scripts = [r"C:\Program Files\nodejs\npx.cmd", r"C:\Users\u\AppData\Roaming\npm\agent.cmd", r"C:\p\node_modules\.bin\agent.cmd"]
+    for script in scripts:
+        for attack in attacks:
+            line = _cmd_line(script, ["-y", attack])
+            first, handed_on = _cmd_read(line)
+            second, _ = _cmd_read(handed_on)
+            assert first + second == "", f"{attack} through {script}: {line}"
+
+
+def test_windows_refuses_an_argument_with_cr_lf_or_nul_for_a_cmd_file():
+    from deft_subspace.kernel.process import _windows_launch
+
+    for bad in ["a\nb", "a\rb", "a\0b"]:
+        with pytest.raises(SpawnError) as caught:
+            _windows_launch("npx", ["-y", bad], WIN_ENV, _files(r"C:\nodejs\npx.cmd"))
+        assert caught.value.code == "EINVAL"
+        assert caught.value.command == "npx"
+    # Not for a program that runs as given: it gets its arguments without cmd.exe.
+    assert _windows_launch("node", ["a\nb"], WIN_ENV, _files(r"C:\nodejs\node.exe")) is None
 
 
 def test_the_not_found_hint_names_cmd_shims_on_windows():

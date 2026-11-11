@@ -3,7 +3,7 @@ import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
-import { cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
+import { cmdExeArgs, cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
 
 const node = process.execPath;
 
@@ -233,7 +233,8 @@ const files =
 
 test('Windows: a .cmd shim found through PATHEXT runs via cmd.exe', () => {
   const launch = windowsLaunch('npx', ['-y', 'some agent'], winEnv, files('C:\\nodejs\\npx.cmd'));
-  assert.equal(launch, 'C:\\nodejs\\npx.CMD ^"-y^" ^"some^ agent^"');
+  assert.equal(launch, '"C:\\nodejs\\npx.CMD" -y "some agent"');
+  assert.deepEqual(cmdExeArgs(launch!), ['/d', '/e:ON', '/v:OFF', '/s', '/c', `"${launch}"`]);
 });
 
 test('Windows: an .exe, or a command not found, runs as given', () => {
@@ -250,13 +251,56 @@ test('Windows: PATH order, then PATHEXT order', () => {
   assert.equal(windowsFind('tool', { PATH: 'C:\\bin' }, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD'); // default PATHEXT
 });
 
-test('Windows: cmd.exe metacharacters in arguments are escaped', () => {
+test('Windows: cmd.exe metacharacters in arguments are quoted', () => {
   assert.equal(
-    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\']),
-    'C:\\Program^ Files\\nodejs\\npx.cmd ^"a^&b^|c\\^"d^" ^"100^%^" ^"end\\\\^"',
+    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\', '', 'plain-1.0/x:y@z', 'a\\"b']),
+    '"C:\\Program Files\\nodejs\\npx.cmd" "a&b|c""d" "100%%cd:~,%" "end\\\\" "" plain-1.0/x:y@z "a\\\\""b"',
   );
-  // npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
-  assert.equal(cmdLine('C:\\p\\node_modules\\.bin\\agent.cmd', ['a&b']), 'C:\\p\\node_modules\\.bin\\agent.cmd ^^^"a^^^&b^^^"');
+});
+
+/**
+ * How cmd.exe reads a line, as far as quoting goes: the metacharacters it would act on
+ * (outside quotes, not ^-escaped), and the line as it hands it on (escaping carets gone).
+ */
+function cmdRead(line: string): { meta: string; next: string } {
+  let quoted = false;
+  let meta = '';
+  let next = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && c === '^') {
+      next += line[++i] ?? '';
+      continue;
+    } else if (!quoted && '&|<>()'.includes(c)) meta += c;
+    next += c;
+  }
+  return { meta, next };
+}
+
+test('Windows: no argument escapes the quoting, wherever the shim is (BatBadBut)', () => {
+  // A shim like C:\Program Files\nodejs\npx.cmd or %APPDATA%\npm\agent.cmd hands %* to
+  // cmd.exe a second time, so the arguments must stay inert when read again, not only once.
+  const attacks = ['a"&calc&"b', '"&calc', 'x\\"&calc&\\"', '"^&calc', '""&calc&""', 'a" | calc | "b', ')&calc&(', '^"&calc'];
+  for (const script of ['C:\\Program Files\\nodejs\\npx.cmd', 'C:\\Users\\u\\AppData\\Roaming\\npm\\agent.cmd', 'C:\\p\\node_modules\\.bin\\agent.cmd']) {
+    for (const attack of attacks) {
+      const line = cmdLine(script, ['-y', attack]);
+      const first = cmdRead(line);
+      const second = cmdRead(first.next);
+      assert.equal(first.meta + second.meta, '', `${attack} through ${script}: ${line}`);
+    }
+  }
+});
+
+test('Windows: an argument with CR, LF or NUL is refused for a .cmd file', () => {
+  for (const bad of ['a\nb', 'a\rb', 'a\0b']) {
+    assert.throws(
+      () => windowsLaunch('npx', ['-y', bad], winEnv, files('C:\\nodejs\\npx.cmd')),
+      (e) => e instanceof SpawnError && e.code === 'EINVAL' && e.command === 'npx',
+    );
+  }
+  // Not for a program that runs as given: it gets its arguments without cmd.exe.
+  assert.equal(windowsLaunch('node', ['a\nb'], winEnv, files('C:\\nodejs\\node.exe')), undefined);
 });
 
 test('the not-found hint names .cmd shims on Windows', () => {

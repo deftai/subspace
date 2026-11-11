@@ -12,7 +12,11 @@
   without affecting the process or later calls.
 - A missing program becomes a SpawnError with a hint.
 - On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
-  file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
+  file (like `npx.cmd`) is run through cmd.exe with its arguments escaped as
+  Rust's std escapes them ("BatBadBut", CVE-2024-24576): quoted, quotes doubled,
+  `%` defused, so that neither cmd.exe nor a shim that hands `%*` to cmd.exe
+  again can be made to run anything else. An argument containing CR, LF or NUL
+  cannot be passed safely and is refused with a SpawnError (code `EINVAL`).
 
 Process groups outlive this process unless it stops them, so the live ones are
 killed when it exits: at normal interpreter exit (atexit, which also covers
@@ -138,8 +142,6 @@ def _remove_signal_hooks() -> None:
 # -- Windows command resolution ------------------------------------------------------------
 
 _DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-_CMD_META = re.compile(r'([()\][%!^"`<>&|;, *?])')
-_NPM_SHIM = re.compile(r"node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$", re.IGNORECASE)
 
 
 def _env_get(env: Mapping[str, str], name: str) -> str | None:
@@ -168,28 +170,60 @@ def _windows_find(command: str, env: Mapping[str, str], is_file: Callable[[str],
     return None
 
 
-def _escape_cmd_argument(arg: str, double: bool) -> str:
-    # As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
-    # cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
-    arg = re.sub(r'(\\*)"', r'\1\1\\"', arg)
-    arg = re.sub(r"(\\*)$", r"\1\1", arg)
-    arg = _CMD_META.sub(r"^\1", f'"{arg}"')
-    return _CMD_META.sub(r"^\1", arg) if double else arg
+#: What an argument to a batch file cannot carry: cmd.exe ends the command at CR or LF, and NUL ends the string.
+_BAT_UNSAFE = re.compile(r"[\r\n\0]")
+#: What may stay unquoted, as in Rust's std; any other ASCII character, or a control character, is quoted.
+_BAT_PLAIN = re.compile(r"[A-Za-z0-9#$*+\-./:?@\\_\u00a0-\U0010ffff]*")
 
 
-def _cmd_line(script: str, args: Sequence[str]) -> str:
-    """A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally."""
-    double = _NPM_SHIM.search(script) is not None  # npm shims pass their arguments through cmd.exe again
-    return " ".join([_CMD_META.sub(r"^\1", ntpath.normpath(script)), *(_escape_cmd_argument(a, double) for a in args)])
+def _bat_argument(command: str, arg: str) -> str:
+    if _BAT_UNSAFE.search(arg):
+        raise SpawnError(command, "EINVAL", "An argument to a .cmd or .bat file cannot contain a line break or NUL.")
+    quote = arg == "" or arg.endswith("\\") or _BAT_PLAIN.fullmatch(arg) is None
+    out = ['"'] if quote else []
+    backslashes = 0
+    for c in arg:
+        if c == "\\":
+            backslashes += 1
+        else:
+            # A quote is doubled, so cmd.exe never sees the quoting end inside the argument; the
+            # program reads `""` within quotes as one `"`. Backslashes before it are doubled too.
+            if c == '"':
+                out.append("\\" * backslashes + '"')
+            # `%` becomes `%%cd:~,%`: cmd.exe expands `%cd:~,%` to nothing instead of a %VAR%.
+            elif c == "%":
+                out.append("%%cd:~,")
+            backslashes = 0
+        out.append(c)
+    if quote:
+        out.append("\\" * backslashes + '"')
+    return "".join(out)
+
+
+def _cmd_line(script: str, args: Sequence[str], command: str | None = None) -> str:
+    """The cmd.exe command line that runs the `.cmd`/`.bat` file `script` with `args`.
+
+    Escaped as Rust's std escapes them since CVE-2024-24576 ("BatBadBut"): an argument with
+    anything but plain characters is quoted, its quotes doubled and each `%` defused, so
+    cmd.exe finds nothing to interpret in it however often it reads it. That covers shims
+    that hand `%*` to cmd.exe again (npx.cmd, npm's node_modules\\.bin shims), wherever they
+    are. An argument that cannot be passed safely (CR, LF or NUL) is a SpawnError.
+    """
+    command = script if command is None else command
+    file = ntpath.normpath(script)
+    if '"' in file or file.endswith("\\"):
+        raise SpawnError(command, "EINVAL", f"{file!r} is not a valid file name.")
+    return " ".join([f'"{file}"', *(_bat_argument(command, a) for a in args)])
 
 
 def _windows_launch(command: str, args: Sequence[str], env: Mapping[str, str], is_file: Callable[[str], bool]) -> str | None:
     """Windows can only start a `.cmd`/`.bat` file through cmd.exe: the command line to run, or None
-    when `command` is not one (and runs as given)."""
+    when `command` is not one (and runs as given). Raises SpawnError for an argument that cannot be
+    passed safely."""
     found = _windows_find(command, env, is_file)
     if found is None or ntpath.splitext(found)[1].lower() not in (".cmd", ".bat"):
         return None
-    return _cmd_line(found, args)
+    return _cmd_line(found, args, command)
 
 
 def _not_found_hint(command: str, cwd: object, windows: bool) -> str:
