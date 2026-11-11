@@ -23,7 +23,7 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
 
 ## What the prototype shows
 
-### Kernel (29 tests)
+### Kernel (51 tests)
 
 - **Request id 0 can be cancelled.** This is the MCP SDK's bug #3043.
 - **Ids are opaque:** `0` and `"0"` are different requests.
@@ -48,7 +48,7 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
   - `stop()` kills the whole process group, including a grandchild that ignores SIGTERM (POSIX only: on Windows there are no process groups, and it kills the direct child, so a grandchild can outlive it);
   - a tail of stderr is kept.
 
-### ACP (182 tests)
+### ACP (213 tests)
 
 - **One agent handler, both protocols.** The same handler runs on v1 and v2 over byte-by-byte NDJSON, and the client produces the same events for both.
 - **Turn completion:**

@@ -20,28 +20,28 @@
 - kernel: `stderr_tail_bytes` counts bytes, not characters; a character cut in half at the start of the tail is dropped.
 - kernel: on Windows, a command found through PATH and PATHEXT as a `.cmd`/`.bat` file (like `npx.cmd`) is run through cmd.exe with its arguments escaped; the not-found hint mentions .cmd shims.
 - kernel: `SupervisedProcess(...)` takes a new `stdout_closed` argument; create processes with `spawn_process()`.
-- A turn ended by the client after the cancel grace period now drains: queued prompts wait until the agent confirms the old turn (v1: its prompt answer; v2: its idle), for at most twice `cancel_grace_ms`, and its late updates go to the session (`on_idle_update`, `tool_calls`) instead of the next turn. `busy` is False while it drains; a prompt sent then is queued.
-- After that drain, the old `session/prompt` request is given up on (`$/cancel_request`) instead of staying pending forever.
-- `Session.cancel()` arms the cancel deadline before telling the agent, and tells it in the session's own task: cancelling the caller while it waits no longer leaves the turn without a deadline.
-- A tool call id the agent reuses in a later turn belongs to that turn; only background work is routed to earlier turns.
-- A client-wide `on_question` answers questions between turns and questions that name no session (they were declined).
-- A turn handler that raises `CancelledError`, or a handler task that is cancelled, fails the turn with `RuntimeError("A turn handler was cancelled")`; the turn used to report success.
-- Updates for a session closed here are dropped, so a later `load_session` of it no longer replays them.
-- `session.modes` is replaced on every change instead of being changed in place.
-- `Session.close()` ignores any error from `session/close`, not only RPC and local errors.
-- `serve_agent`: with `queue_prompts` on v2, a turn's idle state (and its failed tool calls) now goes out before the next queued turn starts.
-- `serve_agent`: a prompt handler that raises now fails the tool calls it left open and stops the terminals it did not detach, as a cancelled turn already did.
-- `serve_agent`: a prompt handler that ends with `asyncio.CancelledError` after the turn was cancelled (e.g. it cancelled its own task when `turn.signal` fired) now ends the turn `cancelled`: v1 answers `stopReason: "cancelled"` instead of a -32800 error, and v2 sends its idle state.
-- `serve_agent`: a `new_session` that returns the id of a session that is already open is now refused with -32602; before, the open session was replaced and its turn, background work and MCP connections leaked.
-- `AbortSignal.any(...)`: the combined signal can now be `dispose()`d (or used as a context manager) to remove its listeners from the source signals; before, they stayed until a source fired.
-- `serve_agent`: a finished turn no longer leaves a listener on the connection's signal (one leaked per turn), and a finished tool call or terminal no longer leaves one on its turn's signal; MCP-over-ACP requests no longer leave one on their server's signal.
-- `model_agent`: results of tool calls that ran when a turn hit `max_steps` or was cancelled are no longer dropped: they go to the model with the next prompt, as `PromptInput.tool_results` (new field, default empty).
-- `serve_agent(connection_closed=...)`: new optional hook, called with the ids of the sessions still open when the connection closes (`close_session` is still not called for them). `model_agent` uses it to drop those sessions' conversations, which it kept forever before.
-- `serve_agent`: on v1, `capabilities={"sessionCapabilities": ..., "mcpCapabilities": ...}` now merge into the advertised ones (as on v2) instead of replacing them, so `close` and `resume` are no longer dropped.
-- `serve_agent`: a second `initialize` on a connection is now refused with -32600 (Invalid Request); before, it could switch the protocol mid-connection.
-- `AgentTurn.elicit`: an error answer from the client now raises instead of answering `cancel`; only a cancelled turn or a closed connection answers `cancel`.
-- `AgentTurn.tool_call(status="completed"|"failed"|"cancelled")` is no longer tracked as open (it was failed again when the turn was cancelled or raised), and `tool_call_update` now keeps v2 background work in step: a create is tracked, and a final status finishes it (a cancellable call finished this way no longer accepts `tool_call/cancel`).
-- MCP connections of a session: `session/close`, new servers from load or resume, and a closed connection now abort an MCP connect still in flight (through `McpConnectContext.signal`) instead of waiting for it, up to the connect timeout.
+- acp: A turn ended by the client after the cancel grace period now drains: queued prompts wait until the agent confirms the old turn (v1: its prompt answer; v2: its idle), for at most twice `cancel_grace_ms`, and its late updates go to the session (`on_idle_update`, `tool_calls`) instead of the next turn. `busy` is False while it drains; a prompt sent then is queued.
+- acp: After that drain, the old `session/prompt` request is given up on (`$/cancel_request`) instead of staying pending forever.
+- acp: `Session.cancel()` arms the cancel deadline before telling the agent, and tells it in the session's own task: cancelling the caller while it waits no longer leaves the turn without a deadline.
+- acp: A tool call id the agent reuses in a later turn belongs to that turn; only background work is routed to earlier turns.
+- acp: A client-wide `on_question` answers questions between turns and questions that name no session (they were declined).
+- acp: A turn handler that raises `CancelledError`, or a handler task that is cancelled, fails the turn with `RuntimeError("A turn handler was cancelled")`; the turn used to report success.
+- acp: Updates for a session closed here are dropped, so a later `load_session` of it no longer replays them.
+- acp: `session.modes` is replaced on every change instead of being changed in place.
+- acp: `Session.close()` ignores any error from `session/close`, not only RPC and local errors.
+- acp: `serve_agent`: with `queue_prompts` on v2, a turn's idle state (and its failed tool calls) now goes out before the next queued turn starts.
+- acp: `serve_agent`: a prompt handler that raises now fails the tool calls it left open and stops the terminals it did not detach, as a cancelled turn already did.
+- acp: `serve_agent`: a prompt handler that ends with `asyncio.CancelledError` after the turn was cancelled (e.g. it cancelled its own task when `turn.signal` fired) now ends the turn `cancelled`: v1 answers `stopReason: "cancelled"` instead of a -32800 error, and v2 sends its idle state.
+- acp: `serve_agent`: a `new_session` that returns the id of a session that is already open is now refused with -32602; before, the open session was replaced and its turn, background work and MCP connections leaked.
+- kernel: `AbortSignal.any(...)`: the combined signal can now be `dispose()`d (or used as a context manager) to remove its listeners from the source signals; before, they stayed until a source fired.
+- acp: `serve_agent`: a finished turn no longer leaves a listener on the connection's signal (one leaked per turn), and a finished tool call or terminal no longer leaves one on its turn's signal; MCP-over-ACP requests no longer leave one on their server's signal.
+- acp: `model_agent`: results of tool calls that ran when a turn hit `max_steps` or was cancelled are no longer dropped: they go to the model with the next prompt, as `PromptInput.tool_results` (new field, default empty).
+- acp: `serve_agent(connection_closed=...)`: new optional hook, called with the ids of the sessions still open when the connection closes (`close_session` is still not called for them). `model_agent` uses it to drop those sessions' conversations, which it kept forever before.
+- acp: `serve_agent`: on v1, `capabilities={"sessionCapabilities": ..., "mcpCapabilities": ...}` now merge into the advertised ones (as on v2) instead of replacing them, so `close` and `resume` are no longer dropped.
+- acp: `serve_agent`: a second `initialize` on a connection is now refused with -32600 (Invalid Request); before, it could switch the protocol mid-connection.
+- acp: `AgentTurn.elicit`: an error answer from the client now raises instead of answering `cancel`; only a cancelled turn or a closed connection answers `cancel`.
+- acp: `AgentTurn.tool_call(status="completed"|"failed"|"cancelled")` is no longer tracked as open (it was failed again when the turn was cancelled or raised), and `tool_call_update` now keeps v2 background work in step: a create is tracked, and a final status finishes it (a cancellable call finished this way no longer accepts `tool_call/cancel`).
+- acp: MCP connections of a session: `session/close`, new servers from load or resume, and a closed connection now abort an MCP connect still in flight (through `McpConnectContext.signal`) instead of waiting for it, up to the connect timeout.
 - acp: terminal output is kept as append-only segments instead of one buffer rebuilt per chunk. A `TerminalEvent`'s `terminal` is still a snapshot with the full `output`, but `output` is read from the shared segments when you look (a descriptor on `TerminalState`), so a turn's events no longer each hold a copy (1000 chunks of 4 KB kept 883 MB, now 9 MB). `TerminalState(output=...)`, `==`, `asdict()` and `snapshot()` work as before.
 - acp: `ToolCall.snapshot()` no longer copies the content list: the snapshot keeps the list and its length and copies when `content` is read; content chunks append in place (20k chunks: 1.5 s and 1.6 GB kept, now 34 ms). Changing a snapshot's `content` still changes nothing else.
 - acp: message, thought and user message events read `text` from the message's log when you look, so events no longer each keep the message so far (40k chunks: 0.7 s and 4 GB kept, now 58 ms). `TextInfo.text` is read the same way. `TurnProjection.text` is cached until a message changes.
