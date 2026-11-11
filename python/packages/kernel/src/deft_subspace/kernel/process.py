@@ -181,13 +181,12 @@ class SupervisedProcess:
 
     def _signal_group(self, sig: int) -> bool:
         try:
-            if _WINDOWS or self.pid is None:
-                if sig == signals.SIGTERM:
-                    self._proc.terminate()
-                else:
-                    self._proc.kill()
-            else:
+            if sys.platform != "win32" and self.pid is not None:
                 os.killpg(self.pid, sig)
+            elif sig == signals.SIGTERM:
+                self._proc.terminate()
+            else:
+                self._proc.kill()
             return True
         except (ProcessLookupError, PermissionError, OSError):
             return False  # already gone
@@ -196,7 +195,7 @@ class SupervisedProcess:
         self._signal_group(getattr(signals, "SIGKILL", signals.SIGTERM))
 
     def _group_alive(self) -> bool:
-        if _WINDOWS or self.pid is None:
+        if sys.platform == "win32" or self.pid is None:
             return self._proc.returncode is None
         try:
             os.killpg(self.pid, 0)
