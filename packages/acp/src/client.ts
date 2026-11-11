@@ -725,7 +725,8 @@ interface Progress {
 }
 
 /**
- * Where a session is. Only `enter()` changes it.
+ * Where a session is. Only `enter()` moves it to another phase; the progress
+ * flags of a running turn (`started`, `answered`, `idleSeen`) are updated in place.
  *
  * - `idle`: no turn; queued prompts start.
  * - `running`: a turn the agent is working on.
@@ -1359,7 +1360,7 @@ export class Session {
     active.turn.finish({
       stopReason,
       text: active.projection.text,
-      toolCalls: [...active.projection.toolCalls.values()].map((c) => ({ ...c, content: [...c.content] })),
+      toolCalls: [...active.projection.toolCalls.values()].map(snapshotToolCall),
       cancelled,
       ...(forced ? { forced: true } : {}),
       ...(error !== undefined ? { error } : {}),

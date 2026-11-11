@@ -799,7 +799,8 @@ class _Active:
     prompt_task: asyncio.Task[Any] | None = None
 
 
-# Where a session is. Only `Session._enter()` changes it.
+# Where a session is. Only `Session._enter()` moves it to another phase; the progress flags
+# of a running turn (`started`, `answered`, `idle_seen`) are updated in place.
 
 
 @dataclass
