@@ -79,6 +79,8 @@ await peer.closed
 - **Protocol types** are the official SDK's pydantic models, as `deft_subspace.acp.v1` and `.v2`. They are loaded on first use, because importing them is slow.
 - **`mcp_connector()`** connects to `stdio` MCP servers by itself, with no MCP SDK. `http` and `sse` servers go through the official MCP SDK, the `mcp` extra (`pip install 'deft-subspace-acp[mcp]'`), which negotiates MCP 2026-07-28 and older versions.
 
+What we learned porting, for whoever ports Subspace next: [docs/PORTING-LESSONS.md](../docs/PORTING-LESSONS.md).
+
 ## Develop
 
 ```sh
