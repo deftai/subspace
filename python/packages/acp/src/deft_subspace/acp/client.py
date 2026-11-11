@@ -1082,6 +1082,7 @@ class Session:
             turn_id,
             lambda: self._cancel_turn(holder[0]),
             TurnView(lambda: projection.text, lambda: [c.snapshot() for c in projection.tool_calls.values()]),
+            self._spawn,
         )
         active = _Active(turn=turn, projection=projection, limits=base)
         holder.append(active)

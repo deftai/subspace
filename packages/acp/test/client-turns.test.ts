@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { channelPair, RpcPeer, type Channel } from '@deft-subspace/kernel';
-import { AcpClient, type ClientOptions, type ProtocolVersion } from '@deft-subspace/acp';
+import { AcpClient, Turn, type ClientOptions, type ProtocolVersion } from '@deft-subspace/acp';
 import { sleep } from './helpers.ts';
 
 /** An agent written by hand, message by message, for timings serveAgent will not produce. */
@@ -164,4 +164,25 @@ test('updates for a session closed here are dropped, not replayed by a later loa
   const { replayed } = await client.loadSession({ sessionId: 's1', cwd: '/' });
   assert.deepEqual(replayed, []);
   await client.close();
+});
+
+test('caughtUp stops waiting once the handlers have failed, and leaves nothing behind', async () => {
+  const turn = new Turn('t', async () => {});
+  let release!: () => void;
+  turn.observe({
+    onMessage: async (delta) => {
+      if (delta === 'slow') await new Promise<void>((resolve) => (release = resolve));
+      throw new Error('handler failed');
+    },
+  });
+  turn.push({ type: 'message', messageId: 'm', text: 'slow', delta: 'slow' } as never);
+  // The timeout wins: its check is removed.
+  await turn.caughtUp(20);
+  assert.equal((turn as unknown as { progress: Set<unknown> }).progress.size, 0);
+  release();
+  await sleep(0);
+  turn.push({ type: 'message', messageId: 'm', text: 'slow more', delta: ' more' } as never);
+  const started = Date.now();
+  await turn.caughtUp();
+  assert.ok(Date.now() - started < 500, 'no handler will run again: nothing to wait for');
 });

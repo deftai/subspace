@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
 
+from link import connect
+
 from deft_subspace.acp.client import AcpClient, Timeouts
+from deft_subspace.acp.model import MessageEvent
+from deft_subspace.acp.turn import Turn
 from deft_subspace.kernel import RpcPeer, channel_pair
 
 
@@ -193,3 +198,58 @@ async def test_updates_for_a_session_closed_here_are_dropped_not_replayed_by_a_l
     _session, replayed = await client.load_session("s1", "/")
     assert replayed == []
     await client.close()
+
+
+async def test_a_handler_raising_cancelled_error_fails_the_turn():
+    async def prompt(turn):
+        for i in range(5):
+            await turn.say(f"part{i} ")
+            await asyncio.sleep(0.02)
+        await turn.signal.wait()
+
+    client = await connect({"prompt": prompt})
+    session = await client.new_session("/tmp")
+    seen: list[str] = []
+
+    async def on_message(delta, _info, _event):
+        seen.append(delta)
+        if len(seen) == 2:
+            inner = asyncio.ensure_future(asyncio.sleep(10))
+            inner.cancel()
+            await inner
+
+    turn = session.prompt("go", on_message=on_message)
+    # Raised as an error of its own: a CancelledError would look like the awaiting task being cancelled.
+    with pytest.raises(RuntimeError, match="handler was cancelled"):
+        await asyncio.wait_for(turn.done, 3)
+    assert turn.cancel_requested, "a failed handler cancels the turn"
+    assert len(seen) == 2
+    await client.close()
+
+
+async def test_caught_up_stops_waiting_once_the_handlers_have_failed_and_leaves_nothing_behind():
+    async def on_cancel() -> None:
+        pass
+
+    turn = Turn("t", on_cancel)
+    release = asyncio.Event()
+
+    async def on_message(delta, _info, _event):
+        if delta == "slow":
+            await release.wait()
+        raise ValueError("handler failed")
+
+    from deft_subspace.acp.handlers import merge_handlers
+
+    handlers = merge_handlers(None, {"on_message": on_message})
+    assert handlers is not None
+    turn.observe(handlers)
+    turn.push(MessageEvent("m", "slow", "slow"))
+    await turn.caught_up(20)
+    assert turn._progress == []
+    release.set()
+    await asyncio.sleep(0.01)
+    turn.push(MessageEvent("m", " more", "slow more"))
+    started = time.monotonic()
+    await turn.caught_up()
+    assert time.monotonic() - started < 0.5, "no handler will run again: nothing to wait for"

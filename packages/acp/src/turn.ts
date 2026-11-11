@@ -40,6 +40,8 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private cancelling?: Promise<void>;
   /** Runs the turn's handlers; `done` waits for it. */
   private observer?: Promise<void>;
+  /** The handlers will not run again (they finished, or one failed). */
+  private observerEnded = false;
   private handlerFailed?: { error: unknown };
   /** Events the observer has finished dispatching. */
   private dispatched = 0;
@@ -160,6 +162,10 @@ export class Turn implements AsyncIterable<TurnEvent> {
           this.handlerFailed = { error };
           void this.cancel();
         }
+      } finally {
+        // Nothing waits for handlers that will not run again.
+        this.observerEnded = true;
+        for (const notify of [...this.progress]) notify();
       }
     })();
   }
@@ -170,21 +176,19 @@ export class Turn implements AsyncIterable<TurnEvent> {
    * before asking it.
    */
   async caughtUp(maxMs = 1000): Promise<void> {
-    if (!this.observer || this.finished) return;
+    if (!this.observer || this.observerEnded || this.finished) return;
     const target = this.events.length;
     if (this.dispatched >= target) return;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(done, maxMs);
-      function done() {
+      const done = () => {
         clearTimeout(timer);
+        this.progress.delete(check);
         resolve();
-      }
-      const check = () => {
-        if (this.dispatched >= target || this.finished) {
-          this.progress.delete(check);
-          done();
-        }
       };
+      const check = () => {
+        if (this.dispatched >= target || this.finished || this.observerEnded) done();
+      };
+      const timer = setTimeout(done, maxMs);
       this.progress.add(check);
     });
   }
