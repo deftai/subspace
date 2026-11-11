@@ -12,13 +12,24 @@ import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Union
 
-from acp import schema as v1
-from acp.experimental.v2 import schema as v2
-
 if TYPE_CHECKING:
+    from acp import schema as v1
+    from acp.experimental.v2 import schema as v2
+
     from .terminals import TerminalState
 
-__all__ = ["v1", "v2"]
+
+def __getattr__(name: str) -> Any:
+    # The SDK's schema modules are large; they load on first use, not on import.
+    if name == "v1":
+        from acp import schema
+
+        return schema
+    if name == "v2":
+        from acp.experimental.v2 import schema
+
+        return schema
+    raise AttributeError(name)
 
 ProtocolVersion = Literal[1, 2]
 

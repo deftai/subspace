@@ -6,6 +6,9 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["deft-subspace-kernel", "agent-client-protocol==1.0.0"]
 
+[project.optional-dependencies]
+otel = ["opentelemetry-api>=1.27"]
+
 [build-system]
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"

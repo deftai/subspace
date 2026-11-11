@@ -88,3 +88,41 @@ async def test_cancel_reaches_the_agent(sdk_agent):
     assert result.stop_reason == "cancelled"
     assert not result.forced
     await client.close()
+
+
+AGENT_V2 = Path(__file__).parent / "fixtures" / "sdk_agent_v2.py"
+
+
+@pytest.fixture
+async def sdk_agent_v2():
+    child = await spawn_process(sys.executable, args=[str(AGENT_V2)], kill_grace_ms=500)
+    yield child
+    await child.stop()
+
+
+async def test_v2_turn_ends_at_idle(sdk_agent_v2):
+    client = await connect(sdk_agent_v2)
+    assert client.protocol == 2
+    assert client.agent.name == "sdk-echo-v2"
+    session = await client.new_session(str(Path.cwd()))
+    turn = session.prompt("hi v2")
+    events = [event async for event in turn]
+    result = await turn
+    assert result.stop_reason == "end_turn"
+    assert result.text == "echo: hi v2"
+    assert [e.state for e in events if e.type == "state"] == ["running", "idle"]
+    await client.close()
+
+
+async def test_v2_permission_subject(sdk_agent_v2):
+    client = await connect(sdk_agent_v2, permissions="allow")
+    session = await client.new_session(str(Path.cwd()))
+    turn = session.prompt("ask")
+    events = [event async for event in turn]
+    result = await turn
+    assert result.text == "chose yes"
+    permission = next(e for e in events if isinstance(e, PermissionEvent))
+    assert permission.request.title == "Run tests?"
+    assert permission.request.protocol == 2
+    assert permission.request.tool_call is not None and permission.request.tool_call.kind == "execute"
+    await client.close()
