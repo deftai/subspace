@@ -13,7 +13,14 @@
 - A missing program becomes a SpawnError with a hint.
 
 Process groups outlive this process unless it stops them, so the live ones are
-killed at interpreter exit (atexit).
+killed when it exits: at normal interpreter exit (atexit, which also covers
+Ctrl-C under `asyncio.run`), and, on POSIX, on SIGTERM and SIGHUP. Those
+signal handlers are installed only while supervised groups are alive, only
+from the main thread, and only for signals still at their default action: an
+app's own handler (`signal.signal` or `loop.add_signal_handler`) is left alone,
+and then stopping the children is up to the app. After killing the groups the
+handler restores the default action and re-sends the signal, so the process
+still dies of it.
 """
 
 from __future__ import annotations
@@ -25,9 +32,11 @@ import os
 import signal as signals
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import FrameType
 
 from .channel import ChannelClosed, EndOfChannel
 
@@ -68,10 +77,58 @@ def _track(kill: Callable[[], None]) -> None:
     if not _atexit_installed:
         _atexit_installed = True
         atexit.register(_kill_live)
+    _install_signal_hooks()
 
 
 def _untrack(kill: Callable[[], None]) -> None:
     _live.discard(kill)
+    if not _live:
+        _remove_signal_hooks()
+
+
+#: Signals that end a process by default and so skip atexit.
+_FATAL_SIGNALS = ("SIGTERM", "SIGHUP")
+_hooked: set[int] = set()
+
+
+def _on_fatal_signal(signum: int, _frame: FrameType | None) -> None:
+    _kill_live()
+    signals.signal(signum, signals.SIG_DFL)
+    _hooked.discard(signum)
+    os.kill(os.getpid(), signum)
+
+
+def _can_set_signal_handlers() -> bool:
+    return not _WINDOWS and threading.current_thread() is threading.main_thread()
+
+
+def _install_signal_hooks() -> None:
+    """POSIX: on a fatal signal nobody else handles, kill the live groups and die of it anyway."""
+    if not _can_set_signal_handlers():
+        return
+    for name in _FATAL_SIGNALS:
+        sig = getattr(signals, name, None)
+        if sig is None or sig in _hooked:
+            continue
+        try:
+            if signals.getsignal(sig) is not signals.SIG_DFL:
+                continue  # the app (or Python) handles this one
+            signals.signal(sig, _on_fatal_signal)
+        except (OSError, ValueError):
+            continue
+        _hooked.add(sig)
+
+
+def _remove_signal_hooks() -> None:
+    if not _can_set_signal_handlers():
+        return  # left in place; with nothing live they only restore the default and re-send
+    for sig in list(_hooked):
+        try:
+            if signals.getsignal(sig) is _on_fatal_signal:
+                signals.signal(sig, signals.SIG_DFL)
+        except (OSError, ValueError):
+            pass
+        _hooked.discard(sig)
 
 
 # -- The supervised process ----------------------------------------------------------------

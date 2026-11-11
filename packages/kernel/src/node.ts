@@ -10,6 +10,15 @@
  *   been read to the end, so a final reply written just before exit is not
  *   lost.
  * - A missing program becomes a SpawnError with a hint, not an uncaught error.
+ *
+ * Process groups outlive this process unless it stops them, so the live ones
+ * are killed when it exits: on 'exit', and, on POSIX, on SIGINT, SIGTERM and
+ * SIGHUP, which end Node without 'exit'. Those signal listeners are added only
+ * while supervised groups are alive and only for signals the app has no
+ * listener for: an app that handles a signal itself decides what happens, and
+ * then stopping the children is up to it. After killing the groups the
+ * listener removes itself and re-sends the signal, so the process still dies
+ * of it.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
@@ -65,17 +74,56 @@ export interface SupervisedProcess {
   stop(graceMs?: number): Promise<ExitInfo>;
 }
 
+// -- Killing live groups when this process ends -----------------------------------------
+
+/** How to kill each process group that may still be alive. */
 const live = new Set<() => void>();
 let exitHookInstalled = false;
 
-/** Children in their own process group outlive us unless we stop them on exit. */
-function installExitHook(): void {
-  if (exitHookInstalled) return;
-  exitHookInstalled = true;
-  process.once('exit', () => {
-    for (const kill of live) kill();
-  });
+const killLive = (): void => {
+  for (const kill of live) kill();
+};
+
+function track(kill: () => void): void {
+  live.add(kill);
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once('exit', killLive);
+  }
+  installSignalHooks();
 }
+
+function untrack(kill: () => void): void {
+  live.delete(kill);
+  if (live.size === 0) removeSignalHooks();
+}
+
+/** Signals that end Node by default without emitting 'exit'. */
+const fatalSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+const signalHooks = new Map<NodeJS.Signals, () => void>();
+
+/** POSIX: on a fatal signal nobody else handles, kill the live groups and die of it anyway. */
+function installSignalHooks(): void {
+  if (process.platform === 'win32') return;
+  for (const signal of fatalSignals) {
+    if (signalHooks.has(signal) || process.listenerCount(signal) > 0) continue;
+    const hook = (): void => {
+      if (process.listenerCount(signal) > 1) return; // the app listens too now: its call
+      killLive();
+      removeSignalHooks();
+      process.kill(process.pid, signal); // no listeners left, so the default action: die of it
+    };
+    process.on(signal, hook);
+    signalHooks.set(signal, hook);
+  }
+}
+
+function removeSignalHooks(): void {
+  for (const [signal, hook] of signalHooks) process.off(signal, hook);
+  signalHooks.clear();
+}
+
+// -- The supervised process -----------------------------------------------------------------
 
 export async function spawnProcess(command: string, options: SpawnOptions = {}): Promise<SupervisedProcess> {
   const groups = process.platform !== 'win32';
@@ -143,10 +191,9 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
   };
 
   const killNow = () => signalGroup('SIGKILL');
-  live.add(killNow);
-  installExitHook();
+  track(killNow);
   void ended.then(() => {
-    if (!groupAlive()) live.delete(killNow);
+    if (!groupAlive()) untrack(killNow);
   });
 
   let stopping: Promise<ExitInfo> | undefined;
@@ -162,7 +209,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
         }
         if (groupAlive()) signalGroup('SIGKILL');
       }
-      live.delete(killNow);
+      untrack(killNow);
       return exited;
     })();
     return stopping;

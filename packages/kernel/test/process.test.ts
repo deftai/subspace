@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
 import { spawnProcess, SpawnError } from '@deft-subspace/kernel/node';
@@ -90,4 +92,88 @@ test('keeps the last stderr output for error messages', async () => {
   assert.equal(info.code, 3);
   assert.match(child.stderrTail(), /fatal: no API key$/);
   assert.ok(child.stderrTail().length <= 64);
+});
+
+const posix = process.platform !== 'win32';
+const kernelDir = new URL('..', import.meta.url);
+
+/** Run a Node program that imports the kernel; returns it and the first line it prints. */
+async function runApp(source: string): Promise<{ app: ChildProcess; line: string; lines: AsyncIterator<string> }> {
+  const app = spawnChild(node, ['--conditions=subspace-source', '--input-type=module', '-e', source], {
+    cwd: kernelDir,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const lines = createInterface({ input: app.stdout! })[Symbol.asyncIterator]();
+  const first = await lines.next();
+  return { app, line: String(first.value), lines };
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function gone(pid: number, withinMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + withinMs;
+  while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  return !alive(pid);
+}
+
+function killAll(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+}
+
+// Starts a supervised child (which starts a grandchild), prints both pids, and waits.
+const supervisor = (setup: string) => `
+  import { spawnProcess } from '@deft-subspace/kernel/node';
+  ${setup}
+  const child = await spawnProcess(process.execPath, { args: ['-e', \`
+    const g = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    console.log(g.pid);
+    setTimeout(() => {}, 60000);
+  \`] });
+  const reader = child.channel.readable.getReader();
+  const grandchild = new TextDecoder().decode((await reader.read()).value).trim();
+  console.log(child.pid, grandchild);
+  setTimeout(() => {}, 60000);
+`;
+
+for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) {
+  test(`${signal} stops the supervised groups and still kills the app`, { skip: !posix }, async () => {
+    const { app, line } = await runApp(supervisor(''));
+    const pids = line.split(' ').map(Number);
+    try {
+      const exited = new Promise<NodeJS.Signals | null>((resolve) => app.once('exit', (_code, sig) => resolve(sig)));
+      app.kill(signal);
+      assert.equal(await exited, signal);
+      for (const pid of pids) assert.ok(await gone(pid), `${pid} outlived the app`);
+    } finally {
+      killAll([app.pid!, ...pids]);
+    }
+  });
+}
+
+test("an app's own signal handler is left alone", { skip: !posix }, async () => {
+  const { app, line, lines } = await runApp(supervisor(`process.on('SIGTERM', () => console.log('handled'));`));
+  const pids = line.split(' ').map(Number);
+  try {
+    app.kill('SIGTERM');
+    assert.equal((await lines.next()).value, 'handled');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(app.exitCode, null);
+    assert.equal(app.signalCode, null);
+    for (const pid of pids) assert.ok(alive(pid), `${pid} was killed`);
+  } finally {
+    killAll([app.pid!, ...pids]);
+  }
 });

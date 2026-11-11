@@ -135,3 +135,93 @@ async def test_a_group_is_forgotten_once_its_last_member_is_gone():
         await asyncio.sleep(0.05)
     assert child._kill_now not in process._live
 
+
+# A program that starts a supervised child (which starts a grandchild), prints both pids, and waits.
+SUPERVISOR = """
+import asyncio, signal, sys
+from deft_subspace.kernel import spawn_process
+
+async def main():
+    if sys.argv[1] == "own-handler":
+        signal.signal(signal.SIGTERM, lambda *_: print("handled", flush=True))
+    if sys.argv[1] == "loop-handler":
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: print("handled", flush=True))
+    child = await spawn_process(sys.executable, args=["-c", (
+        "import subprocess, sys, time\\n"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\\n"
+        "print(g.pid, flush=True)\\n"
+        "time.sleep(60)\\n"
+    )])
+    grandchild = (await child.channel.receive()).decode().strip()
+    print(child.pid, grandchild, flush=True)
+    await asyncio.sleep(60)
+
+asyncio.run(main())
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+async def _gone(pid: int, within: float = 3) -> bool:
+    deadline = time.monotonic() + within
+    while _alive(pid) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    return not _alive(pid)
+
+
+async def _run_supervisor(mode: str):
+    app = await asyncio.create_subprocess_exec(PY, "-c", SUPERVISOR, mode, stdout=asyncio.subprocess.PIPE)
+    assert app.stdout is not None
+    line = await asyncio.wait_for(app.stdout.readline(), 10)
+    pids = [int(p) for p in line.split()]
+    return app, pids
+
+
+def _kill_all(app: asyncio.subprocess.Process, pids: list[int]) -> None:
+    import signal
+
+    for pid in [app.pid, *pids]:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
+async def test_a_fatal_signal_stops_the_supervised_groups_and_still_kills_the_app(signame):
+    import signal
+
+    app, pids = await _run_supervisor("default")
+    try:
+        sig = getattr(signal, signame)
+        app.send_signal(sig)
+        assert await asyncio.wait_for(app.wait(), 5) == -sig
+        for pid in pids:
+            assert await _gone(pid), f"{pid} outlived the app"
+    finally:
+        _kill_all(app, pids)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("mode", ["own-handler", "loop-handler"])
+async def test_an_apps_own_signal_handler_is_left_alone(mode):
+    import signal
+
+    app, pids = await _run_supervisor(mode)
+    try:
+        app.send_signal(signal.SIGTERM)
+        assert app.stdout is not None
+        assert (await asyncio.wait_for(app.stdout.readline(), 5)).strip() == b"handled"
+        await asyncio.sleep(0.2)
+        assert app.returncode is None
+        assert all(_alive(pid) for pid in pids)
+    finally:
+        _kill_all(app, pids)
+
