@@ -591,3 +591,37 @@ async def test_a_write_to_an_idle_channel_and_a_handler_that_does_not_wait_need_
     assert {"jsonrpc": "2.0", "id": 1, "result": {"x": 1}} in end.sent
     assert not peer._tasks
     await peer.close()
+
+
+async def test_nothing_more_is_dispatched_once_a_handler_closes_the_peer():
+    # On 3.12+ a handler starts eagerly, inside the read loop: once one closes the peer, the
+    # messages already buffered behind it must not be dispatched on the closed connection.
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    seen: list[Any] = []
+
+    async def shutdown(_params, context):
+        await context.peer.close()
+
+    peer.on_request("shutdown", shutdown)
+    peer.on_request("after", lambda _params, context: seen.append((peer.state, context.signal.aborted)))
+    peer.on_notification("note", lambda _params, _context: seen.append("note"))
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "shutdown"})
+    await end.send({"jsonrpc": "2.0", "id": 2, "method": "after"})
+    await end.send({"jsonrpc": "2.0", "method": "note"})
+    peer.start()
+    await asyncio.wait_for(peer.closed, 2)
+    await tick(5)
+    assert seen == []
+
+
+async def test_a_request_handled_after_the_connection_closed_starts_aborted():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    seen: list[bool] = []
+    peer.on_request("x", lambda _params, context: seen.append(context.signal.aborted))
+    peer.start()
+    await peer.close()
+    peer._handle_request(1, "x", None)  # as the read loop would, had it got that far
+    await tick(3)
+    assert seen == [True]

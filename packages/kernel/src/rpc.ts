@@ -321,6 +321,7 @@ export class RpcPeer {
         const { done, value } = await reader.read();
         if (done) break;
         this.receive(value);
+        if (this.current === 'closed') break; // a handler closed the peer: read nothing more
       }
       this.drain();
     } catch (error) {
@@ -342,6 +343,7 @@ export class RpcPeer {
   }
 
   private receive(message: unknown): void {
+    if (this.current === 'closed') return; // nothing is dispatched on a closed connection
     this.tap('in', message);
     if (!isRecord(message)) {
       this.diagnose('invalid-message', 'Message is not a JSON object', message);
@@ -389,6 +391,7 @@ export class RpcPeer {
     if (this.inbound.has(id)) this.diagnose('duplicate-request-id', `Request id ${JSON.stringify(id)} reused while in flight`);
     const controller = new AbortController();
     const onClose = () => controller.abort(new LocalError('closed', 'connection closed'));
+    if (this.connectionAbort.signal.aborted) onClose(); // a listener added now would never be called
     this.connectionAbort.signal.addEventListener('abort', onClose, { once: true });
     this.inbound.set(id, controller);
     const context: InboundContext = { method, id, signal: controller.signal, peer: this };

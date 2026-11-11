@@ -469,6 +469,10 @@ class RpcPeer:
                 except EndOfChannel:
                     break
                 self._receive(message)
+                if self._state == "closed":
+                    # A handler closed the peer (on 3.12+ it runs eagerly, inside this loop):
+                    # nothing more is read, even what is already buffered.
+                    break
             self._drain()
         except asyncio.CancelledError:
             self._finish(self._close_info or CloseInfo("local"))
@@ -489,6 +493,8 @@ class RpcPeer:
             self._drain_timer = self._clock.set_timeout(lambda: self._finish(CloseInfo("remote-ended")), limit)
 
     def _receive(self, message: Any) -> None:
+        if self._state == "closed":
+            return  # nothing is dispatched on a closed connection
         self._tap("in", message)
         if not isinstance(message, dict):
             self._diagnose("invalid-message", "Message is not a JSON object", message)
@@ -544,6 +550,8 @@ class RpcPeer:
         if key in self._inbound:
             self._diagnose("duplicate-request-id", f"Request id {request_id!r} reused while in flight")
         controller = AbortController()
+        if self._connection.signal.aborted:  # a listener added now would never be called
+            controller.abort(LocalError("closed", "connection closed"))
         remove_close = self._connection.signal.add_listener(lambda _reason: controller.abort(LocalError("closed", "connection closed")))
         self._inbound[key] = controller
         context = InboundContext(method=method, signal=controller.signal, peer=self, id=request_id, is_request=True)
