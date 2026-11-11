@@ -1,26 +1,43 @@
 # Benchmark results
 
-Subspace (TypeScript and Python) against the official ACP SDKs (`@agentclientprotocol/sdk` 2.4.0 and `agent-client-protocol` 1.0.0), run on 2026-11-11 on an Apple M4 (10 cores, 16 GB), macOS 15, Node 26.12.0, Python 3.14.10. How they were run, and how to run them again, is in [README.md](README.md). The raw data is in `results/`.
+Subspace (TypeScript and Python) against the official ACP SDKs (`@agentclientprotocol/sdk` 2.4.0 and `agent-client-protocol` 1.0.0). Run on 2026-11-11 on an Apple M4 (10 cores, 16 GB), macOS 15, Node 26.12.0 and Python 3.14.10, with the 1-minute load average between 2.4 and 3.2. How they were run, and how to run them again, is in [README.md](README.md). The raw data is in `results/`.
 
 Every client was run against every agent, each pair in two processes over stdio, on ACP v1 (the only version all four have in common). Each cell is the median of 3 runs (5 for startup).
 
+These results include two fixes found by the benchmarks: the Subspace Python agent's stdio writer no longer waits for each frame (this change), and the Subspace TS agent starts v2 turns with `setImmediate` (#23, for the v2 tables). `results/*-before-stdio-fix.json` are the runs from before the first; in them the Subspace Python agent streamed 15,634 chunks/s and ran 8,663 concurrent turns/s.
+
+## Same-library pairs
+
+| | Subspace TS | Official TS | ratio | Subspace Py | Official Py | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| startup, ms (lower is better) | 83 | 98 | 0.85 | 83 | 192 | 0.43 |
+| sequential turns/s | 34,041 | 36,391 | 0.94 | 4,963 | 4,885 | 1.02 |
+| turn latency p50 / p99, ms | 0.021 / 0.147 | 0.021 / 0.118 | | 0.195 / 0.379 | 0.201 / 0.252 | |
+| streamed chunks/s | 372,999 | 263,656 | 1.41 | 94,595 | 23,751 | 3.98 |
+| large chunks, MB/s | 979 | 743 | 1.32 | 493 | 515 | 0.96 |
+| permission requests/s | 24,158 | 29,159 | 0.83 | 7,082 | 4,702 | 1.51 |
+| 20 concurrent sessions, turns/s | 95,391 | 121,446 | 0.79 | 24,911 | 39,649 | 0.63 |
+| peak memory while streaming, client / agent, MB | 131 / 111 | 113 / 109 | | 53 / 42 | 57 / 52 | |
+
+The ratio is Subspace ÷ official.
+
 ## Summary
 
-**TypeScript.** Subspace and the official SDK are close, within about a third of each other everywhere.
+**TypeScript.** Subspace and the official SDK are within about 20% of each other on request/response work, and Subspace is ahead on streaming.
 
-- The official SDK is ahead on plain request/response work: 37,116 against 30,505 sequential turns/s, 29,388 against 19,863 permission requests/s, and 105,411 against 70,923 turns/s across 20 concurrent sessions.
-- Subspace is ahead on streaming, as a client: 338,905 chunks/s for the Subspace pair against 252,044 for the official pair. The Subspace client reaches 447,350 against the official agent.
-- Most of the gap is on the agent side. In every row, the official agent is the faster of the two TS agents.
+- **The official SDK is ahead on plain request/response:** sequential turns by 6%, permission requests by 17%, 20 concurrent sessions by 21%. Most of that is the agent side: with the same client, the official agent is the faster of the two in every scenario except sequential turns from the Subspace client.
+- **Subspace is ahead on streaming:** 41% more chunks/s and 32% more MB/s for the same-library pairs. Most of that is the client side: the Subspace client streams about 53% faster than the official client against either agent.
 
-**Python.** The two are even on sequential turns (4,920 and 4,923 turns/s), and each is ahead somewhere else:
+**Python.** The two are even on sequential turns, and Subspace is ahead almost everywhere else.
 
-- **Subspace is ahead** on permission requests (7,148 against 4,550 requests/s) and on startup. Its agent is up and answering in about 91 ms, against 194 ms for the official SDK, which spends that time importing its models. The Subspace client also streams faster (193,434 against 99,204 chunks/s from a TS agent).
-- **The official SDK is ahead** on streaming as an agent (22,962 against 15,634 chunks/s for the same-library pairs), and well ahead on concurrent sessions (37,674 against 8,663 turns/s).
-- **The concurrency gap** is the Subspace Python agent. It handles 20 concurrent sessions no faster than one session at a time (about 12,500 turns/s either way, even with a fast TS client), while the official Python agent goes from 8,400 to 40,000. This is the clearest thing to fix.
+- **Startup:** Subspace is 2.3× faster (83 against 192 ms), because the official SDK spends about 100 ms importing its models.
+- **Streaming and permissions:** Subspace streams 4× faster and answers permission requests 51% faster.
+- **Memory:** Subspace uses less in every scenario.
+- **Concurrent sessions:** the official SDK still leads, 39,649 against 24,911 turns/s. Both sides contribute. With TS clients, the official Python agent is about 20% faster (40,010–42,507 against 32,662–33,866 turns/s), and the official Python client gets more out of either agent than the Subspace Python client does.
 
-**Across languages.** Against a TypeScript agent, the TypeScript clients get through about 2–5× more turns, chunks or requests per second than the Python clients. Against a Python agent, the agent is the limit and the difference mostly disappears. Python processes use about a third of the memory (50 against 130 MB in the streaming scenario).
+**Across languages.** Against a TypeScript agent, the TypeScript clients get through about 2–5× more turns, chunks or requests per second than the Python clients. Against a Python agent, the agent is the limit and the difference mostly disappears. Python processes use about 40% of the memory.
 
-**Protocol v2.** Only Subspace speaks v2 in both languages. The run found a 1 ms delay per turn in the Subspace TS agent: it started each v2 turn with `setTimeout(..., 0)`, and Node waits at least 1 ms for any timer. With `setImmediate` the TS pair went from 775 to 24,449 turns/s, and from 13,317 to 63,992 across 20 sessions (`results/v2-before-setimmediate.json` and `results/v2.json`; the fix is #23). In Python, a v2 turn costs about a third more than a v1 turn (3,130 against 4,920 turns/s): it has three messages instead of two (the answer, then an idle update).
+**Protocol v2** (only Subspace has it in both languages). The TS pair runs 28,117 turns/s and the Python pair 3,628, against 34,041 and 4,963 on v1: a v2 turn has three messages instead of two (the answer, then an idle update). Before #23 the TS pair managed 775 turns/s on v2, because each turn waited for a 1 ms timer (`results/v2-before-setimmediate.json`).
 
 ## What to keep in mind
 
@@ -28,6 +45,7 @@ Every client was run against every agent, each pair in two processes over stdio,
 - The clients do different amounts of work. The Subspace clients turn every update into typed events with a turn projection and keep the turn's history; the official SDK clients here only concatenate the text. That is what an app gets from each by default, but it is not the same work.
 - Startup includes the agent's interpreter start and imports, not only the protocol.
 - Memory is peak RSS, read by each process from its own resource usage at exit.
+- **Run on an idle machine, and compare changes old against new, alternating.** On a busy machine (load 10–40 during this work) the same cell varied up to tenfold; this run's cells that the fixes do not touch came out within 0.82–1.34× of an earlier run, with a median of 1.04.
 
 ## Results, protocol v1
 
@@ -39,10 +57,10 @@ Rows: client. Columns: agent. Cells: ms from the client's first line, lower is b
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **97.0** | 110 | 93.6 | 210 |
-| Official TS | 94.5 | **106** | 93.0 | 208 |
-| Subspace Py | 91.4 | 111 | **90.9** | 199 |
-| Official Py | 88.9 | 115 | 88.9 | **194** |
+| Subspace TS | **82.6** | 99.9 | 83.6 | 182 |
+| Official TS | 81.8 | **98.4** | 83.1 | 181 |
+| Subspace Py | 85.0 | 99.0 | **82.9** | 180 |
+| Official Py | 84.0 | 101 | 84.4 | **192** |
 
 ### Startup including the client's own start and close
 
@@ -50,10 +68,10 @@ Rows: client. Columns: agent. Cells: ms for the whole client process, lower is b
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **192** | 201 | 199 | 338 |
-| Official TS | 210 | **214** | 216 | 350 |
-| Subspace Py | 203 | 221 | **215** | 346 |
-| Official Py | 322 | 354 | 332 | **465** |
+| Subspace TS | **168** | 182 | 175 | 287 |
+| Official TS | 183 | **200** | 196 | 310 |
+| Subspace Py | 185 | 198 | **192** | 306 |
+| Official Py | 299 | 312 | 305 | **447** |
 
 ### Sequential turns (prompt → end_turn, no updates)
 
@@ -61,12 +79,12 @@ Rows: client. Columns: agent. Cells: turns/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **30,505** | 31,202 | 13,129 | 8,202 |
-| Official TS | 36,022 | **37,116** | 12,718 | 8,402 |
-| Subspace Py | 6,905 | 6,600 | **4,920** | 4,018 |
-| Official Py | 9,517 | 10,038 | 6,356 | **4,923** |
+| Subspace TS | **34,041** | 31,069 | 12,793 | 8,371 |
+| Official TS | 29,668 | **36,391** | 13,038 | 8,487 |
+| Subspace Py | 6,954 | 6,892 | **4,963** | 4,069 |
+| Official Py | 9,901 | 10,335 | 6,305 | **4,885** |
 
-Latency per turn, same-library pairs (ms): Subspace TS p50 0.024, p99 0.169; Official TS p50 0.021, p99 0.104; Subspace Py p50 0.196, p99 0.393; Official Py p50 0.198, p99 0.253
+Latency per turn, same-library pairs (ms): Subspace TS p50 0.021, p99 0.147; Official TS p50 0.021, p99 0.118; Subspace Py p50 0.195, p99 0.379; Official Py p50 0.201, p99 0.252
 
 ### Streaming: 20,000 message chunks of 100 characters in one turn
 
@@ -74,10 +92,10 @@ Rows: client. Columns: agent. Cells: chunks/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **338,905** | 447,350 | 16,649 | 21,601 |
-| Official TS | 233,844 | **252,044** | 15,847 | 21,629 |
-| Subspace Py | 193,434 | 205,157 | **15,634** | 22,738 |
-| Official Py | 99,204 | 111,687 | 16,114 | **22,962** |
+| Subspace TS | **372,999** | 402,935 | 105,051 | 22,137 |
+| Official TS | 242,033 | **263,656** | 93,241 | 22,310 |
+| Subspace Py | 205,379 | 214,589 | **94,595** | 23,097 |
+| Official Py | 102,624 | 115,034 | 77,881 | **23,751** |
 
 ### Large chunks: 50 chunks of 1,000,000 characters in one turn
 
@@ -85,10 +103,10 @@ Rows: client. Columns: agent. Cells: MB/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **781** | 950 | 441 | 510 |
-| Official TS | 675 | **703** | 388 | 450 |
-| Subspace Py | 699 | 649 | **497** | 464 |
-| Official Py | 651 | 683 | 488 | **490** |
+| Subspace TS | **979** | 1,038 | 476 | 556 |
+| Official TS | 645 | **743** | 416 | 470 |
+| Subspace Py | 747 | 782 | **493** | 533 |
+| Official Py | 713 | 684 | 532 | **515** |
 
 ### Permission requests: 1,000 asked one after another in one turn
 
@@ -96,10 +114,10 @@ Rows: client. Columns: agent. Cells: requests/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **19,863** | 26,016 | 11,127 | 10,116 |
-| Official TS | 24,428 | **29,388** | 11,527 | 10,464 |
-| Subspace Py | 11,864 | 12,517 | **7,148** | 6,623 |
-| Official Py | 6,788 | 7,129 | 4,726 | **4,550** |
+| Subspace TS | **24,158** | 26,332 | 11,163 | 10,534 |
+| Official TS | 25,303 | **29,159** | 11,140 | 10,494 |
+| Subspace Py | 12,629 | 12,718 | **7,082** | 6,647 |
+| Official Py | 6,972 | 7,267 | 4,831 | **4,702** |
 
 ### Concurrent sessions: 20 sessions × 100 turns at once
 
@@ -107,10 +125,10 @@ Rows: client. Columns: agent. Cells: turns/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Official TS | Subspace Py | Official Py |
 | --- | ---: | ---: | ---: | ---: |
-| Subspace TS | **70,923** | 89,759 | 12,493 | 38,891 |
-| Official TS | 88,169 | **105,411** | 12,525 | 39,982 |
-| Subspace Py | 27,219 | 28,229 | **8,663** | 26,477 |
-| Official Py | 42,365 | 41,577 | 10,881 | **37,674** |
+| Subspace TS | **95,391** | 102,039 | 32,662 | 40,010 |
+| Official TS | 102,961 | **121,446** | 33,866 | 42,507 |
+| Subspace Py | 31,088 | 30,061 | **24,911** | 28,408 |
+| Official Py | 50,785 | 50,535 | 31,071 | **39,649** |
 
 ### Peak memory in the stream scenario (MB RSS)
 
@@ -118,10 +136,10 @@ Same-library pairs; the client and the agent are separate processes.
 
 | library | client | agent |
 | --- | ---: | ---: |
-| Subspace TS | 130 | 108 |
+| Subspace TS | 131 | 111 |
 | Official TS | 113 | 109 |
-| Subspace Py | 50 | 38 |
-| Official Py | 58 | 53 |
+| Subspace Py | 53 | 42 |
+| Official Py | 57 | 52 |
 
 ### Peak memory in the large scenario (MB RSS)
 
@@ -129,13 +147,13 @@ Same-library pairs; the client and the agent are separate processes.
 
 | library | client | agent |
 | --- | ---: | ---: |
-| Subspace TS | 273 | 148 |
-| Official TS | 294 | 149 |
-| Subspace Py | 152 | 56 |
-| Official Py | 165 | 73 |
+| Subspace TS | 274 | 138 |
+| Official TS | 285 | 149 |
+| Subspace Py | 149 | 57 |
+| Official Py | 164 | 74 |
 
 
-## Results, protocol v2 (Subspace only, after the setImmediate fix)
+## Results, protocol v2 (Subspace only)
 
 Median of 3 runs per cell (5 for startup). The same-library pairs are in bold.
 
@@ -145,8 +163,8 @@ Rows: client. Columns: agent. Cells: ms from the client's first line, lower is b
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **90.9** | 90.5 |
-| Subspace Py | 90.5 | **86.6** |
+| Subspace TS | **85.9** | 89.4 |
+| Subspace Py | 94.4 | **84.6** |
 
 ### Startup including the client's own start and close
 
@@ -154,8 +172,8 @@ Rows: client. Columns: agent. Cells: ms for the whole client process, lower is b
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **182** | 195 |
-| Subspace Py | 200 | **205** |
+| Subspace TS | **172** | 186 |
+| Subspace Py | 210 | **195** |
 
 ### Sequential turns (prompt → end_turn, no updates)
 
@@ -163,10 +181,10 @@ Rows: client. Columns: agent. Cells: turns/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **24,449** | 4,859 |
-| Subspace Py | 6,288 | **3,130** |
+| Subspace TS | **28,117** | 7,614 |
+| Subspace Py | 6,328 | **3,628** |
 
-Latency per turn, same-library pairs (ms): Subspace TS p50 0.029, p99 0.183; Subspace Py p50 0.308, p99 0.539
+Latency per turn, same-library pairs (ms): Subspace TS p50 0.026, p99 0.151; Subspace Py p50 0.253, p99 0.569
 
 ### Streaming: 20,000 message chunks of 100 characters in one turn
 
@@ -174,8 +192,8 @@ Rows: client. Columns: agent. Cells: chunks/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **359,312** | 15,804 |
-| Subspace Py | 193,274 | **15,541** |
+| Subspace TS | **383,185** | 108,406 |
+| Subspace Py | 155,344 | **94,326** |
 
 ### Large chunks: 50 chunks of 1,000,000 characters in one turn
 
@@ -183,8 +201,8 @@ Rows: client. Columns: agent. Cells: MB/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **641** | 423 |
-| Subspace Py | 548 | **423** |
+| Subspace TS | **902** | 471 |
+| Subspace Py | 777 | **521** |
 
 ### Permission requests: 1,000 asked one after another in one turn
 
@@ -192,8 +210,8 @@ Rows: client. Columns: agent. Cells: requests/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **18,996** | 10,496 |
-| Subspace Py | 11,830 | **6,881** |
+| Subspace TS | **24,423** | 11,162 |
+| Subspace Py | 12,531 | **7,037** |
 
 ### Concurrent sessions: 20 sessions × 100 turns at once
 
@@ -201,8 +219,8 @@ Rows: client. Columns: agent. Cells: turns/s, higher is better.
 
 | client ↓ / agent → | Subspace TS | Subspace Py |
 | --- | ---: | ---: |
-| Subspace TS | **63,992** | 4,884 |
-| Subspace Py | 22,295 | **5,192** |
+| Subspace TS | **66,747** | 17,516 |
+| Subspace Py | 24,006 | **15,760** |
 
 ### Peak memory in the stream scenario (MB RSS)
 
@@ -210,8 +228,8 @@ Same-library pairs; the client and the agent are separate processes.
 
 | library | client | agent |
 | --- | ---: | ---: |
-| Subspace TS | 131 | 104 |
-| Subspace Py | 51 | 38 |
+| Subspace TS | 130 | 108 |
+| Subspace Py | 52 | 44 |
 
 ### Peak memory in the large scenario (MB RSS)
 
@@ -219,6 +237,6 @@ Same-library pairs; the client and the agent are separate processes.
 
 | library | client | agent |
 | --- | ---: | ---: |
-| Subspace TS | 1114 | 140 |
-| Subspace Py | 1370 | 58 |
+| Subspace TS | 275 | 139 |
+| Subspace Py | 151 | 57 |
 

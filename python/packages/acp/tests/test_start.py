@@ -198,3 +198,96 @@ async def test_start_trace_is_buffered_and_flushed_soon_after(tmp_path):
     await asyncio.sleep(_Trace.FLUSH_S * 3)
     assert len(parse_trace((tmp_path / "t.jsonl").read_text())) == 101
     trace.close()
+
+
+async def test_stdio_send_returns_once_queued_waits_past_the_window_and_raises_a_failed_write_next_time():
+    import asyncio
+    import importlib
+    import threading
+
+    from deft_subspace.acp.start import _StdioChannel
+
+    start = importlib.import_module("deft_subspace.acp.start")  # the package's `start` is the function
+
+    class Blocked:
+        def __init__(self) -> None:
+            self.go = threading.Event()
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.go.wait(5)
+            self.data += data
+
+        def flush(self) -> None:
+            pass
+
+    # A send does not wait for the write: the writer thread is stuck, yet sends return.
+    out = Blocked()
+    channel = _StdioChannel(reader=None, writer=out)
+    for i in range(10):
+        await asyncio.wait_for(channel.send(f"frame {i}\n".encode()), 1)
+    # Past the window, even a small send waits until the writer catches up.
+    small = b"x" * (start._LARGE // 2 - 1) + b"\n"
+    while channel._unwritten + len(small) <= start._WINDOW:
+        await asyncio.wait_for(channel.send(small), 1)
+    waiting = asyncio.ensure_future(channel.send(small))
+    await asyncio.sleep(0.05)
+    assert not waiting.done()
+    out.go.set()
+    await asyncio.wait_for(waiting, 5)
+    await channel.close()
+    assert out.data.decode().split("\n")[:10] == [f"frame {i}" for i in range(10)]
+
+    # A large frame is waited for even when the window has room.
+    out = Blocked()
+    channel = _StdioChannel(reader=None, writer=out)
+    large = asyncio.ensure_future(channel.send(b"x" * start._LARGE))
+    await asyncio.sleep(0.05)
+    assert not large.done()
+    out.go.set()
+    await asyncio.wait_for(large, 5)
+    assert channel._drain is not None  # the exit hook, while the writer may still have work
+    await channel.close()
+    assert channel._drain is None  # flushed: nothing left for the hook to wait for
+
+    class Broken:
+        def write(self, data: bytes) -> None:
+            raise OSError(32, "Broken pipe")
+
+        def flush(self) -> None:
+            pass
+
+    # A failed write is raised by the next send.
+    channel = _StdioChannel(reader=None, writer=Broken())
+    await channel.send(b"lost\n")
+    for _ in range(100):
+        if channel._failure is not None:
+            break
+        await asyncio.sleep(0.01)
+    with pytest.raises(start.ChannelClosed):
+        await channel.send(b"next\n")
+
+
+def test_stdio_frames_queued_when_the_program_ends_are_still_written():
+    """An agent that returns from main as soon as its peer is closed must not lose its last
+    replies: the writer thread is a daemon, and sends return before their frames are written."""
+    import subprocess
+
+    script = """
+import asyncio, sys, time
+from deft_subspace.acp.start import _StdioChannel
+
+class Slow:
+    def __init__(self, out): self.out = out
+    def write(self, data): time.sleep(0.3); self.out.write(data)
+    def flush(self): self.out.flush()
+
+async def main():
+    channel = _StdioChannel(reader=None, writer=Slow(sys.stdout.buffer))
+    await channel.send(b"last reply\\n")  # returns before it is written; main ends at once
+
+asyncio.run(main())
+"""
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == b"last reply\n"

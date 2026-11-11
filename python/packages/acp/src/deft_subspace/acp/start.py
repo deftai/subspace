@@ -31,6 +31,7 @@ ask before writing and running, and a silent refusal surprises everyone.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import queue
@@ -413,6 +414,13 @@ async def run(
         await started.close()
 
 
+#: How many bytes `_StdioChannel.send` lets the writer thread fall behind before it waits.
+_WINDOW = 1 << 20
+#: A frame this big is waited for anyway: encoding the next one while it is written makes the
+#: two threads trade the GIL for every pipe-sized write (about 10% slower for 1 MB frames).
+_LARGE = 64 * 1024
+
+
 @dataclass
 class _StdioChannel:
     """This process's stdin and stdout as a byte channel. Reads come from a daemon
@@ -429,6 +437,12 @@ class _StdioChannel:
     #: (bytes, the sender's loop, a future for the result); None ends the writer.
     _writes: queue.SimpleQueue[tuple[bytes | None, asyncio.AbstractEventLoop, asyncio.Future[None]] | None] = field(default_factory=queue.SimpleQueue)
     _writing: bool = False
+    #: Bytes queued for the writer thread and not yet written.
+    _unwritten: int = 0
+    #: The first write that failed; later sends raise it.
+    _failure: BaseException | None = None
+    #: The atexit hook that lets the writer finish; unregistered once close() has flushed.
+    _drain: Callable[[], None] | None = None
 
     def _start(self) -> None:
         if self._started:
@@ -513,7 +527,18 @@ class _StdioChannel:
                 for _data, loop, future in batch:
                     settle(loop, future, failed)
 
-        threading.Thread(target=run, name="serve_stdio:stdout", daemon=True).start()
+        thread = threading.Thread(target=run, name="serve_stdio:stdout", daemon=True)
+        thread.start()
+
+        def drain() -> None:
+            # A send returns before its frame is written, and `peer.closed` resolves before the
+            # last frames are flushed, so an agent that returns from main once it is closed
+            # would lose them with this (daemon) thread. Let it finish what was queued first.
+            self._writes.put(None)
+            thread.join()
+
+        self._drain = drain
+        atexit.register(drain)
 
     def _enqueue(self, data: bytes | None) -> asyncio.Future[None]:
         loop = asyncio.get_running_loop()
@@ -523,10 +548,31 @@ class _StdioChannel:
         return future
 
     async def send(self, item: bytes) -> None:
+        """Queue a frame for the writer thread. It returns once the frame is queued, as an
+        asyncio stream's write does, and waits only while more than `_WINDOW` bytes are
+        still unwritten (so a stdout nobody reads still holds the sender back) or for a
+        frame of `_LARGE` bytes or more. Waiting for
+        each frame would cost a round trip to the thread per message, and messages from
+        concurrent sessions would go out one at a time. A failed write is raised by the
+        next send."""
         if self._closed:
             raise ChannelClosed("stdout closed")
-        # Shielded: once queued, the frame is written whole whatever happens to this send.
-        await asyncio.shield(self._enqueue(item))
+        if self._failure is not None:
+            raise ChannelClosed(str(self._failure))
+        future = self._enqueue(item)
+        size = len(item)
+        self._unwritten += size
+
+        def written(done: asyncio.Future[None]) -> None:
+            self._unwritten -= size
+            if not done.cancelled() and done.exception() is not None and self._failure is None:
+                self._failure = done.exception()
+
+        future.add_done_callback(written)
+        if self._unwritten > _WINDOW or size >= _LARGE:
+            # Shielded: once queued, the frame is written whole whatever happens to this send.
+            # Frames are written in order, so this one done means every earlier one is too.
+            await asyncio.shield(future)
 
     async def close(self) -> None:
         """End our side: what was sent is written and flushed first."""
@@ -539,6 +585,9 @@ class _StdioChannel:
             await flushed
         except ChannelClosed:
             pass
+        if self._drain is not None:
+            atexit.unregister(self._drain)
+            self._drain = None
 
     async def abort(self) -> None:
         """Stop sending, and return at once instead of waiting for what was already sent.

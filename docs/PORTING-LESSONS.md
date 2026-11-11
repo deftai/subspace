@@ -269,6 +269,22 @@ interruption rules.
   would bypass it).
 - **Once a handler closes the peer, dispatch nothing more**, not even
   messages already buffered.
+- **Don't wait for each write when a thread does the writing.** The Python
+  stdio channel handed each frame to a writer thread and waited until it was
+  written. Every message then cost a round trip between the loop and the
+  thread, and 20 concurrent sessions were no faster than one. Return once
+  the frame is queued, as asyncio streams do, and wait only past a byte
+  window (backpressure) or for big frames: overlapping a 1 MB write with
+  encoding the next frame made the two threads fight over the GIL and was
+  10% slower. Measure such a change old-against-new, alternating runs, on
+  an idle machine: under load the same cell varied tenfold.
+- **A send that doesn't wait needs a flush at exit.** Once sends return
+  before their frames are written, "the peer is closed" no longer means
+  "the last reply is out". Node keeps the process alive until pending stdout
+  writes finish; Python kills daemon threads at exit, so an agent that
+  returned from main once its peer closed could lose its final reply. The
+  stdio writer registers an `atexit` hook that lets it write what was
+  queued. A Rust or C++ port has the same trap with a detached writer thread.
 - **Never block the event loop.** File checks (`realpath`, `lstat`), file
   reads and writes, catalog loading and trace writes run in a thread
   (`asyncio.to_thread`) or are batched. A stdio writer thread does the
@@ -461,3 +477,10 @@ the ports can drift without anyone noticing:
   default (stderr, once per file). A CLI that loads the catalog twice for
   one command should load it once, or the user sees the warning twice.
 
+### 2026-11-11: the stdio writer
+
+The Python agent's concurrency gap came from `serve_stdio` waiting for its
+writer thread on every frame. Sends now return once queued (streaming about
+7× faster, 20 concurrent sessions about 2.7×). Review then caught what that
+broke: a reply still queued at exit died with the daemon writer thread. An
+`atexit` hook now drains it.
