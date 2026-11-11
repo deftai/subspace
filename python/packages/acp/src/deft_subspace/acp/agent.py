@@ -1247,6 +1247,7 @@ def serve_agent(
     extensions: list[ExtensionHandler] | None = None,
     methods: dict[str, Callable[[Any, InboundContext], Any]] | None = None,
     peer: dict[str, Any] | None = None,
+    telemetry: Any = None,
 ) -> RpcPeer:
     """Serve an agent on `channel`. Needs a running event loop. Returns the peer.
 
@@ -1270,6 +1271,9 @@ def serve_agent(
     - `methods`: more request handlers `(params, context)`, e.g. vendor `_name/method` extensions.
       Registered before the first message.
     - `peer`: RpcPeer keyword arguments (`tap`, `on_diagnostic`, `timeout_ms`, ...); cancellation is always `$/cancel_request`.
+    - `telemetry`: OpenTelemetry for this connection (`otel_tap()`). A turn continues the client's
+      trace when its prompt carries one in `_meta`, your handlers run inside their request's span,
+      and requests to the client carry the trace on.
     """
     options = _Options(
         name=name,
@@ -1295,9 +1299,20 @@ def serve_agent(
         layers=_agent_layers(options),
         request=_as_peer_handler(any_request) if any_request is not None else None,
         notification=_as_peer_handler(any_notification) if any_notification is not None else None,
-        peer={**(peer or {}), **cancel_request},
+        peer=_peer_options(peer, telemetry),
     )
+    if telemetry is not None:
+        endpoint.peer.on_close(lambda _info: telemetry.close())
     return endpoint.peer
+
+
+def _peer_options(peer: dict[str, Any] | None, telemetry: Any) -> dict[str, Any]:
+    options = dict(peer or {})
+    if telemetry is not None:
+        from .telemetry import with_telemetry
+
+        options.update(with_telemetry(options.get("tap"), telemetry, inbound=options.get("inbound"), outbound=options.get("outbound")))
+    return {**options, **cancel_request}
 
 
 __all__ = [
