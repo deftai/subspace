@@ -198,3 +198,56 @@ async def test_start_trace_is_buffered_and_flushed_soon_after(tmp_path):
     await asyncio.sleep(_Trace.FLUSH_S * 3)
     assert len(parse_trace((tmp_path / "t.jsonl").read_text())) == 101
     trace.close()
+
+
+async def test_stdio_send_returns_once_queued_waits_past_the_window_and_raises_a_failed_write_next_time():
+    import asyncio
+    import importlib
+    import threading
+
+    from deft_subspace.acp.start import _StdioChannel
+
+    start = importlib.import_module("deft_subspace.acp.start")  # the package's `start` is the function
+
+    class Blocked:
+        def __init__(self) -> None:
+            self.go = threading.Event()
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.go.wait(5)
+            self.data += data
+
+        def flush(self) -> None:
+            pass
+
+    # A send does not wait for the write: the writer thread is stuck, yet sends return.
+    out = Blocked()
+    channel = _StdioChannel(reader=None, writer=out)
+    for i in range(10):
+        await asyncio.wait_for(channel.send(f"frame {i}\n".encode()), 1)
+    # Past the window, a send waits until the writer catches up.
+    big = asyncio.ensure_future(channel.send(b"x" * (start._WINDOW + 1) + b"\n"))
+    await asyncio.sleep(0.05)
+    assert not big.done()
+    out.go.set()
+    await asyncio.wait_for(big, 5)
+    await channel.close()
+    assert out.data.decode().split("\n")[:10] == [f"frame {i}" for i in range(10)]
+
+    class Broken:
+        def write(self, data: bytes) -> None:
+            raise OSError(32, "Broken pipe")
+
+        def flush(self) -> None:
+            pass
+
+    # A failed write is raised by the next send.
+    channel = _StdioChannel(reader=None, writer=Broken())
+    await channel.send(b"lost\n")
+    for _ in range(100):
+        if channel._failure is not None:
+            break
+        await asyncio.sleep(0.01)
+    with pytest.raises(start.ChannelClosed):
+        await channel.send(b"next\n")

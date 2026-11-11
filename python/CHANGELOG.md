@@ -2,6 +2,10 @@
 
 Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
 
+## Unreleased
+
+- acp: `serve_stdio` no longer waits for each frame to be written before the next can be sent: a send returns once its frame is queued for the writer thread, and waits only while more than 1 MiB is unwritten, or for a frame of 64 KiB or more. Frames are still written whole and in order; a failed write is raised by the next send instead of by its own. Each message cost a round trip to the writer thread before, so concurrent sessions were answered one message at a time: streaming small chunks is about 7× faster, 20 concurrent sessions about 2.7× (`bench/`), and sequential turns and large chunks are unchanged.
+
 ## 0.1.0a1
 
 First release, an alpha (the API may still change): a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.

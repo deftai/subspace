@@ -269,6 +269,15 @@ interruption rules.
   would bypass it).
 - **Once a handler closes the peer, dispatch nothing more**, not even
   messages already buffered.
+- **Don't wait for each write when a thread does the writing.** The Python
+  stdio channel handed each frame to a writer thread and waited until it was
+  written. Every message then cost a round trip between the loop and the
+  thread, and 20 concurrent sessions were no faster than one. Return once
+  the frame is queued, as asyncio streams do, and wait only past a byte
+  window (backpressure) or for big frames: overlapping a 1 MB write with
+  encoding the next frame made the two threads fight over the GIL and was
+  10% slower. Measure such a change old-against-new, alternating runs, on
+  an idle machine: under load the same cell varied tenfold.
 - **Never block the event loop.** File checks (`realpath`, `lstat`), file
   reads and writes, catalog loading and trace writes run in a thread
   (`asyncio.to_thread`) or are batched. A stdio writer thread does the
