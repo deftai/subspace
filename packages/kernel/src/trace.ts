@@ -94,7 +94,12 @@ function copyJson(value: unknown, depth: number): unknown {
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return structuredClone(value);
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) out[key] = copyJson((value as Record<string, unknown>)[key], depth + 1);
+  for (const key of Object.keys(value)) {
+    const copy = copyJson((value as Record<string, unknown>)[key], depth + 1);
+    // `__proto__` (an own key in parsed JSON) would set the prototype instead of a field.
+    if (key === '__proto__') Object.defineProperty(out, key, { value: copy, enumerable: true, writable: true, configurable: true });
+    else out[key] = copy;
+  }
   return out;
 }
 

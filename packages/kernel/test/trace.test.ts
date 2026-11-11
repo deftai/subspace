@@ -52,6 +52,16 @@ test('a trace record is a copy: changing the message later does not change it', 
   assert.notEqual(recorded.params, message.params);
 });
 
+test('a trace record keeps an own __proto__ field of parsed JSON', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  tap('in', JSON.parse('{"jsonrpc":"2.0","method":"m","params":{"__proto__":{"x":1},"y":2}}'));
+  const params = (records[1] as { msg: { params: Record<string, unknown> } }).msg.params;
+  assert.deepEqual(Object.keys(params), ['__proto__', 'y']);
+  assert.equal(Object.getPrototypeOf(params), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(params, '__proto__')?.value, { x: 1 });
+});
+
 test('a trace tap records a cyclic or uncloneable message instead of throwing', () => {
   const records: TraceRecord[] = [];
   const tap = traceTap((r) => records.push(r), { peer: 'a' });
