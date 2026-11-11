@@ -31,6 +31,7 @@ ask before writing and running, and a silent refusal surprises everyone.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import queue
@@ -524,7 +525,17 @@ class _StdioChannel:
                 for _data, loop, future in batch:
                     settle(loop, future, failed)
 
-        threading.Thread(target=run, name="serve_stdio:stdout", daemon=True).start()
+        thread = threading.Thread(target=run, name="serve_stdio:stdout", daemon=True)
+        thread.start()
+
+        def drain() -> None:
+            # A send returns before its frame is written, and `peer.closed` resolves before the
+            # last frames are flushed, so an agent that returns from main once it is closed
+            # would lose them with this (daemon) thread. Let it finish what was queued first.
+            self._writes.put(None)
+            thread.join()
+
+        atexit.register(drain)
 
     def _enqueue(self, data: bytes | None) -> asyncio.Future[None]:
         loop = asyncio.get_running_loop()
