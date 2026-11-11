@@ -10,10 +10,10 @@
  */
 import { cancelRequest, ErrorCode, RpcError, RpcPeer, type Channel } from '@deft-subspace/kernel';
 import { configOptionsFrom, modesFrom } from '@deft-subspace/acp';
-import { applyWaivers, runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
+import { applyWaivers, defaultTempDir, runCheck, TIMED_OUT, within, type CheckResult } from './check.ts';
 
 export interface CheckAgentOptions {
-  /** The cwd for sessions. Default '/tmp'. */
+  /** The cwd for sessions. Default the temporary folder (os.tmpdir()). */
   cwd?: string;
   /** Protocol to ask for. Default 2 (an agent may answer 1). */
   protocol?: 1 | 2;
@@ -29,6 +29,8 @@ export interface CheckAgentOptions {
   cancelGraceMs?: number;
   /** Wait this long after the long turn's first update before cancelling. Default 0. */
   cancelAfterMs?: number;
+  /** How long after a turn's end to keep watching for stray updates (`prompt.updates-before-end`). Default 100 ms. */
+  trailingUpdateMs?: number;
   /** Run only these check ids. */
   only?: string[];
   /** Failed checks to waive, as check id: reason (known quirks: an agent's `waivers` from the catalog, `resolveAgent()`). */
@@ -119,7 +121,7 @@ class TurnWatch {
 }
 
 export async function checkAgent(channel: Channel<unknown>, options: CheckAgentOptions = {}): Promise<CheckResult[]> {
-  const cwd = options.cwd ?? '/tmp';
+  const cwd = options.cwd ?? defaultTempDir();
   const turnTimeout = options.turnTimeoutMs ?? 120_000;
   const grace = options.cancelGraceMs ?? 10_000;
   const prompts = {
@@ -289,8 +291,8 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   if (sessionId && (wanted('prompt.ends') || wanted('prompt.updates-before-end'))) {
     const watch = startTurn(sessionId, prompts.prompt);
     const ended = await within(watch.ended, turnTimeout, TIMED_OUT);
-    // Anything sent right after the end would show up now.
-    await new Promise((r) => setTimeout(r, 100));
+    // Anything sent right after the end would show up now (later ones are not seen).
+    await new Promise((r) => setTimeout(r, options.trailingUpdateMs ?? 100));
     await check('prompt.ends', async () =>
       ended === TIMED_OUT
         ? { pass: false, detail: `no end within ${turnTimeout} ms (v${v})` }
@@ -360,7 +362,9 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
       if (!asked) {
         permissionHandlers.delete(id);
         await settle(id, watch);
-        return { pass: true, skipped: true, detail: `the agent asked no permission (${first === TIMED_OUT ? 'timed out' : `stopReason ${watch.stopReason}`})` };
+        // A turn that hangs is a failure; only one that ends without asking is skipped.
+        if (first === TIMED_OUT) return { pass: false, detail: `the turn neither asked permission nor ended within ${turnTimeout} ms` };
+        return { pass: true, skipped: true, detail: `the agent asked no permission (stopReason ${watch.stopReason})` };
       }
       const ended = await within(watch.ended, grace, TIMED_OUT);
       permissionHandlers.delete(id);
