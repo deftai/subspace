@@ -281,7 +281,10 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
   const groups = !windows;
   const env = { ...process.env, ...(options.env ?? {}) };
   const args = [...(options.args ?? [])];
-  const line = windows ? windowsLaunch(command, args, env, isFile) : undefined;
+  // The child resolves a relative command against its own folder, so look for it there.
+  const inCwd = (file: string): boolean =>
+    isFile(options.cwd && !path.win32.isAbsolute(file) ? path.win32.resolve(options.cwd, file) : file);
+  const line = windows ? windowsLaunch(command, args, env, inCwd) : undefined;
   const child: ChildProcess =
     line === undefined
       ? spawn(command, args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: groups })

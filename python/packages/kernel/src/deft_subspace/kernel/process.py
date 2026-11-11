@@ -551,7 +551,13 @@ async def _start(
         protocol = _Protocol(limit, loop)
         return protocol
 
-    line = _windows_launch(command, args, env, os.path.isfile) if _WINDOWS else None
+    cwd = kwds.get("cwd")
+
+    def in_cwd(path: str) -> bool:
+        # The child resolves a relative command against its own folder, so look for it there.
+        return os.path.isfile(ntpath.join(os.fspath(cwd), path) if cwd and not ntpath.isabs(path) else path)  # type: ignore[arg-type]
+
+    line = _windows_launch(command, args, env, in_cwd) if _WINDOWS else None
     if line is not None:
         # A str for args is passed to CreateProcess as it is, which neither subprocess_exec (it
         # quotes each argument) nor subprocess_shell (no /d) allows: make the transport as

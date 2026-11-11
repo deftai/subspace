@@ -488,6 +488,36 @@ async def test_windows_a_cmd_file_gets_its_arguments_intact_and_nothing_runs(tmp
         await spawn_process(str(echo), args=["line\nbreak"])
 
 
+async def test_windows_a_relative_command_is_looked_for_in_the_childs_folder(monkeypatch: pytest.MonkeyPatch):
+    # The Windows lookup, on any OS: what is_file is asked for `./run.cmd` with cwd D:\work.
+    from deft_subspace.kernel import process
+
+    asked: list[str] = []
+
+    def launch(command, args, env, is_file):
+        is_file(command)
+        is_file(r"C:\bin\tool.cmd")
+        raise SpawnError(command, "EINVAL", "stop here")
+
+    monkeypatch.setattr(process, "_WINDOWS", True)
+    monkeypatch.setattr(process, "_windows_launch", launch)
+    monkeypatch.setattr(process.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    monkeypatch.setattr(process.subprocess, "CREATE_NO_WINDOW", 0x8000000, raising=False)
+    monkeypatch.setattr(process.os.path, "isfile", lambda path: asked.append(path) or False)
+    with pytest.raises(SpawnError):
+        await process.spawn_process("./run.cmd", cwd=r"D:\work")
+    assert asked == [r"D:\work\./run.cmd", r"C:\bin\tool.cmd"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd launch")
+async def test_windows_a_cmd_file_relative_to_cwd_runs_through_cmd_exe(tmp_path, monkeypatch):
+    (tmp_path / "hello.cmd").write_bytes(f'@"{PY}" -c "print(\'hi\')"\r\n'.encode())
+    monkeypatch.chdir(tmp_path.parent)
+    child = await spawn_process(r".\hello.cmd", cwd=str(tmp_path))
+    assert (await child.channel.receive()).decode().strip() == "hi"
+    await asyncio.wait_for(child.ended(), 10)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd launch")
 async def test_windows_stop_ends_a_cmd_files_whole_tree(tmp_path):
     sleeper = tmp_path / "sleeper.cmd"
