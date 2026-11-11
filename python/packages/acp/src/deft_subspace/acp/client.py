@@ -147,7 +147,8 @@ class Timeouts:
     initialize_ms: float = 60_000
     #: session/new, load, resume.
     session_ms: float = 60_000
-    #: How long a cancelled turn may take to confirm before it is ended here.
+    #: How long a cancelled turn may take to confirm before it is ended here. A turn ended here then
+    #: holds queued prompts until the agent confirms it, for at most twice as long again.
     cancel_grace_ms: float = 10_000
     #: authenticate / auth/login (the user may be logging in in a browser).
     auth_ms: float = 300_000
@@ -1479,7 +1480,8 @@ class Session:
         self._idle_projection.tool_calls.update(active.projection.tool_calls)
         if forced:
             loop = asyncio.get_running_loop()
-            self._enter(_Draining(active, loop.call_later(self.client._options.timeouts.cancel_grace_ms / 1000, lambda: self._drained(active))))
+            drain_s = 2 * self.client._options.timeouts.cancel_grace_ms / 1000
+            self._enter(_Draining(active, loop.call_later(drain_s, lambda: self._drained(active))))
         else:
             self._enter(_Idle())
         active.turn.finish(

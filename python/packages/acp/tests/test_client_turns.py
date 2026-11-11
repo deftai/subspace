@@ -71,8 +71,8 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
             await update(agent, chunk("second turn answer"))
             await update(agent, {"sessionUpdate": "state_update", "state": "idle", "stopReason": "end_turn"})
 
-        # The first confirms the cancel late: after the grace period, before the drain gives up.
-        later(0.16, confirm()) if n == 1 else later(0.02, answer())
+        # The first confirms the cancel late: after the grace period and one more, before the drain gives up.
+        later(0.25, confirm()) if n == 1 else later(0.02, answer())
         return {}
 
     client, _agent = await Fake(2, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=100))

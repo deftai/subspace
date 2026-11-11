@@ -155,7 +155,11 @@ export interface ClientOptions extends TurnHandlers {
     initializeMs?: number;
     /** session/new. Default 60 s. */
     sessionMs?: number;
-    /** How long a cancelled turn may take to confirm before it is ended here. Default 10 s. */
+    /**
+     * How long a cancelled turn may take to confirm before it is ended here.
+     * Default 10 s. A turn ended here then holds queued prompts until the
+     * agent confirms it, for at most twice as long again.
+     */
     cancelGraceMs?: number;
     /** authenticate / auth/login. Default 5 min (the user may be logging in in a browser). */
     authMs?: number;
@@ -1348,7 +1352,7 @@ export class Session {
     const { stopReason, error, forced } = outcome;
     // Later updates to this turn's tool calls (background work) patch them here.
     for (const [id, call] of active.projection.toolCalls) this.idleProjection.toolCalls.set(id, call);
-    if (forced) this.enter({ phase: 'draining', stale: active, until: setTimeout(() => this.drained(active), this.client.cancelGraceMs) });
+    if (forced) this.enter({ phase: 'draining', stale: active, until: setTimeout(() => this.drained(active), 2 * this.client.cancelGraceMs) });
     else this.enter({ phase: 'idle' });
     active.turn.finish({
       stopReason,

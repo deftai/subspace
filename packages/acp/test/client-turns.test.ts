@@ -31,11 +31,11 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
 test("v2: a force-ended turn's late updates and idle do not land in the next turn", async () => {
   const { client } = await fakeAgent(2, (agent, _p, n) => {
     if (n === 1) {
-      // Confirms the cancel late: after the grace period, before the drain gives up.
+      // Confirms the cancel late: after the grace period and one more, before the drain gives up.
       setTimeout(async () => {
         await update(agent, chunk('late '));
         await update(agent, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' });
-      }, 160);
+      }, 250);
       return {};
     }
     setTimeout(async () => {
