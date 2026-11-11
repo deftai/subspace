@@ -80,7 +80,7 @@ async def test_serve_tools_over_mcp_over_acp():
     await client.close()
 
 
-async def test_mcp_connector_stdio():
+async def test_mcp_connector_stdio(tmp_path):
     server = StdioMcpServer("tiny", sys.executable, [str(Path(__file__).parent / "fixtures" / "mcp_stdio_server.py")])
     progress = []
 
@@ -92,8 +92,10 @@ async def test_mcp_connector_stdio():
 
     client = await connect({"prompt": prompt, "mcp_connector": mcp_connector(stderr="ignore")})
     assert client.supports.mcp.stdio
-    session = await client.new_session("/tmp", mcp_servers=[server])
-    assert (await session.prompt("go")).text == "add 3"
+    session = await client.new_session(str(tmp_path), mcp_servers=[server])
+    result = await session.prompt("go")
+    assert result.error is None, result.error
+    assert result.text == "add 3"
     assert progress and progress[0]["method"] == "notifications/progress"
     await session.close()
     await client.close()

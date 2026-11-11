@@ -130,7 +130,7 @@ async def test_prompt_signal_and_timeout_ms_cancel_the_turn():
 
 async def test_file_embedded_where_the_agent_takes_it_and_text_where_it_does_not(tmp_path):
     path = tmp_path / "notes.md"
-    path.write_text("# Notes\nhi")
+    path.write_bytes(b"# Notes\nhi")
     for embedded in (True, False):
         received: list = []
         s = await connect_session(
@@ -156,6 +156,6 @@ def test_image_and_unknown_types(tmp_path: Path):
     with pytest.raises(ValueError, match="not a known image type"):
         image(tmp_path / "a.bin")
     other = tmp_path / "x.unknown"
-    other.write_text("t\r\n")
+    other.write_bytes(b"t\r\n")
     assert file(other)["resource"]["mimeType"] == "text/plain"
     assert file(other)["resource"]["text"] == "t\r\n"
