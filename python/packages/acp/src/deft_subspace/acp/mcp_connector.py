@@ -85,10 +85,10 @@ def _load_sdk() -> Any:
     try:
         import mcp
         from mcp.client.sse import sse_client
+        import httpx2
         from mcp.client.streamable_http import streamable_http_client
-        from mcp.shared._httpx_utils import create_mcp_http_client
         from mcp.shared.exceptions import MCPError
-        from mcp_types._types import Request, RequestParams
+        from mcp.types import Request, RequestParams
         from pydantic import ConfigDict, TypeAdapter
     except ImportError as error:
         raise ImportError("mcp_connector() needs the mcp package for http and sse servers: pip install 'deft-subspace-acp[mcp]'") from error
@@ -105,7 +105,8 @@ def _load_sdk() -> Any:
         "Client": mcp.Client,
         "sse_client": sse_client,
         "streamable_http_client": streamable_http_client,
-        "http_client": create_mcp_http_client,
+        # As the SDK's own default client: 30 s, and 300 s to read (a server may hold a stream open).
+        "http_client": lambda headers=None: httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(30.0, read=300.0)),
         "MCPError": MCPError,
         "RawParams": RawParams,
         "RawRequest": RawRequest,

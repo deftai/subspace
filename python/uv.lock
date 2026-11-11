@@ -262,9 +262,9 @@ otel = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", specifier = "==1.0.0" },
+    { name = "agent-client-protocol", specifier = ">=1.0,<2" },
     { name = "deft-subspace-kernel", editable = "packages/kernel" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3,<3" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27" },
 ]
 provides-extras = ["otel", "mcp"]

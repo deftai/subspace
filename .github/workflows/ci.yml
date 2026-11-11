@@ -55,7 +55,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.11", "3.13"]
+        python: ["3.11", "3.13", "3.14"]
     defaults:
       run:
         working-directory: python
@@ -70,3 +70,29 @@ jobs:
         run: uv run pyright
       - name: Test
         run: uv run pytest -q
+
+  python-dist:
+    name: python dist (build, check, install, smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.14"
+      - name: Versions
+        run: uv run --no-project python scripts/check_versions.py
+      - name: Build
+        run: |
+          uv build --package deft-subspace-kernel -o dist
+          uv build --package deft-subspace-acp -o dist
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+      - name: Install the wheels in a clean environment and smoke test
+        run: |
+          uv venv /tmp/clean -p 3.14
+          uv pip install -p /tmp/clean dist/*.whl
+          cd /tmp && /tmp/clean/bin/python -I "$GITHUB_WORKSPACE/python/scripts/smoke.py"

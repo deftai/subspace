@@ -1,0 +1,73 @@
+# Publishes deft-subspace-kernel and deft-subspace-acp to PyPI when a python-v<version> tag is pushed.
+#
+# Nothing runs until such a tag exists. Before the first release:
+# - On PyPI, add a trusted publisher for each project (owner deftai, repository subspace,
+#   workflow python-release.yml, environment pypi).
+# - In this repository, create the `pypi` environment, with required reviewers.
+# To release: python/scripts/set_version.py <version>, add a "## <version>" section to
+# python/CHANGELOG.md, merge, then tag the merge commit python-v<version> and push the tag.
+name: python-release
+
+on:
+  push:
+    tags: ["python-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.14"
+      - name: Tag, versions and changelog agree
+        run: uv run --no-project python scripts/check_versions.py --tag "$GITHUB_REF_NAME"
+      - name: Test
+        run: |
+          uv sync --locked
+          uv run pyright
+          uv run pytest -q
+      - name: Build
+        run: |
+          uv build --package deft-subspace-kernel -o dist
+          uv build --package deft-subspace-acp -o dist
+          uvx twine check --strict dist/*
+      - name: Smoke test the wheels
+        run: |
+          uv venv /tmp/clean -p 3.14
+          uv pip install -p /tmp/clean dist/*.whl
+          cd /tmp && /tmp/clean/bin/python -I "$GITHUB_WORKSPACE/python/scripts/smoke.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist
+          path: python/dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist/
+      # The kernel first: acp depends on it.
+      - name: Order
+        run: mkdir kernel acp && mv dist/deft_subspace_kernel-* kernel/ && mv dist/deft_subspace_acp-* acp/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: kernel/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: acp/
