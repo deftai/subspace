@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
@@ -203,15 +206,20 @@ test("an app's own signal handler is left alone", { skip: !posix }, async () => 
 });
 
 test('a group is forgotten once its last member is gone', { skip: !posix }, async () => {
-  // The leader exits at once; a grandchild keeps the group alive a little longer. The
-  // signal hook is there only while some group is remembered, so it shows when it is dropped.
+  // The leader exits at once; a grandchild keeps the group alive until the file \`go\` exists.
+  // The signal hook is there only while some group is remembered, so it shows when it is dropped.
+  const go = path.join(mkdtempSync(path.join(tmpdir(), 'subspace-')), 'go');
   const { app, line, lines } = await runApp(`
+    import { writeFileSync } from 'node:fs';
     import { spawnProcess } from '@deft-subspace/kernel/node';
+    process.env.SUBSPACE_TEST_GO = ${JSON.stringify(go)};
     const child = await spawnProcess(process.execPath, { args: ['-e', \`
-      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { stdio: 'ignore' }).unref();
+      const wait = 'const fs = require("node:fs"); const t = Date.now() + 30000; const i = setInterval(() => { if (fs.existsSync(process.env.SUBSPACE_TEST_GO) || Date.now() > t) clearInterval(i); }, 20)';
+      require('node:child_process').spawn(process.execPath, ['-e', wait], { stdio: 'ignore' }).unref();
     \`] });
     await child.ended;
     console.log(process.listenerCount('SIGTERM'));
+    writeFileSync(process.env.SUBSPACE_TEST_GO, '');
     const deadline = Date.now() + 5000;
     while (process.listenerCount('SIGTERM') > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     console.log(process.listenerCount('SIGTERM'));
