@@ -103,15 +103,19 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
       const call = await turn.toolCall({ title: 'Write notes.txt', kind: 'edit' });
       const read = new Promise<void>((resolve) => (onPermissionRead = resolve));
       // Answered by the client (a timeout is no answer).
-      let settled = false;
+      let settled: 'answered' | 'failed' | undefined;
       const request = agent.request('session/request_permission', permissionParams(turn, call.id));
-      request.then(() => (settled = true), () => (settled = true));
+      request.then(() => (settled = 'answered'), () => (settled = 'failed'));
       const answer = within(request, timeout, TIMED_OUT);
       // Once the client has read the request (and had a moment to handle it), the user cancels the turn.
       const delivered = await within(read, timeout, TIMED_OUT);
       onPermissionRead = undefined;
       if (delivered !== TIMED_OUT) await new Promise((resolve) => setTimeout(resolve, 0));
-      if (settled) {
+      if (settled === 'failed') {
+        const error = await answer.catch((e: unknown) => e);
+        return { pass: false, detail: `the permission request failed before the cancel: ${String(error)}` };
+      }
+      if (settled === 'answered') {
         // Answered at once (a fixed policy): no request was open to cancel.
         const result = await answer.catch((error) => `error ${String(error)}`);
         return { pass: true, skipped: true, detail: `the client answered ${JSON.stringify(result)} before the cancel; nothing was open to cancel` };
