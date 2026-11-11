@@ -225,6 +225,8 @@ export class AcpClient {
   private readonly sessions = new Map<string, Session>();
   /** Updates for a session id not registered yet: agents often send them right after session/new. */
   private readonly early = new Map<string, unknown[]>();
+  /** Sessions closed here (the most recent): their trailing updates are dropped, not held as early. */
+  private readonly closedHere = new Set<string>();
   private turnCounter = 0;
 
   private constructor(peer: RpcPeer, protocol: ProtocolVersion, init: Record<string, unknown>, options: ClientOptions, mcp: McpProvider) {
@@ -393,6 +395,7 @@ export class AcpClient {
     }
     const session = new Session(this, result.sessionId, result);
     this.sessions.set(session.id, session);
+    this.closedHere.delete(session.id);
     const early = this.early.get(session.id);
     this.early.delete(session.id);
     for (const update of early ?? []) session.receive(update);
@@ -604,13 +607,16 @@ export class AcpClient {
 
   /** @internal */
   forget(sessionId: string): void {
-    this.sessions.delete(sessionId);
+    if (!this.sessions.delete(sessionId)) return;
+    this.closedHere.add(sessionId);
+    if (this.closedHere.size > 64) this.closedHere.delete(this.closedHere.values().next().value as string);
   }
 
   private register(sessionId: string): Session {
     if (this.sessions.has(sessionId)) throw new Error(`Session ${sessionId} is already open on this connection`);
     const session = new Session(this, sessionId, {});
     this.sessions.set(sessionId, session);
+    this.closedHere.delete(sessionId);
     const early = this.early.get(sessionId);
     this.early.delete(sessionId);
     for (const update of early ?? []) session.receive(update);
@@ -665,6 +671,7 @@ export class AcpClient {
       session.receive(params.update);
       return;
     }
+    if (this.closedHere.has(params.sessionId)) return;
     // Keep a few, for a session/new still being answered; drop the rest.
     const held = this.early.get(params.sessionId) ?? [];
     if (held.length < 100) held.push(params.update);

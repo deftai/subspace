@@ -153,3 +153,15 @@ test("the client's onQuestion answers questions outside a turn", async () => {
   assert.deepEqual(betweenTurns, { action: 'accept', content: { name: 'Ada' } });
   await client.close();
 });
+
+test('updates for a session closed here are dropped, not replayed by a later load', async () => {
+  const { client, agent } = await fakeAgent(1, () => ({ stopReason: 'end_turn' }), { capabilities: { loadSession: true } });
+  agent.onRequest('session/load', () => ({}));
+  const session = await client.newSession({ cwd: '/' });
+  await session.close();
+  await update(agent, chunk('after close'));
+  await sleep(10);
+  const { replayed } = await client.loadSession({ sessionId: 's1', cwd: '/' });
+  assert.deepEqual(replayed, []);
+  await client.close();
+});

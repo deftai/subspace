@@ -219,6 +219,8 @@ class AcpClient:
         self._sessions: dict[str, Session] = {}
         #: Updates for a session id not registered yet: agents often send them right after session/new.
         self._early: dict[str, list[Any]] = {}
+        #: Sessions closed here (the most recent): their trailing updates are dropped, not held as early.
+        self._closed_here: dict[str, None] = {}
         self._turn_counter = 0
 
         # In v2 a running turn has no request in flight, so the connection closing must end it explicitly.
@@ -473,6 +475,7 @@ class AcpClient:
             raise LocalError("invalid-response", "session/new returned no sessionId", method="session/new")
         session = Session(self, session_id, result)
         self._sessions[session.id] = session
+        self._closed_here.pop(session.id, None)
         for update in self._early.pop(session.id, []):
             session._receive(update)
         return session
@@ -709,13 +712,18 @@ class AcpClient:
         return handlers.on_permission if handlers is not None and handlers.on_permission is not None else self._options.permissions
 
     def _forget(self, session_id: str) -> None:
-        self._sessions.pop(session_id, None)
+        if self._sessions.pop(session_id, None) is None:
+            return
+        self._closed_here[session_id] = None
+        if len(self._closed_here) > 64:
+            del self._closed_here[next(iter(self._closed_here))]
 
     def _register(self, session_id: str) -> Session:
         if session_id in self._sessions:
             raise ValueError(f"Session {session_id} is already open on this connection")
         session = Session(self, session_id, {})
         self._sessions[session_id] = session
+        self._closed_here.pop(session_id, None)
         for update in self._early.pop(session_id, []):
             session._receive(update)
         return session
@@ -749,6 +757,8 @@ class AcpClient:
         session = self._sessions.get(session_id)
         if session is not None:
             session._receive(params.get("update"))
+            return
+        if session_id in self._closed_here:
             return
         # Keep a few, for a session/new still being answered; drop the rest.
         held = self._early.setdefault(session_id, [])

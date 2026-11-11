@@ -178,3 +178,18 @@ async def test_the_clients_on_question_answers_questions_outside_a_turn():
     between = await agent.request("elicitation/create", {"sessionId": "s1", "mode": "form", "message": "Name?", "requestedSchema": schema})
     assert between == {"action": "accept", "content": {"name": "Ada"}}
     await client.close()
+
+
+async def test_updates_for_a_session_closed_here_are_dropped_not_replayed_by_a_later_load():
+    async def on_prompt(_agent: RpcPeer, _params: Any, _n: int) -> Any:
+        return {"stopReason": "end_turn"}
+
+    client, agent = await Fake(1, on_prompt, {"loadSession": True}).start()
+    agent.on_request("session/load", lambda _p, _c: {})
+    session = await client.new_session("/")
+    await session.close()
+    await update(agent, chunk("after close"))
+    await asyncio.sleep(0.01)
+    _session, replayed = await client.load_session("s1", "/")
+    assert replayed == []
+    await client.close()
