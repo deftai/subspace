@@ -29,13 +29,15 @@ const update = (agent: RpcPeer, u: Record<string, unknown>) => agent.notify('ses
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
 
 test("v2: a force-ended turn's late updates and idle do not land in the next turn", async () => {
+  // The agent confirms the cancel only after the client has force-ended the turn, during the drain.
+  let confirm!: () => void;
+  const confirmed = new Promise<void>((resolve) => (confirm = resolve));
   const { client } = await fakeAgent(2, (agent, _p, n) => {
     if (n === 1) {
-      // Confirms the cancel late: after the grace period and one more, before the drain gives up.
-      setTimeout(async () => {
+      void confirmed.then(async () => {
         await update(agent, chunk('late '));
         await update(agent, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' });
-      }, 250);
+      });
       return {};
     }
     setTimeout(async () => {
@@ -43,7 +45,7 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
       await update(agent, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
     }, 20);
     return {};
-  }, { timeouts: { cancelGraceMs: 100 } });
+  }, { timeouts: { cancelGraceMs: 200 } });
   const session = await client.newSession({ cwd: '/' });
   const first = session.prompt('one');
   await sleep(10);
@@ -52,6 +54,7 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
   const r1 = await first.done;
   assert.equal(r1.forced, true);
   assert.equal(session.busy, false);
+  confirm();
   const r2 = await second.done;
   assert.equal(r2.stopReason, 'end_turn');
   assert.equal(r2.text, 'second turn answer');
@@ -60,10 +63,13 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
 
 test("v1: queued prompts wait for a force-ended turn's answer; its late updates are not the next turn's", async () => {
   const order: string[] = [];
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => (answer = resolve));
   const { client } = await fakeAgent(1, async (agent, _p, n) => {
     order.push(`prompt ${n}`);
     if (n === 1) {
-      await sleep(160);
+      await answered; // only after the client has force-ended the turn
+
       await update(agent, chunk('late '));
       await update(agent, { sessionUpdate: 'tool_call', toolCallId: 'old', title: 'old', status: 'pending' });
       order.push('answer 1');
@@ -71,13 +77,14 @@ test("v1: queued prompts wait for a force-ended turn's answer; its late updates 
     }
     await update(agent, chunk('second'));
     return { stopReason: 'end_turn' };
-  }, { timeouts: { cancelGraceMs: 100 } });
+  }, { timeouts: { cancelGraceMs: 200 } });
   const session = await client.newSession({ cwd: '/' });
   const first = session.prompt('one');
   await sleep(10);
   await first.cancel();
   const second = session.prompt('two', { queue: true });
   assert.equal((await first.done).forced, true);
+  answer();
   const r2 = await second.done;
   assert.equal(r2.text, 'second');
   assert.equal(r2.toolCalls.length, 0);

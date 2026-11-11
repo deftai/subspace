@@ -62,8 +62,12 @@ tasks: set[asyncio.Future[Any]] = set()
 
 
 async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_next_turn():
+    # The agent confirms the cancel only after the client has force-ended the turn, during the drain.
+    confirmed = asyncio.Event()
+
     async def on_prompt(agent: RpcPeer, _params: Any, n: int) -> Any:
         async def confirm() -> None:
+            await confirmed.wait()
             await update(agent, chunk("late "))
             await update(agent, {"sessionUpdate": "state_update", "state": "idle", "stopReason": "cancelled"})
 
@@ -71,11 +75,10 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
             await update(agent, chunk("second turn answer"))
             await update(agent, {"sessionUpdate": "state_update", "state": "idle", "stopReason": "end_turn"})
 
-        # The first confirms the cancel late: after the grace period and one more, before the drain gives up.
-        later(0.25, confirm()) if n == 1 else later(0.02, answer())
+        later(0, confirm()) if n == 1 else later(0.02, answer())
         return {}
 
-    client, _agent = await Fake(2, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=100))
+    client, _agent = await Fake(2, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=200))
     session = await client.new_session("/")
     first = session.prompt("one")
     await asyncio.sleep(0.01)
@@ -84,6 +87,7 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
     r1 = await first
     assert r1.forced
     assert not session.busy
+    confirmed.set()
     r2 = await second
     assert (r2.stop_reason, r2.text) == ("end_turn", "second turn answer")
     await client.close()
@@ -91,11 +95,12 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
 
 async def test_v1_queued_prompts_wait_for_a_force_ended_turns_answer():
     order: list[str] = []
+    answered = asyncio.Event()
 
     async def on_prompt(agent: RpcPeer, _params: Any, n: int) -> Any:
         order.append(f"prompt {n}")
         if n == 1:
-            await asyncio.sleep(0.16)
+            await answered.wait()  # only after the client has force-ended the turn
             await update(agent, chunk("late "))
             await update(agent, {"sessionUpdate": "tool_call", "toolCallId": "old", "title": "old", "status": "pending"})
             order.append("answer 1")
@@ -103,13 +108,14 @@ async def test_v1_queued_prompts_wait_for_a_force_ended_turns_answer():
         await update(agent, chunk("second"))
         return {"stopReason": "end_turn"}
 
-    client, _agent = await Fake(1, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=100))
+    client, _agent = await Fake(1, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=200))
     session = await client.new_session("/")
     first = session.prompt("one")
     await asyncio.sleep(0.01)
     await first.cancel()
     second = session.prompt("two", queue=True)
     assert (await first).forced
+    answered.set()
     r2 = await second
     assert r2.text == "second"
     assert r2.tool_calls == []

@@ -98,6 +98,8 @@ for (const protocol of [1, 2] as const) {
 
   test(`v${protocol}: elicitation answers, fails closed, and cancels with the turn`, async () => {
     const answers: unknown[] = [];
+    let waiting!: () => void;
+    const waitAsked = new Promise<void>((resolve) => (waiting = resolve));
     const { client } = await pair(
       protocol,
       {
@@ -111,7 +113,10 @@ for (const protocol of [1, 2] as const) {
       {
         elicitation: async (request, signal) => {
           if (request.message === 'boom') throw new Error('UI crashed');
-          if (request.message === 'wait') return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ action: 'accept' })));
+          if (request.message === 'wait') {
+            waiting();
+            return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ action: 'accept' })));
+          }
           assert.equal(request.mode, 'form');
           return { action: 'accept', content: { name: 'Ada' } };
         },
@@ -119,7 +124,7 @@ for (const protocol of [1, 2] as const) {
     );
     const session = await client.newSession({ cwd: '/tmp' });
     const turn = session.prompt('go');
-    await sleep(40);
+    await waitAsked; // cancel while the third question is open
     await turn.cancel();
     await turn.done;
     assert.deepEqual(answers, [{ action: 'accept', content: { name: 'Ada' } }, { action: 'decline' }, { action: 'cancel' }]);
