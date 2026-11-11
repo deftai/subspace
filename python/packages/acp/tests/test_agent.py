@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from deft_subspace.acp.agent import AgentTurn, PermissionDenied, serve_agent
+from deft_subspace.acp.background import SessionWork
 from deft_subspace.acp.capabilities import CapabilityError
 from deft_subspace.acp.endpoint import AgentLayer, CallContext, EndpointCall, agent_endpoint, state_key
 from deft_subspace.acp.extensions import extension_request, handle
@@ -632,6 +633,39 @@ async def test_prompt_errors_v1_internal_error_v2_idle_error() -> None:
     await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
     assert await client.idle() == {"sessionUpdate": "state_update", "state": "idle", "stopReason": "error", "error": {"message": "boom"}}
     await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_finished_turns_leave_no_listener_on_the_connection(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool("t", lambda call: "ok")
+
+    agent_end, client_end = channel_pair()
+    agent = serve_agent(agent_end, name="leak", prompt=prompt, protocols=[protocol])
+    client = Client(client_end).start()
+    await client.init(protocol)
+    sid = await client.new_session()
+    before = len(agent.signal._listeners)
+    for n in range(1, 21):
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+        if protocol == 2:
+            await client.idle(n)
+    await tick()
+    assert len(agent.signal._listeners) == before
+    await client.close()
+
+
+async def test_session_work_stops_listening_on_the_turn_when_an_item_finishes() -> None:
+    sent: list[Any] = []
+
+    async def send(update: dict[str, Any]) -> None:
+        sent.append(update)
+
+    work = SessionWork(send)
+    turn = AbortController()
+    for n in range(5):
+        await work.finish(work.add("tool_call", f"c{n}", False, turn.signal))
+    assert turn.signal._listeners == []
 
 
 def _flow(updates: list[dict[str, Any]]) -> list[str]:

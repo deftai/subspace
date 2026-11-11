@@ -80,6 +80,21 @@ async def test_serve_tools_over_mcp_over_acp():
     await client.close()
 
 
+async def test_served_mcp_requests_leave_no_listener_on_the_server():
+    async def prompt(turn):
+        await turn.mcp("mine").call_tool("add", {"a": 1, "b": 1})
+
+    client = await connect({"prompt": prompt, "mcp_transports": ["acp"]})
+    registration = client.serve_tools(name="mine", tools={"add": add})
+    session = await client.new_session("/work", mcp_servers=[registration])
+    for _ in range(10):
+        await session.prompt("go")
+    served = client._mcp._servers[registration.server_id]
+    assert served.controller.signal._listeners == []
+    await registration.dispose()
+    await client.close()
+
+
 async def test_mcp_connector_stdio(tmp_path):
     server = StdioMcpServer("tiny", sys.executable, [str(Path(__file__).parent / "fixtures" / "mcp_stdio_server.py")])
     progress = []

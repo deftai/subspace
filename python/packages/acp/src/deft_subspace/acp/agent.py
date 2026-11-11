@@ -1147,6 +1147,8 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
                         await writer.idle(stop, {"message": str(failure)} if failure is not None else None)
                 finally:
                     entry.phase = "ended"
+                    # Let go of the connection's signal: it outlives the turn.
+                    signal.dispose()
                     if entry in turns.turns:
                         turns.turns.remove(entry)
                     if not entry.ended.done():
