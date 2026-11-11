@@ -1,0 +1,18 @@
+[project]
+name = "deft-subspace-acp"
+version = "0.0.0.dev0"
+description = "ACP for apps: one model over protocol v1 and v2, turns you can await, cancellation that works, permissions that fail closed. Types come from the official agent-client-protocol SDK."
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["deft-subspace-kernel", "agent-client-protocol==1.0.0"]
+
+[project.optional-dependencies]
+otel = ["opentelemetry-api>=1.27"]
+mcp = ["mcp>=2.3"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deft_subspace"]

@@ -35,6 +35,7 @@ Also there: ready-made permission rules (`readOnly`, `allowInside(repo)`, `askIn
 | [`@deft-subspace/cli`](./packages/cli) | `subspace run`, `chat`, `agents`, `check` and `trace`: agents from the command line. |
 | [`@deft-subspace/claude`](./packages/claude) | `claude()`: a Claude model for `modelAgent()`, so an ACP agent backed by Claude is a short file. |
 | [`create-subspace`](./packages/create-subspace) | `npx create-subspace my-app --template script\|agent\|claude-agent` starts a project. |
+| [`python/`](./python) | A Python port of `kernel` and `acp` (`deft-subspace-kernel`, `deft-subspace-acp`), on asyncio. |
 
 **Start with the [guide](./docs/GUIDE.md).** It goes from a first turn to MCP, background work and writing an agent.
 
