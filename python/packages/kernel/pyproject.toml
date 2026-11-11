@@ -2,9 +2,31 @@
 name = "deft-subspace-kernel"
 version = "0.0.0.dev0"
 description = "Protocol-neutral kernel: channels, NDJSON framing, a JSON-RPC peer with one owner for every request's lifecycle, and supervised agent processes. No dependencies."
+keywords = ["json-rpc", "ndjson", "asyncio", "agent-client-protocol", "acp"]
+readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Deft" }]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/deftai/subspace/tree/main/python"
+Source = "https://github.com/deftai/subspace"
+Issues = "https://github.com/deftai/subspace/issues"
+Changelog = "https://github.com/deftai/subspace/blob/main/python/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling>=1.25"]

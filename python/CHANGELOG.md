@@ -1,6 +1,20 @@
 # Changelog
 
+Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
+
 ## Unreleased
+
+First release: a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.
+
+- Kernel: channels, NDJSON framing, the JSON-RPC peer, abort signals, traces (the same format as the TypeScript packages), supervised processes.
+- ACP client: `AcpClient`, `Session`, `Turn`; v1 and v2; permissions and permission rules; turn limits; modes and config options; login; elicitation; MCP-over-ACP serving; extensions.
+- ACP agent: `serve_agent`, `agent_endpoint` and its layers, `serve_stdio`, v2 background work, `model_agent()`, tools.
+- `start()`, `run()`, the agent catalog and the ACP registry, agent install, workspace files and terminals, a terminal renderer.
+- OpenTelemetry spans (`otel` extra); MCP servers over stdio, and over http and sse (`mcp` extra).
+
+### Fixes and changes made after the port first landed
+
+These came from a code review of both ports; they are part of this first release.
 
 - kernel: `notify()` without params leaves `params` out of the message instead of sending `"params": null`.
 - kernel: a handler that raises a `BaseException` that is not an `Exception` (`SystemExit`, `KeyboardInterrupt`) is no longer answered with an internal error; it propagates.

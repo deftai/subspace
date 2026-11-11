@@ -89,3 +89,13 @@ uv run pyright
 ```
 
 Python 3.11 or later. CI runs Linux, macOS and Windows on 3.11 and 3.13.
+
+## Releasing
+
+Both distributions are released together, at the same version, by `.github/workflows/python-release.yml` when a `python-v<version>` tag is pushed. It runs the tests, builds and checks the wheels, smoke-tests them in a clean environment, and publishes with PyPI trusted publishing from the `pypi` environment.
+
+1. `python scripts/set_version.py <version>`, then `uv lock`.
+2. Add a `## <version>` section to `CHANGELOG.md`.
+3. Merge, then tag the merge commit `python-v<version>` and push the tag.
+
+`python scripts/check_versions.py --tag python-v<version>` runs the same checks locally.
