@@ -81,7 +81,8 @@ async def test_keeps_the_last_stderr_output():
             break
     info = await child.ended()
     assert info.code == 3
-    await asyncio.sleep(0.05)
+    assert child._stderr_task is not None
+    await asyncio.wait_for(child._stderr_task, 3)  # stderr read to its end
     assert child.stderr_tail().endswith("fatal: no API key")
     assert len(child.stderr_tail()) <= 64
 
@@ -93,7 +94,8 @@ async def test_the_stderr_tail_counts_bytes():
         stderr_tail_bytes=63,
     )
     await asyncio.wait_for(child.ended(), 3)
-    await asyncio.sleep(0.05)
+    assert child._stderr_task is not None
+    await asyncio.wait_for(child._stderr_task, 3)  # stderr read to its end
     tail = child.stderr_tail()
     assert tail.endswith("end")
     assert len(tail.encode()) <= 63
@@ -141,18 +143,21 @@ async def test_ended_settles_with_no_reader_and_the_output_is_still_there():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups")
-async def test_a_group_is_forgotten_once_its_last_member_is_gone():
+async def test_a_group_is_forgotten_once_its_last_member_is_gone(tmp_path):
     from deft_subspace.kernel import process
 
-    # The leader exits at once; a grandchild keeps the group alive a little longer.
+    # The leader exits at once; a grandchild keeps the group alive until it is told to go.
+    go = tmp_path / "go"
+    wait = f"import os, time; t = time.monotonic() + 30\nwhile not os.path.exists({str(go)!r}) and time.monotonic() < t: time.sleep(0.02)"
     script = (
         "import subprocess, sys\n"
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(0.5)'],"
+        f"subprocess.Popen([sys.executable, '-c', {wait!r}],"
         " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
     )
     child = await spawn_process(PY, args=["-c", script])
     await asyncio.wait_for(child.ended(), 3)
     assert child._kill_now in process._live  # the grandchild is still running
+    go.touch()
     deadline = time.monotonic() + 5
     while child._kill_now in process._live and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
@@ -413,9 +418,14 @@ def test_the_not_found_hint_names_cmd_shims_on_windows():
     assert ".cmd" not in _not_found_hint("npx", None, False)
 
 
-async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin():
-    # Reads nothing for a while, then all of stdin, and reports how much it got.
-    script = "import sys, time; time.sleep(0.5); print(len(sys.stdin.buffer.read()), flush=True); time.sleep(60)"
+async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin(tmp_path):
+    # Reads nothing until told to, then all of stdin, and reports how much it got.
+    go = tmp_path / "go"
+    script = (
+        f"import os, sys, time; t = time.monotonic() + 30\n"
+        f"while not os.path.exists({str(go)!r}) and time.monotonic() < t: time.sleep(0.02)\n"
+        "print(len(sys.stdin.buffer.read()), flush=True); time.sleep(60)"
+    )
     child = await spawn_process(PY, args=["-c", script], kill_grace_ms=300)
     try:
         peer = RpcPeer(ndjson(child.channel), name="stuck")
@@ -429,6 +439,7 @@ async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin()
         await asyncio.wait_for(peer.close(), 5)
         assert time.monotonic() - started < 2
         await asyncio.wait_for(asyncio.gather(*writes, return_exceptions=True), 2)
+        go.touch()
         # What was queued was dropped, not written later: the child got end of input early.
         stdout = child._proc.stdout
         assert stdout is not None
@@ -436,3 +447,4 @@ async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin()
         assert got < 1_000_000, got
     finally:
         await child.stop()
+        await asyncio.wait_for(child.ended(), 3)  # its transport is closed before the loop is
