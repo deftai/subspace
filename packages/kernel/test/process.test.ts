@@ -177,3 +177,25 @@ test("an app's own signal handler is left alone", { skip: !posix }, async () => 
     killAll([app.pid!, ...pids]);
   }
 });
+
+test('a group is forgotten once its last member is gone', { skip: !posix }, async () => {
+  // The leader exits at once; a grandchild keeps the group alive a little longer. The
+  // signal hook is there only while some group is remembered, so it shows when it is dropped.
+  const { app, line, lines } = await runApp(`
+    import { spawnProcess } from '@deft-subspace/kernel/node';
+    const child = await spawnProcess(process.execPath, { args: ['-e', \`
+      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { stdio: 'ignore' }).unref();
+    \`] });
+    await child.ended;
+    console.log(process.listenerCount('SIGTERM'));
+    const deadline = Date.now() + 5000;
+    while (process.listenerCount('SIGTERM') > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    console.log(process.listenerCount('SIGTERM'));
+  `);
+  try {
+    assert.equal(line, '1', 'remembered while the grandchild runs');
+    assert.equal((await lines.next()).value, '0', 'forgotten once it is gone');
+  } finally {
+    killAll([app.pid!]);
+  }
+});

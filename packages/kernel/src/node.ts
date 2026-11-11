@@ -123,6 +123,10 @@ function removeSignalHooks(): void {
   signalHooks.clear();
 }
 
+/** How often to check whether an exited leader's group is gone: from this, doubling, up to the max. */
+const pollFirstMs = 50;
+const pollMaxMs = 1000;
+
 // -- The supervised process -----------------------------------------------------------------
 
 export async function spawnProcess(command: string, options: SpawnOptions = {}): Promise<SupervisedProcess> {
@@ -192,8 +196,17 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
 
   const killNow = () => signalGroup('SIGKILL');
   track(killNow);
-  void ended.then(() => {
-    if (!groupAlive()) untrack(killNow);
+  // Once the leader has exited, drop the group as soon as its last member is gone, so
+  // the exit-time kill never hits a group id the system has since given to someone else.
+  void exited.then(() => {
+    let delay = pollFirstMs;
+    const check = (): void => {
+      if (!live.has(killNow)) return;
+      if (!groupAlive()) return untrack(killNow);
+      setTimeout(check, delay).unref();
+      delay = Math.min(delay * 2, pollMaxMs);
+    };
+    check();
   });
 
   let stopping: Promise<ExitInfo> | undefined;
