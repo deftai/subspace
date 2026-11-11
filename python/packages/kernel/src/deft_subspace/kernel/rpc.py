@@ -250,7 +250,7 @@ class RpcPeer:
 
     def start(self) -> RpcPeer:
         """Start reading. Register handlers first. Needs a running event loop."""
-        if self._started:
+        if self._started or self._close_info is not None:
             return self
         self._started = True
         self._read_task = asyncio.get_running_loop().create_task(self._read_loop(), name=f"{self.name}:read")
@@ -509,7 +509,11 @@ class RpcPeer:
     def _handle_notification(self, method: str, params: Any) -> None:
         cancel = self._cancel_inbound
         if cancel is not None and method == cancel.method:
-            target = cancel.id(params)
+            try:
+                target = cancel.id(params)
+            except Exception as error:  # noqa: BLE001
+                self._diagnose("invalid-message", f"Could not read the request id from {method}", error)
+                target = NO_ID
             if target is not NO_ID:
                 controller = self._inbound.get(_id_key(target))
                 if controller is not None:

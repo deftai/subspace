@@ -8,6 +8,7 @@ import {
   RpcError,
   RpcPeer,
   type Channel,
+  type JsonRpcId,
   type PeerDiagnostic,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
@@ -212,4 +213,32 @@ test('sendRaw writes a message as given, outside request tracking', async () => 
   await tick();
   assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 'never-received', result: 42 }]);
   assert.equal(peer.pendingCount, 0);
+});
+
+test('a cancel id extractor that throws is reported, and the connection stays open', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const end = raw();
+  const peer = new RpcPeer(end.channel, {
+    cancelInbound: { method: 'cancel', id: (params) => (params as { requestId: JsonRpcId }).requestId },
+    onDiagnostic: (d) => diagnostics.push(d),
+  });
+  peer.onRequest('ping', () => 'pong').start();
+  await end.send({ jsonrpc: '2.0', method: 'cancel' });
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  await tick();
+  assert.equal(peer.isClosed, false);
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['invalid-message']);
+  assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 1, result: 'pong' }]);
+});
+
+test('start() after close() does nothing', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  let handled = false;
+  peer.onNotification('hello', () => void (handled = true));
+  await peer.close();
+  void end.send({ jsonrpc: '2.0', method: 'hello' }).catch(() => {});
+  peer.start();
+  await tick();
+  assert.equal(handled, false);
 });

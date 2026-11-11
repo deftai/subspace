@@ -177,7 +177,7 @@ export class RpcPeer {
 
   /** Start reading. Register handlers first. */
   start(): this {
-    if (this.started) return this;
+    if (this.started || this.closeInfo) return this;
     this.started = true;
     void this.readLoop();
     return this;
@@ -377,7 +377,12 @@ export class RpcPeer {
   private handleNotification(method: string, params: unknown): void {
     const cancel = this.options.cancelInbound;
     if (cancel && method === cancel.method) {
-      const target = cancel.id(params);
+      let target: JsonRpcId | undefined;
+      try {
+        target = cancel.id(params);
+      } catch (error) {
+        this.diagnose('invalid-message', `Could not read the request id from ${method}`, error);
+      }
       if (target !== undefined) this.inbound.get(target)?.abort(new LocalError('aborted', 'cancelled by the other side'));
     }
     const handler = this.notificationHandlers.get(method) ?? this.notificationHandlers.get('*');

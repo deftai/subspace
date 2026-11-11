@@ -5,6 +5,7 @@ import pytest
 
 from deft_subspace.kernel import (
     AbortController,
+    CancelInbound,
     ErrorCode,
     LocalError,
     PeerDiagnostic,
@@ -318,6 +319,35 @@ async def test_notify_without_params_omits_params():
     await peer.notify("ping")
     await tick()
     assert end.sent == [{"jsonrpc": "2.0", "method": "ping"}]
+
+
+async def test_a_cancel_id_extractor_that_raises_is_reported_and_the_connection_stays_open():
+    diagnostics: list[PeerDiagnostic] = []
+    end = Raw()
+    peer = RpcPeer(
+        end.channel,
+        cancel_inbound=CancelInbound("cancel", lambda params: params["requestId"]),
+        on_diagnostic=diagnostics.append,
+    )
+    peer.on_request("ping", lambda _p, _c: "pong").start()
+    await end.send({"jsonrpc": "2.0", "method": "cancel"})
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    await tick(10)
+    assert not peer.is_closed
+    assert [d.kind for d in diagnostics] == ["invalid-message"]
+    assert end.sent == [{"jsonrpc": "2.0", "id": 1, "result": "pong"}]
+
+
+async def test_start_after_close_does_nothing():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    handled: list[bool] = []
+    peer.on_notification("hello", lambda _p, _c: handled.append(True))
+    await peer.close()
+    await end.send({"jsonrpc": "2.0", "method": "hello"})
+    peer.start()
+    await tick(10)
+    assert handled == []
 
 
 async def test_a_base_exception_in_a_handler_is_not_turned_into_a_reply():
