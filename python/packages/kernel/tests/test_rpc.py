@@ -428,11 +428,11 @@ async def test_a_failed_write_of_an_answer_is_a_send_failure_with_no_second_answ
         async def receive(self) -> Any:
             return await left.receive()
 
-        async def send(self, message: Any) -> None:
-            writes.append(message)
-            if "result" in message:
+        async def send(self, item: Any) -> None:
+            writes.append(item)
+            if "result" in item:
                 raise ChannelClosed("pipe broke")
-            await left.send(message)
+            await left.send(item)
 
         async def close(self) -> None:
             await left.close()
@@ -513,7 +513,7 @@ async def test_close_gives_up_on_a_stuck_writer_and_aborts_the_channel():
         async def receive(self) -> Any:
             return await left.receive()
 
-        async def send(self, _message: Any) -> None:
+        async def send(self, item: Any) -> None:
             await asyncio.get_running_loop().create_future()  # a full pipe nobody reads
 
         async def close(self) -> None:
