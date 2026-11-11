@@ -71,8 +71,12 @@ export async function main(argv: string[], io: { out: (s: string) => void; err: 
   const { records, diagnostics } = readTrace(text);
   if (otlp !== undefined) {
     try {
-      const { spans } = await exportTrace(records, { ...(otlp !== true ? { url: otlp } : {}), ...(service ? { serviceName: service } : {}), titles });
+      const { spans, dropped } = await exportTrace(records, { ...(otlp !== true ? { url: otlp } : {}), ...(service ? { serviceName: service } : {}), titles });
       io.out(`sent ${spans} span${spans === 1 ? '' : 's'}\n`);
+      if (dropped) {
+        io.err(`${dropped} span${dropped === 1 ? ' was' : 's were'} dropped (more than the export queue holds)\n`);
+        return 1;
+      }
       return 0;
     } catch (error) {
       io.err(`Could not send the spans: ${(error as Error).message}\n`);
