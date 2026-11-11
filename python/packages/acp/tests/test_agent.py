@@ -634,6 +634,82 @@ async def test_prompt_errors_v1_internal_error_v2_idle_error() -> None:
     await client.close()
 
 
+def _flow(updates: list[dict[str, Any]]) -> list[str]:
+    """States and message text, in order."""
+    out: list[str] = []
+    for u in updates:
+        if u["sessionUpdate"] == "state_update":
+            out.append(u["state"])
+        elif u["sessionUpdate"] == "agent_message_chunk":
+            out.append(f"say:{u['content']['text']}")
+    return out
+
+
+async def test_v2_queue_prompts_a_turn_goes_idle_before_the_next_queued_one_starts() -> None:
+    async def prompt(turn: AgentTurn) -> str:
+        await sleep(10)
+        await turn.say(turn.text)
+        return "end_turn"
+
+    async def slow_idle(call: Any, next_: Any) -> Any:
+        # A slow write of the idle state: the next turn must still wait for it.
+        update = call.params.get("update") if isinstance(call.params, dict) else None
+        if isinstance(update, dict) and update.get("state") == "idle":
+            await sleep(20)
+        return await next_(call.params)
+
+    client = serve(prompt=prompt, protocols=[2], queue_prompts=True, peer={"outbound": [slow_idle]})
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "one"}]})
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "two"}]})
+    await client.idle(2)
+    assert _flow(client.updates()) == ["running", "say:one", "idle", "running", "say:two", "idle"]
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_prompt_handler_that_raises_fails_its_open_tool_calls(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool_call("grep")
+        raise ValueError("boom")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    if protocol == 1:
+        with pytest.raises(RpcError, match="boom"):
+            await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    else:
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+        assert (await client.idle())["stopReason"] == "error"
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["pending", "failed"]
+    await client.close()
+
+
+async def test_v2_a_turn_whose_running_state_fails_to_send_still_frees_the_session() -> None:
+    fail_next = True
+
+    async def outbound(call: Any, next_: Any) -> Any:
+        nonlocal fail_next
+        update = call.params.get("update") if isinstance(call.params, dict) else None
+        if fail_next and isinstance(update, dict) and update.get("sessionUpdate") == "state_update" and update.get("state") == "running":
+            fail_next = False
+            raise RuntimeError("send failed")
+        return await next_(call.params)
+
+    client = serve(prompt=lambda turn: "end_turn", protocols=[2], peer={"outbound": [outbound]})
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    assert (await client.idle())["stopReason"] == "error"
+    # Not refused as busy: the first turn ended.
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    assert (await client.idle(2))["stopReason"] == "end_turn"
+    await client.close()
+
+
 # ---- permissions and tools -------------------------------------------------------
 
 

@@ -33,7 +33,7 @@ import {
   type ExtensionNotification,
   type ExtensionRequest,
 } from './extensions.ts';
-import { base64, SessionWork } from './background.ts';
+import { base64, SessionWork, type Work } from './background.ts';
 import { checkToolInput, toolOutputText, toolTitle, type ToolDefinition } from './tools.ts';
 import { McpCaller, serverClient, type McpServerClient } from './mcp-caller.ts';
 import { SessionMcpConnections, type ExternalMcpServer, type McpConnector } from './mcp-connections.ts';
@@ -515,14 +515,33 @@ function mcpLayer(options: AgentOptions): AgentLayer<McpPart> {
   };
 }
 
-/** A session's turns: the running one, the queue, and background work (v2). */
+/**
+ * Where a prompt is in its session's queue: waiting for the turn ahead
+ * (`queued`), in the prompt handler (`running`), sending its last updates
+ * (`finishing`: open tool calls failed, v2's idle state), then `ended`. Only
+ * an ended turn lets the next one start, so its updates never interleave.
+ * Queued and running turns make the session busy; a finishing one does not
+ * (a prompt sent on its idle state waits the moment it takes to end).
+ */
+type TurnPhase = 'queued' | 'running' | 'finishing' | 'ended';
+
+interface SessionTurn {
+  phase: TurnPhase;
+  readonly controller: AbortController;
+  /** Settles when the turn is `ended`. */
+  readonly ended: Promise<void>;
+}
+
+/** A session's turns (the queue) and background work (v2). */
 interface TurnsPart {
-  controller?: AbortController;
-  /** Prompts waiting for the running one (with `queuePrompts`). */
-  waiting: Set<AbortController>;
-  /** Settles when the last queued turn ends. */
-  tail: Promise<void>;
+  /** Turns not yet ended, in order: the first is running or finishing, the rest are queued. */
+  turns: SessionTurn[];
   work: SessionWork;
+}
+
+/** Stop every turn of the session that has not ended, the running one and the queued ones. */
+function abortTurns(turns: TurnsPart, reason: Error): void {
+  for (const turn of [...turns.turns]) turn.controller.abort(reason);
 }
 
 /** `session/prompt` and the ways to stop work: the v1 and v2 turn lifecycles. */
@@ -534,21 +553,18 @@ function turnsLayer(options: AgentOptions): AgentLayer {
       ctx.get(SESSIONS).attach<TurnsPart>({
         name: 'turns',
         create: (session) => ({
-          waiting: new Set(),
-          tail: Promise.resolve(),
+          turns: [],
           work: new SessionWork((update) => ctx.client.notify('session/update', { sessionId: session.id, update })),
         }),
         stop: (turns, _session, reason) => {
-          turns.controller?.abort(reason);
-          for (const waiting of turns.waiting) waiting.abort(reason);
+          abortTurns(turns, reason);
           // Closing stops background work too.
           turns.work.closeAll();
         },
         // The client gone: detached work no longer follows the turn's signal, so stop it here.
         disconnect: (turns) => {
           const reason = new Error('connection closed');
-          turns.controller?.abort(reason);
-          for (const waiting of turns.waiting) waiting.abort(reason);
+          abortTurns(turns, reason);
           turns.work.closeAll(reason);
         },
       });
@@ -563,7 +579,8 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         const session = sessions.require(params?.sessionId);
         const turns = sessions.part<TurnsPart>(session, 'turns');
         const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
-        const busy = !!turns.controller || turns.waiting.size > 0;
+        // A turn that is only finishing (its handler returned) does not refuse the next prompt; that one waits for its end.
+        const busy = turns.turns.some((t) => t.phase === 'queued' || t.phase === 'running');
         if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
         const controller = new AbortController();
         // The session's controller and the connection; not this request's own signal ($/cancel_request does not stop a turn).
@@ -581,23 +598,21 @@ function turnsLayer(options: AgentOptions): AgentLayer {
           sessions.part<SessionMcpConnections | undefined>(session, 'mcp')
         );
         // Wait for the turn ahead (if any), in order.
-        const ahead = turns.tail;
-        let release!: () => void;
-        turns.tail = new Promise<void>((resolve) => (release = resolve));
-        turns.waiting.add(controller);
+        const ahead = turns.turns.at(-1)?.ended;
+        let end!: () => void;
+        const entry: SessionTurn = { phase: 'queued', controller, ended: new Promise<void>((resolve) => (end = resolve)) };
+        turns.turns.push(entry);
 
-        const run = async (onStart?: () => Promise<void>): Promise<StopReason> => {
-          await ahead;
-          turns.waiting.delete(controller);
-          if (signal.aborted) {
-            release();
-            return 'cancelled';
-          }
-          turns.controller = controller;
-          await onStart?.();
-          let stop: StopReason;
+        const run = async (): Promise<StopReason> => {
+          let stop: StopReason = 'cancelled';
+          let failure: { error: unknown } | undefined;
           try {
-            stop = (await options.prompt(turn.api)) ?? 'end_turn';
+            await ahead;
+            if (!signal.aborted) {
+              entry.phase = 'running';
+              if (protocol === 2) await turn.state('running');
+              stop = (await options.prompt(turn.api)) ?? 'end_turn';
+            }
           } catch (error) {
             if (signal.aborted) {
               stop = 'cancelled';
@@ -605,18 +620,25 @@ function turnsLayer(options: AgentOptions): AgentLayer {
               // The agent stopped because the user said no: a normal end.
               stop = 'end_turn';
             } else {
-              if (protocol === 1) throw error;
-              await turn.idle('error', { message: error instanceof Error ? error.message : String(error) });
-              return 'error';
+              stop = 'error';
+              failure = { error };
+            }
+          }
+          if (signal.aborted) stop = 'cancelled';
+          // The turn's last updates go out before the next turn may start.
+          entry.phase = 'finishing';
+          try {
+            if (stop === 'cancelled' || failure) await turn.endOpenWork(signal.aborted ? signal.reason : failure?.error);
+            if (protocol === 2) {
+              const error = failure?.error;
+              await turn.idle(stop, failure ? { message: error instanceof Error ? error.message : String(error) } : undefined);
             }
           } finally {
-            turns.controller = undefined;
-            release();
+            entry.phase = 'ended';
+            turns.turns.splice(turns.turns.indexOf(entry), 1);
+            end();
           }
-          if (signal.aborted) {
-            stop = 'cancelled';
-            await turn.failOpenToolCalls();
-          }
+          if (failure && protocol === 1) throw failure.error;
           return stop;
         };
 
@@ -624,12 +646,7 @@ function turnsLayer(options: AgentOptions): AgentLayer {
 
         // v2: answer at once with the user message id, then run; the end is an idle state update.
         const userMessageId = randomUUID();
-        setTimeout(() => {
-          void (async () => {
-            const stop = await run(() => turn.state('running'));
-            if (stop !== 'error') await turn.idle(stop);
-          })().catch(() => {});
-        }, 0);
+        setTimeout(() => void run().catch(() => {}), 0);
         return { messageId: userMessageId };
       },
     },
@@ -639,10 +656,8 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         const sessionId = (call.params as { sessionId?: unknown } | undefined)?.sessionId;
         const session = typeof sessionId === 'string' ? sessions.sessions.get(sessionId) : undefined;
         if (!session) return;
-        const turns = sessions.part<TurnsPart>(session, 'turns');
-        turns.controller?.abort(new Error('cancelled by the client'));
         // Queued prompts are cancelled too: the client asked for the session to stop.
-        for (const waiting of turns.waiting) waiting.abort(new Error('cancelled by the client'));
+        abortTurns(sessions.part<TurnsPart>(session, 'turns'), new Error('cancelled by the client'));
       },
     },
   };
@@ -704,6 +719,8 @@ class TurnWriter {
   private segment = 0;
   private lastWasText = false;
   private readonly open = new Set<string>();
+  /** The turn's terminals (v2), until they exit or are detached. */
+  private readonly terminals = new Set<Work>();
   private readonly peer: AgentChannel;
   private readonly sessionId: string;
   private readonly protocol: ProtocolVersion;
@@ -891,8 +908,18 @@ class TurnWriter {
     return this.update({ sessionUpdate: 'state_update', state: 'idle', stopReason, ...(error ? { error } : {}), ...this.work?.fields() });
   }
 
-  async failOpenToolCalls(): Promise<void> {
+  /**
+   * The turn was cancelled or its handler threw: fail the tool calls it left
+   * open, and stop and drop the terminals it neither detached nor exited.
+   */
+  async endOpenWork(reason: unknown): Promise<void> {
     for (const id of [...this.open]) await this.toolUpdate(id, { status: 'failed' });
+    for (const work of [...this.terminals]) {
+      this.terminals.delete(work);
+      if (work.listed || work.final) continue;
+      work.controller.abort(reason);
+      await this.work!.finish(work);
+    }
   }
 
   private chunk(kind: 'agent_message_chunk' | 'agent_thought_chunk', text: string): Promise<void> {
@@ -978,6 +1005,7 @@ class TurnWriter {
     if (this.protocol !== 2 || !this.work) throw new CapabilityError('agent terminals (protocol v2)', 'client');
     const id = init.id ?? `term-${randomUUID().slice(0, 8)}`;
     const work = this.work.add('terminal', id, !!init.cancellable, this.signal);
+    this.terminals.add(work);
     const terminal = (fields: Record<string, unknown>) => this.update({ sessionUpdate: 'terminal_update', terminalId: id, ...fields });
     await terminal({
       ...(init.command !== undefined ? { command: init.command } : {}),
@@ -991,10 +1019,14 @@ class TurnWriter {
       write: (data) => this.update({ sessionUpdate: 'terminal_output_chunk', terminalId: id, data: base64(data) }),
       replace: (data) => terminal({ output: { data: base64(data) } }),
       exit: async (status = {}) => {
+        this.terminals.delete(work);
         await terminal({ exitStatus: status, ...(init.cancellable ? { capabilities: null } : {}) });
         await this.work!.finish(work);
       },
-      detach: () => this.work!.detach(work),
+      detach: () => {
+        this.terminals.delete(work);
+        return this.work!.detach(work);
+      },
     };
   }
 
