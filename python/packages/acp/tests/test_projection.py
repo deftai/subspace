@@ -101,6 +101,27 @@ async def test_turn_history_a_number_keeps_the_last_events_none_keeps_none_a_run
         Turn("d", nothing, history=-1)
 
 
+async def test_turn_history_an_iteration_abandoned_mid_turn_stops_holding_events_once_collected():
+    import gc
+
+    async def nothing() -> None:
+        return None
+
+    turn = Turn("a", nothing, history=3)
+    turn.push(UsageEvent(used=0, size=100))
+    # Suspended at a yield, then dropped without aclose(): asyncio closes it once collected,
+    # which runs its `finally` and lets the events go.
+    iterator = turn.__aiter__()
+    await iterator.__anext__()
+    del iterator
+    gc.collect()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    for i in range(1, 100):
+        turn.push(UsageEvent(used=i, size=100))
+    assert len(turn.history) == 3
+
+
 def _text(t: str) -> dict[str, Any]:
     return {"type": "content", "content": {"type": "text", "text": t}}
 

@@ -4,6 +4,8 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import type { ToolCall, TurnEvent, TurnResult } from '@deft-subspace/acp';
 import { TurnProjection } from '../src/projection.ts';
 import { Turn } from '../src/turn.ts';
@@ -74,6 +76,26 @@ test('turn history: a number keeps the last events, none keeps none, a running r
   for (let i = 0; i < 10; i++) all.push(usage(i));
   assert.equal(all.history.length, 10);
   assert.throws(() => new Turn('d', async () => {}, undefined, -1), RangeError);
+});
+
+test('turn history: an iterator abandoned mid-turn stops holding events once it is collected', async () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const usage = (n: number): TurnEvent => ({ type: 'usage', used: n, size: 100 });
+  const turn = new Turn('a', async () => {}, undefined, 3);
+  turn.push(usage(0));
+  // Suspended at a yield, then dropped without return(): its finally never runs.
+  await (async () => {
+    const iterator = turn[Symbol.asyncIterator]();
+    await iterator.next();
+  })();
+  for (let i = 1; i < 100; i++) turn.push(usage(i));
+  for (let i = 0; i < 5 && turn.history.length > 3; i++) {
+    await new Promise((r) => setImmediate(r));
+    gc();
+    turn.push(usage(100 + i));
+  }
+  assert.equal(turn.history.length, 3);
 });
 
 test('message events: text is the message as it was, without a copy per event', () => {

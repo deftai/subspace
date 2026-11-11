@@ -49,6 +49,8 @@ TurnHistory = Union[Literal["all", "none"], int]
 default) keeps every event; a number keeps the last that many; "none" keeps none. An event is
 only dropped once every iteration running at the time (and the turn's handlers) has had it, so
 a running reader never misses one; an iteration started later begins at the oldest event kept.
+An iteration dropped mid-turn without ending it holds events back until it is garbage
+collected and asyncio closes it.
 `text`, `tool_calls` and the result are not affected."""
 
 
