@@ -864,9 +864,13 @@ class _SessionLifecycle:
                 await _resolve(part.disconnect(session.parts.get(part.name), session))
 
         open_ = list(self.sessions.values())
-        await asyncio.gather(*(one(part, session) for session in open_ for part in self._parts))
+        # Every part is told, and the connection-level hook runs, even if one part fails.
+        results = await asyncio.gather(*(one(part, session) for session in open_ for part in self._parts), return_exceptions=True)
         if self._connection_closed is not None:
             await _resolve(self._connection_closed([session.id for session in open_]))
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 SESSIONS: StateKey[_SessionLifecycle] = state_key("sessions")

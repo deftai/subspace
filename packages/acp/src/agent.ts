@@ -399,8 +399,13 @@ class SessionLifecycle {
 
   async disconnect(): Promise<void> {
     const open = [...this.sessions.values()];
-    await Promise.all(open.flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session))));
+    // Every part is told, and the connection-level hook runs, even if one part fails.
+    const results = await Promise.allSettled(
+      open.flatMap((session) => this.parts.map(async (part) => part.disconnect?.(session.parts.get(part.name), session))),
+    );
     await this.connectionClosed?.(open.map((session) => session.id));
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 }
 const SESSIONS = stateKey<SessionLifecycle>('sessions');

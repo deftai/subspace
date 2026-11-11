@@ -1518,3 +1518,20 @@ async def test_mcp_connection_is_kept_for_the_session_and_unknown_servers_raise(
     assert errors[0] == 'The session has no MCP server "nope" (servers: files, web)'
     assert "which the connector does not support (stdio)" in errors[1]
     await client.close()
+
+
+async def test_a_part_failing_to_disconnect_still_lets_the_others_and_connection_closed_run() -> None:
+    from deft_subspace.acp.agent import _SessionLifecycle, _SessionPart
+
+    events: list[str] = []
+
+    def failing(_value: object, session: object) -> None:
+        raise RuntimeError("mcp close failed")
+
+    lifecycle = _SessionLifecycle(None, lambda ids: events.append(f"connectionClosed {','.join(sorted(ids))}"))
+    lifecycle.attach(_SessionPart(name="mcp", create=lambda s: None, disconnect=failing))
+    lifecycle.attach(_SessionPart(name="turns", create=lambda s: None, disconnect=lambda _v, s: events.append(f"turns {s.id}")))
+    lifecycle.open("a", [], "/")
+    with pytest.raises(RuntimeError, match="mcp close failed"):
+        await lifecycle.disconnect()
+    assert events == ["turns a", "connectionClosed a"]
