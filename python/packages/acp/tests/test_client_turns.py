@@ -67,10 +67,10 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
             await update(agent, {"sessionUpdate": "state_update", "state": "idle", "stopReason": "end_turn"})
 
         # The first confirms the cancel late: after the grace period, before the drain gives up.
-        later(0.08, confirm()) if n == 1 else later(0.02, answer())
+        later(0.16, confirm()) if n == 1 else later(0.02, answer())
         return {}
 
-    client, _agent = await Fake(2, on_prompt).start()
+    client, _agent = await Fake(2, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=100))
     session = await client.new_session("/")
     first = session.prompt("one")
     await asyncio.sleep(0.01)
@@ -90,7 +90,7 @@ async def test_v1_queued_prompts_wait_for_a_force_ended_turns_answer():
     async def on_prompt(agent: RpcPeer, _params: Any, n: int) -> Any:
         order.append(f"prompt {n}")
         if n == 1:
-            await asyncio.sleep(0.08)
+            await asyncio.sleep(0.16)
             await update(agent, chunk("late "))
             await update(agent, {"sessionUpdate": "tool_call", "toolCallId": "old", "title": "old", "status": "pending"})
             order.append("answer 1")
@@ -98,7 +98,7 @@ async def test_v1_queued_prompts_wait_for_a_force_ended_turns_answer():
         await update(agent, chunk("second"))
         return {"stopReason": "end_turn"}
 
-    client, _agent = await Fake(1, on_prompt).start()
+    client, _agent = await Fake(1, on_prompt).start(timeouts=Timeouts(cancel_grace_ms=100))
     session = await client.new_session("/")
     first = session.prompt("one")
     await asyncio.sleep(0.01)
@@ -148,4 +148,19 @@ async def test_a_cancel_interrupted_while_it_tells_the_agent_still_ends_the_turn
         await task
     result = await asyncio.wait_for(turn.done, 2)
     assert result.forced and result.cancelled
+    await client.close()
+
+
+async def test_a_tool_call_id_the_agent_reuses_in_a_later_turn_belongs_to_that_turn():
+    async def on_prompt(agent: RpcPeer, _params: Any, n: int) -> Any:
+        await update(agent, {"sessionUpdate": "tool_call", "toolCallId": "call_1", "title": f"turn {n}", "status": "pending"})
+        await update(agent, {"sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed"})
+        return {"stopReason": "end_turn"}
+
+    client, _agent = await Fake(1, on_prompt).start()
+    session = await client.new_session("/")
+    r1 = await session.prompt("a")
+    r2 = await session.prompt("b")
+    assert [len(r1.tool_calls), len(r2.tool_calls)] == [1, 1]
+    assert (r2.tool_calls[0].title, r2.tool_calls[0].status) == ("turn 2", "completed")
     await client.close()

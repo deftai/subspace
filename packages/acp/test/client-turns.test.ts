@@ -35,7 +35,7 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
       setTimeout(async () => {
         await update(agent, chunk('late '));
         await update(agent, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' });
-      }, 80);
+      }, 160);
       return {};
     }
     setTimeout(async () => {
@@ -43,7 +43,7 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
       await update(agent, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
     }, 20);
     return {};
-  });
+  }, { timeouts: { cancelGraceMs: 100 } });
   const session = await client.newSession({ cwd: '/' });
   const first = session.prompt('one');
   await sleep(10);
@@ -63,7 +63,7 @@ test("v1: queued prompts wait for a force-ended turn's answer; its late updates 
   const { client } = await fakeAgent(1, async (agent, _p, n) => {
     order.push(`prompt ${n}`);
     if (n === 1) {
-      await sleep(80);
+      await sleep(160);
       await update(agent, chunk('late '));
       await update(agent, { sessionUpdate: 'tool_call', toolCallId: 'old', title: 'old', status: 'pending' });
       order.push('answer 1');
@@ -71,7 +71,7 @@ test("v1: queued prompts wait for a force-ended turn's answer; its late updates 
     }
     await update(agent, chunk('second'));
     return { stopReason: 'end_turn' };
-  });
+  }, { timeouts: { cancelGraceMs: 100 } });
   const session = await client.newSession({ cwd: '/' });
   const first = session.prompt('one');
   await sleep(10);
@@ -123,5 +123,20 @@ test('the cancel deadline runs even when the session/cancel write never complete
   const result = await turn.done;
   assert.equal(result.forced, true);
   assert.equal(result.cancelled, true);
+  await client.close();
+});
+
+test('a tool call id the agent reuses in a later turn belongs to that turn', async () => {
+  const { client } = await fakeAgent(1, async (agent, _p, n) => {
+    await update(agent, { sessionUpdate: 'tool_call', toolCallId: 'call_1', title: `turn ${n}`, status: 'pending' });
+    await update(agent, { sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed' });
+    return { stopReason: 'end_turn' };
+  });
+  const session = await client.newSession({ cwd: '/' });
+  const r1 = await session.prompt('a').done;
+  const r2 = await session.prompt('b').done;
+  assert.deepEqual([r1.toolCalls.length, r2.toolCalls.length], [1, 1]);
+  assert.equal(r2.toolCalls[0]?.title, 'turn 2');
+  assert.equal(r2.toolCalls[0]?.status, 'completed');
   await client.close();
 });

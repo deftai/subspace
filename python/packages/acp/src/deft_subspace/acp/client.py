@@ -1363,11 +1363,16 @@ class Session:
         # A background terminal's own updates (its output, its exit) belong to the turn that started it.
         if kind in ("terminal_update", "terminal_output_chunk") and isinstance(update.get("terminalId"), str):
             return any(isinstance(item, TerminalWork) and item.terminal_id == update["terminalId"] for item in self._background or [])
+        # A new tool call is the running turn's, even with an id an earlier turn used.
         call_id = update.get("toolCallId")
-        if not isinstance(call_id, str) or kind not in ("tool_call", "tool_call_update", "tool_call_content_chunk"):
+        if not isinstance(call_id, str) or kind not in ("tool_call_update", "tool_call_content_chunk"):
             return False
         active = self._current
-        return call_id in self._idle_projection.tool_calls and not (active is not None and call_id in active.projection.tool_calls)
+        if active is not None and call_id in active.projection.tool_calls:
+            return False
+        # Only background work goes on after its turn; other ids are the running turn's to reuse.
+        earlier = self._idle_projection.tool_calls.get(call_id)
+        return earlier is not None and self._is_background(earlier)
 
     def _track(self, update: Any) -> None:
         if not isinstance(update, dict):

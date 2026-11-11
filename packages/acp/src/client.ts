@@ -1231,9 +1231,13 @@ export class Session {
     if ((u.sessionUpdate === 'terminal_update' || u.sessionUpdate === 'terminal_output_chunk') && typeof u.terminalId === 'string') {
       return !!this.currentBackground?.some((item) => item.type === 'terminal' && item.terminalId === u.terminalId);
     }
+    // A new tool call is the running turn's, even with an id an earlier turn used.
     if (typeof u.toolCallId !== 'string') return false;
-    if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update' && u.sessionUpdate !== 'tool_call_content_chunk') return false;
-    return this.idleProjection.toolCalls.has(u.toolCallId) && !this.current?.projection.toolCalls.has(u.toolCallId);
+    if (u.sessionUpdate !== 'tool_call_update' && u.sessionUpdate !== 'tool_call_content_chunk') return false;
+    if (this.current?.projection.toolCalls.has(u.toolCallId)) return false;
+    // Only background work goes on after its turn; other ids are the running turn's to reuse.
+    const earlier = this.idleProjection.toolCalls.get(u.toolCallId);
+    return !!earlier && this.isBackground(earlier);
   }
 
   private trackModes(update: unknown): void {
