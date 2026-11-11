@@ -61,11 +61,12 @@ test('writing to a process that died rejects the write', async () => {
 
 test('stop() ends the whole process group, even a child that ignores SIGTERM', async () => {
   // The leader starts a grandchild that ignores SIGTERM, like `npx some-agent`.
+  // Both ignore SIGTERM before they report ready, so a quick stop() can't catch one without its handler.
   const script = `
-    const { spawn } = require('node:child_process');
-    const g = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' });
-    process.stdout.write(String(g.pid) + '\\n');
     process.on('SIGTERM', () => {});
+    const { spawn } = require('node:child_process');
+    const g = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); process.stdout.write('ready'); setInterval(()=>{},1000)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    g.stdout.once('data', () => process.stdout.write(String(g.pid) + '\\n'));
     setInterval(() => {}, 1000);
   `;
   const child = await spawnProcess(node, { args: ['-e', script], killGraceMs: 300 });
@@ -79,8 +80,19 @@ test('stop() ends the whole process group, even a child that ignores SIGTERM', a
   const info = await child.stop();
   assert.equal(info.signal, 'SIGKILL');
   assert.ok(Date.now() - started < 3000);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.throws(() => process.kill(grandchild, 0), /ESRCH/, 'grandchild is gone');
+  // A killed process lingers until it is reaped, longer on a busy machine: poll.
+  const gone = async () => {
+    for (let waited = 0; waited < 2000; waited += 20) {
+      try {
+        process.kill(grandchild, 0);
+      } catch {
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return false;
+  };
+  assert.ok(await gone(), 'grandchild is gone');
 });
 
 test('keeps the last stderr output for error messages', async () => {

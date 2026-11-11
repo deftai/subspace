@@ -41,10 +41,12 @@ async def test_writing_to_a_process_that_died_fails():
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups")
 async def test_stop_ends_the_whole_process_group_even_a_child_that_ignores_sigterm():
     script = (
+        # Both ignore SIGTERM before they report ready, so a quick stop() can't catch one without its handler.
         "import signal, subprocess, sys, time\n"
-        "g = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])\n"
-        "print(g.pid, flush=True)\n"
         "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "g = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(1, flush=True); time.sleep(60)'], stdout=subprocess.PIPE)\n"
+        "g.stdout.readline()\n"
+        "print(g.pid, flush=True)\n"
         "time.sleep(60)\n"
     )
     child = await spawn_process(PY, args=["-c", script], kill_grace_ms=300)
@@ -54,9 +56,15 @@ async def test_stop_ends_the_whole_process_group_even_a_child_that_ignores_sigte
     info = await child.stop()
     assert info.signal == "SIGKILL"
     assert time.monotonic() - started < 3
-    await asyncio.sleep(0.1)
-    with pytest.raises(ProcessLookupError):
-        os.kill(grandchild, 0)
+    # A killed process lingers until it is reaped, longer on a busy machine: poll.
+    for _ in range(100):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("grandchild is still alive")
 
 
 async def test_keeps_the_last_stderr_output():
@@ -91,13 +99,13 @@ async def test_the_stderr_tail_counts_bytes():
     assert "�" not in tail  # a character cut in half is dropped, not shown as garbage
 
 
-IGNORES_SIGTERM = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+IGNORES_SIGTERM = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM")
 async def test_a_timed_out_stop_still_stops_the_process():
     child = await spawn_process(PY, args=["-c", IGNORES_SIGTERM], kill_grace_ms=300)
-    await asyncio.sleep(0.2)
+    await child.channel.receive()  # SIGTERM is ignored from here on
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(child.stop(), 0.05)
     info = await asyncio.wait_for(child.stop(), 3)
