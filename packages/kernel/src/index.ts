@@ -13,6 +13,7 @@ export {
   type NotificationHandler,
   type OutboundMiddleware,
   type PeerDiagnostic,
+  type PeerState,
   type RequestHandler,
   type RequestOptions,
   type RpcPeerOptions,

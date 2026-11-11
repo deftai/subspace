@@ -216,6 +216,62 @@ test('sendRaw writes a message as given, outside request tracking', async () => 
   assert.equal(peer.pendingCount, 0);
 });
 
+test('when the other side ends, running handlers finish and their answers are sent', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  peer.onRequest('x', async (_p, ctx) => {
+    await tick();
+    await ctx.peer.notify('progress', { done: true });
+    return ctx.signal.aborted ? 'aborted' : 'answer';
+  });
+  peer.start();
+  const asked = peer.request('ask');
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'x' });
+  await end.end();
+  await assert.rejects(asked, (e) => LocalError.is(e, 'closed'));
+  assert.equal(peer.state, 'draining');
+  assert.equal(peer.isClosed, false);
+  await assert.rejects(peer.request('later'), (e) => LocalError.is(e, 'closed'));
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+  assert.equal(peer.state, 'closed');
+  await tick();
+  assert.deepEqual(end.sent.slice(1), [
+    { jsonrpc: '2.0', method: 'progress', params: { done: true } },
+    { jsonrpc: '2.0', id: 1, result: 'answer' },
+  ]);
+});
+
+test('handlers still running when the drain time is up are aborted', async () => {
+  const clock = manualClock();
+  const end = raw();
+  const peer = new RpcPeer(end.channel, { clock, drainTimeoutMs: 1000 });
+  let signal: AbortSignal | undefined;
+  peer.onRequest('slow', (_p, ctx) => {
+    signal = ctx.signal;
+    return new Promise(() => {});
+  });
+  assert.equal(peer.state, 'idle');
+  peer.start();
+  assert.equal(peer.state, 'open');
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'slow' });
+  await end.end();
+  await tick();
+  assert.equal(peer.state, 'draining');
+  clock.advance(999);
+  assert.equal(signal?.aborted, false);
+  clock.advance(1);
+  assert.equal(signal?.aborted, true);
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+  assert.equal(clock.pendingTimers, 0);
+});
+
+test('with nothing running, the other side ending closes at once', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel).start();
+  await end.end();
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+});
+
 /** Two peers talking NDJSON over bytes, as over stdio. */
 function bytePair(b: RpcPeerOptions = {}) {
   const aToB = new TransformStream<Uint8Array, Uint8Array>();

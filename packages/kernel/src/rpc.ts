@@ -73,7 +73,22 @@ export interface RpcPeerOptions {
   /** Sees every message in both directions, e.g. for tracing. Must not throw. */
   tap?: (direction: 'in' | 'out', message: unknown) => void;
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
+  /**
+   * When the other side ends its stream, how long request handlers still
+   * running may take to answer before they are aborted. `0` aborts them at
+   * once; `Infinity` waits for them. Default 1000.
+   */
+  drainTimeoutMs?: number;
 }
+
+/**
+ * `idle`: not started. `open`: reading and writing. `draining`: the other side
+ * ended its stream; running handlers finish and answer, then the peer closes.
+ * `closed`: nothing more is read or written.
+ */
+export type PeerState = 'idle' | 'open' | 'draining' | 'closed';
+
+const DEFAULT_DRAIN_MS = 1000;
 
 export interface CloseInfo {
   /** `local`: close() was called. `remote-ended`: the other side's stream ended. `error`: the stream failed. */
@@ -119,7 +134,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  *
  * Inbound requests run concurrently, so a handler that waits on a call back to
  * the other side never stops other messages from being read. Notification
- * handlers run in arrival order.
+ * handlers start in arrival order.
+ *
+ * When the other side ends its stream, outbound requests fail with `closed`
+ * at once, but inbound requests already running may still answer (see
+ * `drainTimeoutMs`), so `printf '{"id":1,"method":"x"}\n' | agent` is answered.
  */
 export class RpcPeer {
   readonly name: string;
@@ -135,8 +154,10 @@ export class RpcPeer {
   private readonly writer: WritableStreamDefaultWriter<unknown>;
   private reader?: ReadableStreamDefaultReader<unknown>;
   private nextId = 0;
-  private started = false;
-  private closeInfo?: CloseInfo;
+  private current: PeerState = 'idle';
+  /** Inbound request handlers still running. */
+  private running = 0;
+  private drainTimer?: unknown;
   private resolveClosed!: (info: CloseInfo) => void;
 
   private readonly channel: Channel<unknown>;
@@ -148,11 +169,19 @@ export class RpcPeer {
     this.clock = options.clock ?? systemClock;
     this.writer = channel.writable.getWriter();
     this.closed = new Promise((resolve) => (this.resolveClosed = resolve));
+    // Our sending side failed (the other side stopped reading): no answer can get through.
+    this.writer.closed.catch(() => {
+      if (this.current === 'draining') this.finish({ reason: 'remote-ended' });
+    });
   }
 
   /** True once the connection has closed for any reason. */
   get isClosed(): boolean {
-    return this.closeInfo !== undefined;
+    return this.current === 'closed';
+  }
+
+  get state(): PeerState {
+    return this.current;
   }
 
   /** Outbound requests still waiting for an answer. */
@@ -179,8 +208,8 @@ export class RpcPeer {
 
   /** Start reading. Register handlers first. */
   start(): this {
-    if (this.started || this.closeInfo) return this;
-    this.started = true;
+    if (this.current !== 'idle') return this;
+    this.current = 'open';
     void this.readLoop();
     return this;
   }
@@ -209,7 +238,7 @@ export class RpcPeer {
 
   /** Close the connection. Pending requests fail with `closed`; running handlers are aborted. */
   async close(): Promise<CloseInfo> {
-    this.finish({ reason: 'local' });
+    this.finish(this.current === 'draining' ? { reason: 'remote-ended' } : { reason: 'local' });
     await this.reader?.cancel().catch(() => {});
     return this.closed;
   }
@@ -227,7 +256,8 @@ export class RpcPeer {
   }
 
   private sendRequest(method: string, params: unknown, options: RequestOptions): Promise<unknown> {
-    if (this.closeInfo) {
+    // While draining nothing more is read, so no answer could arrive.
+    if (this.current === 'draining' || this.current === 'closed') {
       return Promise.reject(new LocalError('closed', `${this.name}: connection closed before ${method} was sent`, { method }));
     }
     if (options.signal?.aborted) {
@@ -265,7 +295,7 @@ export class RpcPeer {
   private giveUp(id: JsonRpcId, error: LocalError): void {
     if (!this.settle(id, { ok: false, error })) return;
     const cancel = this.options.cancelOutbound;
-    if (cancel && !this.closeInfo) {
+    if (cancel && this.current === 'open') {
       void this.write(this.message({ method: cancel.method, params: cancel.params(id) })).catch(() => {});
     }
   }
@@ -292,9 +322,22 @@ export class RpcPeer {
         if (done) break;
         this.receive(value);
       }
-      this.finish({ reason: 'remote-ended' });
+      this.drain();
     } catch (error) {
-      this.finish(this.closeInfo ?? { reason: 'error', error });
+      this.finish({ reason: 'error', error });
+    }
+  }
+
+  /** The other side ended its stream: fail what waits on it, let running handlers answer, then close. */
+  private drain(): void {
+    if (this.current !== 'open') return;
+    this.current = 'draining';
+    this.failPending({ reason: 'remote-ended' });
+    const limit = this.options.drainTimeoutMs ?? DEFAULT_DRAIN_MS;
+    if (this.running === 0 || !(limit > 0)) {
+      this.finish({ reason: 'remote-ended' });
+    } else if (Number.isFinite(limit)) {
+      this.drainTimer = this.clock.setTimeout(() => this.finish({ reason: 'remote-ended' }), limit);
     }
   }
 
@@ -361,7 +404,7 @@ export class RpcPeer {
           });
           reply = { id, result: result === undefined ? null : result };
         } catch (error) {
-          if (this.closeInfo) return;
+          if (this.current === 'closed') return;
           if (RpcError.is(error)) {
             reply = { id, error: error.toJSON() };
           } else if (controller.signal.aborted) {
@@ -375,8 +418,11 @@ export class RpcPeer {
       } finally {
         if (this.inbound.get(id) === controller) this.inbound.delete(id);
         this.connectionAbort.signal.removeEventListener('abort', onClose);
+        this.running--;
+        if (this.running === 0 && this.current === 'draining') this.finish({ reason: 'remote-ended' });
       }
     };
+    this.running++;
     void run();
   }
 
@@ -434,7 +480,7 @@ export class RpcPeer {
   }
 
   private async write(message: Record<string, unknown>): Promise<void> {
-    if (this.closeInfo) throw new LocalError('closed', `${this.name}: connection closed`);
+    if (this.current === 'closed') throw new LocalError('closed', `${this.name}: connection closed`);
     this.tap('out', message);
     await this.writer.write(message);
     const failure = takeEncodeFailure(message);
@@ -458,9 +504,16 @@ export class RpcPeer {
   }
 
   private finish(info: CloseInfo): void {
-    if (this.closeInfo) return;
-    this.closeInfo = info;
+    if (this.current === 'closed') return;
+    this.current = 'closed';
+    if (this.drainTimer !== undefined) this.clock.clearTimeout(this.drainTimer);
     this.connectionAbort.abort(new LocalError('closed', `${this.name}: connection closed`));
+    this.failPending(info);
+    void this.writer.close().catch(() => {});
+    this.resolveClosed(info);
+  }
+
+  private failPending(info: CloseInfo): void {
     const error = new LocalError(
       'closed',
       info.reason === 'remote-ended'
@@ -474,7 +527,5 @@ export class RpcPeer {
       const method = this.pending.get(id)?.method;
       this.settle(id, { ok: false, error: new LocalError('closed', `${error.message} while waiting for ${method}`, { method, cause: info.error }) });
     }
-    void this.writer.close().catch(() => {});
-    this.resolveClosed(info);
   }
 }

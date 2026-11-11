@@ -443,3 +443,70 @@ async def test_a_failed_write_of_an_answer_is_a_send_failure_with_no_second_answ
     await tick(10)
     assert [d.kind for d in diagnostics] == ["send-failed"]
     assert len(writes) == 1
+
+
+async def test_when_the_other_side_ends_running_handlers_finish_and_their_answers_are_sent():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+
+    async def x(_p, ctx):
+        await tick()
+        await ctx.peer.notify("progress", {"done": True})
+        return "aborted" if ctx.signal.aborted else "answer"
+
+    peer.on_request("x", x)
+    peer.start()
+    asked = asyncio.ensure_future(peer.request("ask"))
+    await tick()
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "x"})
+    await end.end()
+    with pytest.raises(LocalError) as info:
+        await asked
+    assert info.value.kind == "closed"
+    assert peer.state == "draining"
+    assert not peer.is_closed
+    with pytest.raises(LocalError) as info:
+        await peer.request("later")
+    assert info.value.kind == "closed"
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"
+    assert peer.state == "closed"
+    await tick()
+    assert end.sent[1:] == [
+        {"jsonrpc": "2.0", "method": "progress", "params": {"done": True}},
+        {"jsonrpc": "2.0", "id": 1, "result": "answer"},
+    ]
+
+
+async def test_handlers_still_running_when_the_drain_time_is_up_are_aborted():
+    clock = manual_clock()
+    end = Raw()
+    peer = RpcPeer(end.channel, clock=clock, drain_timeout_ms=1000)
+    seen: dict[str, Any] = {}
+
+    def slow(_p, ctx):
+        seen["signal"] = ctx.signal
+        return asyncio.get_running_loop().create_future()
+
+    peer.on_request("slow", slow)
+    assert peer.state == "idle"
+    peer.start()
+    assert peer.state == "open"
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "slow"})
+    await end.end()
+    await tick()
+    assert peer.state == "draining"
+    clock.advance(999)
+    assert not seen["signal"].aborted
+    clock.advance(1)
+    assert seen["signal"].aborted
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"
+    assert clock.pending_timers == 0
+    for task in list(peer._tasks):
+        task.cancel()
+
+
+async def test_with_nothing_running_the_other_side_ending_closes_at_once():
+    end = Raw()
+    peer = RpcPeer(end.channel).start()
+    await end.end()
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"

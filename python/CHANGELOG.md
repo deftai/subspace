@@ -9,4 +9,5 @@
 - kernel: a failed write of an answer is reported as a new `send-failed` diagnostic, not `handler-failed`, and no second answer is attempted.
 - kernel: a `cancel_inbound.id` extractor that raises is reported as `invalid-message` instead of closing the connection.
 - kernel: `start()` after `close()` does nothing.
+- kernel: when the other side ends its stream, `RpcPeer` drains instead of closing at once: outbound requests fail with `closed` and nothing more is read, but request handlers already running may answer for up to `drain_timeout_ms` (new option, default 1000; 0 is the old behaviour) before they are aborted and the peer closes. So `printf '{"id":1,"method":"x"}\n' | agent` gets its answer. `closed`, `on_close` and `is_closed` follow once the drain ends. New `RpcPeer.state`: `idle`, `open`, `draining` or `closed`.
 - kernel: `MemoryChannel.receive()` may be awaited by several tasks at once; each gets its own item.
