@@ -101,19 +101,27 @@ class ClaudeConversation implements ModelConversation {
         },
         { signal: stream.signal }
       );
-      request.on('text', (delta) => void stream.onText(delta));
-      request.on('thinking', (delta) => void stream.onThinking(delta));
+      // Deltas go out one after another, and all of them before this returns. One that fails
+      // (the client went away) is dropped: the turn ends through its signal, not here.
+      let delivered: Promise<unknown> = Promise.resolve();
+      const deliver = (send: (delta: string) => unknown) => (delta: string) => {
+        delivered = delivered.then(() => send(delta)).catch(() => {});
+      };
+      request.on('text', deliver((delta) => stream.onText(delta)));
+      request.on('thinking', deliver((delta) => stream.onThinking(delta)));
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await request.finalMessage();
         jsonRetries = 0;
       } catch (error) {
+        await delivered;
         if (stream.signal.aborted) return { stopReason: 'cancelled', toolCalls: [] };
         // A tool input that could not be parsed at all (eager streaming): re-issue, a few times.
         if (error instanceof Anthropic.APIError) throw new Error(apiErrorMessage(error), { cause: error });
         if (jsonRetries++ >= 2) throw error;
         continue;
       }
+      await delivered;
       // Append-only history: the whole assistant turn, thinking blocks included.
       this.messages.push({ role: 'assistant', content: message.content as ContentParam[] });
       if (message.stop_reason === 'pause_turn') continue;

@@ -127,6 +127,25 @@ test('a prompt that carries results of tools that ran: real results first, "Not 
   ]);
 });
 
+test('a text or thinking handler that fails does not leave an unhandled rejection', async () => {
+  const { client } = fakeClient([{ thinking: 'hm', text: 'Hi', content: [{ type: 'text', text: 'Hi' }], stop_reason: 'end_turn' }]);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const conversation = claude({ client }).conversation({ tools: [], cwd: '/' });
+    const fail = async () => {
+      throw new Error('closed');
+    };
+    const reply = await conversation.send({ prompt: [{ type: 'text', text: 'go' }] }, { onText: fail, onThinking: fail, signal: new AbortController().signal });
+    assert.equal(reply.stopReason, 'end_turn');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('end to end: modelAgent with claude() and an ACP client', async () => {
   const { client: anthropic } = fakeClient([
     { thinking: 'Check the files.', text: 'Looking.', content: [{ type: 'text', text: 'Looking.' }, { type: 'tool_use', id: 'u1', name: 'listFiles', input: { path: 'src' } }], stop_reason: 'tool_use' },
