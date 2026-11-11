@@ -334,7 +334,8 @@ def parse_mcp_servers(raw: Any) -> tuple[list[McpServer], list[Any]]:
             unknown.append(entry)
             continue
         name = entry["name"]
-        kind = entry.get("type") or ("stdio" if isinstance(entry.get("command"), str) else None)
+        # Only a missing (or null) type is inferred; any other value, even "", is the entry's own.
+        kind = entry["type"] if entry.get("type") is not None else ("stdio" if isinstance(entry.get("command"), str) else None)
         if kind == "stdio" and isinstance(entry.get("command"), str):
             args = [str(a) for a in entry["args"]] if isinstance(entry.get("args"), list) else []
             servers.append(StdioMcpServer(name, entry["command"], args, _record(entry.get("env"))))

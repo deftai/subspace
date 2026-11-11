@@ -257,3 +257,12 @@ def test_no_network_needed_for_the_default_catalog(tmp_path):
     catalog = load_catalog(env={"XDG_CACHE_HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path)}, cwd=str(tmp_path))
     assert catalog.registry is REGISTRY_SNAPSHOT
     assert os.path.basename(catalog.layers[0].source) == "built-in"
+
+
+def test_a_name_that_is_not_a_string_is_an_agent_file_error():
+    import pytest as _pytest
+
+    from deft_subspace.acp.catalog import AgentFileError, parse_agent_table
+
+    with _pytest.raises(AgentFileError):
+        parse_agent_table({1: {"command": "x"}}, "test")

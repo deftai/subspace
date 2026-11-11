@@ -416,8 +416,9 @@ def resolve_agent(catalog: AgentCatalog, name: str, *, platform: str | None = No
     quirk_env: dict[str, str] = {}
     for quirk in enabled.values():
         apply = quirk.apply or {}
-        if "mode" in apply and apply["mode"] is not None:
-            mode = apply["mode"]
+        applied_mode = apply.get("mode")
+        if applied_mode is not None:
+            mode = applied_mode
         quirk_args.extend(apply.get("args") or [])
         quirk_env.update(apply.get("env") or {})
     if merged.get("mode") is not None:

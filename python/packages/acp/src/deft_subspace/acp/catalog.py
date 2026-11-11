@@ -136,7 +136,7 @@ def parse_agent_table(table: Any, source: str, at: str = "agents") -> CatalogLay
         raise AgentFileError(f"{source}: {at} should be a table ([{at}.<name>])")
     for name, value in table.items():
         path = f"{at}.{name}"
-        if not _NAME.fullmatch(name):
+        if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise AgentFileError(f"{source}: {path}: names are letters, digits, ., _ and -")
         if not _is_record(value):
             raise AgentFileError(f"{source}: {path} should be a table")

@@ -159,3 +159,17 @@ async def test_mcp_connector_http_and_sse(kind):
         await client.close()
     finally:
         await child.stop()
+
+
+def test_parse_mcp_servers_infers_only_a_missing_type():
+    from deft_subspace.acp.mcp import parse_mcp_servers
+
+    servers, unknown = parse_mcp_servers(
+        [
+            {"name": "a", "command": "/bin/a"},
+            {"name": "b", "command": "/bin/b", "type": None},
+            {"name": "c", "command": "/bin/c", "type": ""},
+        ]
+    )
+    assert [s.name for s in servers] == ["a", "b"]
+    assert unknown == [{"name": "c", "command": "/bin/c", "type": ""}]
