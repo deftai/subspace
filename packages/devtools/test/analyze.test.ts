@@ -239,3 +239,15 @@ test('an id seen only in failed requests is not a session; one with updates or r
   assert.deepEqual(a.sessions.map((s) => s.id), ['early', 'started-before-trace']);
   assert.ok(a.diagnostics.some((d) => d.code === 'session-unconfirmed' && d.message.includes('"ghost"')));
 });
+
+test('a request id reused while open is one error, not also an unanswered request', () => {
+  const a = analyzeTrace(
+    trace(
+      'client',
+      [0, 'out', req(1, 'session/new', { cwd: '/w', mcpServers: [] })],
+      [1, 'out', req(1, 'session/new', { cwd: '/x', mcpServers: [] })],
+      [2, 'in', res(1, { sessionId: S })]
+    )
+  );
+  assert.deepEqual(codes(a), ['duplicate-request-id']);
+});
