@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { builtinCatalog, listAgents, resolveAgent, type Registry } from '@deft-subspace/acp';
-import { AgentFileError, agentFiles, loadCatalog, parseAgentFile, refreshRegistry, start } from '@deft-subspace/acp/node';
+import { AgentFileError, agentFiles, agentFilesAsync, loadCatalog, loadCatalogAsync, parseAgentFile, refreshRegistry, start } from '@deft-subspace/acp/node';
 
 const registry: Registry = {
   version: '1.0.0',
@@ -117,12 +117,19 @@ test('loadCatalog reads agents.toml, the nearest subspace.toml, $SUBSPACE_AGENTS
   assert.ok(agentFiles({ cwd: root, env }).some((f) => f.path.endsWith('agents.toml') && f.exists));
   assert.throws(() => loadCatalog({ env, files: [join(root, 'missing.toml')] }), /no such file/);
   assert.match(catalog.registrySource, /bundled snapshot/);
+  // The async loader reads the same catalog without blocking.
+  const viaAsync = await loadCatalogAsync({ cwd: join(project, 'deep', 'er'), env });
+  assert.deepEqual(viaAsync.layers, catalog.layers);
+  assert.deepEqual(viaAsync.registrySource, catalog.registrySource);
+  assert.deepEqual(await agentFilesAsync({ cwd: join(project, 'deep', 'er'), env }), agentFiles({ cwd: join(project, 'deep', 'er'), env }));
+  await assert.rejects(loadCatalogAsync({ env, files: [join(root, 'missing.toml')] }), /no such file/);
 
   const fake = (async () => new Response(JSON.stringify(registry))) as typeof fetch;
   const fetched = await refreshRegistry({ env, fetch: fake });
   assert.equal(fetched.agents, 3);
   const refreshed = loadCatalog({ env, builtinOnly: true });
   assert.match(refreshed.registrySource, /registry\.json/);
+  assert.equal((await loadCatalogAsync({ env, builtinOnly: true })).registrySource, refreshed.registrySource);
   assert.equal(resolveAgent(refreshed, 'claude')!.version, '9.9.9');
   await assert.rejects(refreshRegistry({ env, fetch: (async () => new Response('{"agents":[]}')) as typeof fetch }), /no agents/);
 });

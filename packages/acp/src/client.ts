@@ -725,6 +725,8 @@ export class Session {
   /** Tool calls of earlier turns (and between turns), kept so later updates to background work patch them. */
   private readonly idleProjection: TurnProjection;
   private currentBackground?: BackgroundItem[];
+  /** Mode and config changes, one at a time, so a later change is never overwritten by an earlier answer. */
+  private configQueue: Promise<unknown> = Promise.resolve();
 
   /** @internal */
   constructor(client: AcpClient, id: string, created: Record<string, unknown>) {
@@ -825,9 +827,21 @@ export class Session {
 
   /**
    * Switch mode, through `session/set_mode` or `session/set_config_option`
-   * as the agent requires. Throws if the agent offers no such mode.
+   * as the agent requires. Throws if the agent offers no such mode. Mode and
+   * config changes run one at a time, in the order they were made.
    */
-  async setMode(modeId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+  setMode(modeId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    return this.inOrder(() => this.switchMode(modeId, options));
+  }
+
+  /** Run a mode or config change after the ones before it. */
+  private inOrder<T>(change: () => Promise<T>): Promise<T> {
+    const next = this.configQueue.then(change, change);
+    this.configQueue = next.catch(() => {});
+    return next;
+  }
+
+  private async switchMode(modeId: string, options: { timeoutMs?: number }): Promise<void> {
     const modes = this.currentModes;
     if (!modes) throw new Error(`The agent offers no session modes`);
     if (!modes.available.some((m) => m.id === modeId)) {
@@ -864,9 +878,14 @@ export class Session {
   /**
    * Set a config option (`session/set_config_option`): a choice's value for a
    * select option, true or false for an on/off one. Throws, without asking
-   * the agent, for an option or value it did not offer.
+   * the agent, for an option or value it did not offer. Mode and config
+   * changes run one at a time, in the order they were made.
    */
-  async setConfigOption(id: string, value: string | boolean, options: { timeoutMs?: number } = {}): Promise<void> {
+  setConfigOption(id: string, value: string | boolean, options: { timeoutMs?: number } = {}): Promise<void> {
+    return this.inOrder(() => this.changeConfigOption(id, value, options));
+  }
+
+  private async changeConfigOption(id: string, value: string | boolean, options: { timeoutMs?: number }): Promise<void> {
     const option = this.configOption(id);
     if (!option) {
       throw new Error(`The agent offers no config option "${id}" (offered: ${this.currentConfig.map((o) => o.id).join(', ') || 'none'})`);

@@ -20,11 +20,12 @@
  *   fix = "Nothing to do; just wait"
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { builtinCatalog, type AgentCatalog, type AgentDefinition, type CatalogLayer, type Quirk } from './agents.ts';
-import { installedBinaries } from './install.ts';
+import { installedBinaries, installedBinariesAsync } from './install.ts';
 import { REGISTRY_URL, trimRegistry, type Registry } from './registry.ts';
 import { REGISTRY_SNAPSHOT, REGISTRY_SNAPSHOT_DATE } from './registry-snapshot.ts';
 
@@ -158,20 +159,40 @@ export interface CatalogOptions {
 
 /** The files loadCatalog() reads, in order, and whether each exists. */
 export function agentFiles(options: CatalogOptions = {}): Array<{ path: string; exists: boolean }> {
-  const env = options.env ?? process.env;
-  const paths: string[] = [];
-  paths.push(join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'subspace', 'agents.toml'));
-  for (let dir = resolve(options.cwd ?? process.cwd()); ; dir = dirname(dir)) {
-    const candidate = join(dir, 'subspace.toml');
-    if (existsSync(candidate)) {
+  const { first, folders, last } = agentFilePlaces(options);
+  const paths = [first];
+  const found = folders.find((candidate) => existsSync(candidate));
+  if (found) paths.push(found);
+  paths.push(...last);
+  return paths.map((path) => ({ path, exists: existsSync(path) }));
+}
+
+const fileExists = (path: string): Promise<boolean> => access(path).then(() => true, () => false);
+
+/** `agentFiles()` without blocking the event loop. */
+export async function agentFilesAsync(options: CatalogOptions = {}): Promise<Array<{ path: string; exists: boolean }>> {
+  const { first, folders, last } = agentFilePlaces(options);
+  const paths = [first];
+  for (const candidate of folders) {
+    if (await fileExists(candidate)) {
       paths.push(candidate);
       break;
     }
+  }
+  paths.push(...last);
+  return Promise.all(paths.map(async (path) => ({ path, exists: await fileExists(path) })));
+}
+
+/** Where agent files may be: the user's file, each folder's subspace.toml from cwd up (the first that exists counts), then the rest. */
+function agentFilePlaces(options: CatalogOptions): { first: string; folders: string[]; last: string[] } {
+  const env = options.env ?? process.env;
+  const folders: string[] = [];
+  for (let dir = resolve(options.cwd ?? process.cwd()); ; dir = dirname(dir)) {
+    folders.push(join(dir, 'subspace.toml'));
     if (dirname(dir) === dir) break;
   }
-  for (const file of (env.SUBSPACE_AGENTS ?? '').split(delimiter).filter(Boolean)) paths.push(resolve(file));
-  for (const file of options.files ?? []) paths.push(resolve(file));
-  return paths.map((path) => ({ path, exists: existsSync(path) }));
+  const last = [...(env.SUBSPACE_AGENTS ?? '').split(delimiter).filter(Boolean), ...(options.files ?? [])].map((file) => resolve(file));
+  return { first: join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'subspace', 'agents.toml'), folders, last };
 }
 
 export function registryCachePath(env: Record<string, string | undefined> = process.env): string {
@@ -181,13 +202,29 @@ export function registryCachePath(env: Record<string, string | undefined> = proc
 /** The registry to use: the cached copy if it is newer than the bundled snapshot. */
 export function loadRegistry(env: Record<string, string | undefined> = process.env): { registry: Registry; source: string } {
   const cache = registryCachePath(env);
+  let text: string | undefined;
   try {
-    const cached = JSON.parse(readFileSync(cache, 'utf8')) as { fetchedAt?: string; registry?: unknown };
-    if (cached.fetchedAt && cached.fetchedAt.slice(0, 10) >= REGISTRY_SNAPSHOT_DATE) {
+    text = readFileSync(cache, 'utf8');
+  } catch {
+    // No cache: the snapshot.
+  }
+  return registryFrom(cache, text);
+}
+
+/** `loadRegistry()` without blocking the event loop. */
+export async function loadRegistryAsync(env: Record<string, string | undefined> = process.env): Promise<{ registry: Registry; source: string }> {
+  const cache = registryCachePath(env);
+  return registryFrom(cache, await readFile(cache, 'utf8').catch(() => undefined));
+}
+
+function registryFrom(cache: string, text: string | undefined): { registry: Registry; source: string } {
+  try {
+    const cached = text === undefined ? undefined : (JSON.parse(text) as { fetchedAt?: string; registry?: unknown });
+    if (cached?.fetchedAt && cached.fetchedAt.slice(0, 10) >= REGISTRY_SNAPSHOT_DATE) {
       return { registry: trimRegistry(cached.registry), source: `${cache} (${cached.fetchedAt.slice(0, 10)})` };
     }
   } catch {
-    // No cache, or unreadable: the snapshot.
+    // Unreadable: the snapshot.
   }
   return { registry: REGISTRY_SNAPSHOT, source: `bundled snapshot (${REGISTRY_SNAPSHOT_DATE})` };
 }
@@ -217,6 +254,22 @@ export function loadCatalog(options: CatalogOptions = {}): AgentCatalog {
       continue;
     }
     catalog.layers.push(parseAgentFile(readFileSync(path, 'utf8'), path));
+  }
+  return catalog;
+}
+
+/** `loadCatalog()` without blocking the event loop (agent files and the registry cache are read asynchronously). */
+export async function loadCatalogAsync(options: CatalogOptions = {}): Promise<AgentCatalog> {
+  const { registry, source } = await loadRegistryAsync(options.env);
+  const catalog = builtinCatalog(registry, source);
+  catalog.binaries = await installedBinariesAsync(options.env);
+  if (options.builtinOnly) return catalog;
+  for (const { path, exists } of await agentFilesAsync(options)) {
+    if (!exists) {
+      if ((options.files ?? []).map((f) => resolve(f)).includes(path)) throw new AgentFileError(`${path}: no such file`);
+      continue;
+    }
+    catalog.layers.push(parseAgentFile(await readFile(path, 'utf8'), path));
   }
   return catalog;
 }

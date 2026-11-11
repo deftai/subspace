@@ -10,7 +10,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { chmod, copyFile, mkdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
@@ -66,6 +66,34 @@ export function installedBinaries(env: Record<string, string | undefined> = proc
     for (const version of versions) {
       const dir = join(root, id, version);
       if (!version.startsWith('.') && existsSync(join(dir, MARKER))) found[`${id}@${version}`] = dir;
+    }
+  }
+  return found;
+}
+
+const exists = (path: string): Promise<boolean> => access(path).then(() => true, () => false);
+
+/** `installedBinaries()` without blocking the event loop. */
+export async function installedBinariesAsync(env: Record<string, string | undefined> = process.env): Promise<Record<string, string>> {
+  const root = binariesPath(env);
+  const found: Record<string, string> = {};
+  let ids: string[];
+  try {
+    ids = await readdir(root);
+  } catch {
+    return found;
+  }
+  for (const id of ids) {
+    if (id.startsWith('.')) continue;
+    let versions: string[];
+    try {
+      versions = await readdir(join(root, id));
+    } catch {
+      continue;
+    }
+    for (const version of versions) {
+      const dir = join(root, id, version);
+      if (!version.startsWith('.') && (await exists(join(dir, MARKER)))) found[`${id}@${version}`] = dir;
     }
   }
   return found;
