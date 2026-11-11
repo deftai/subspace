@@ -310,3 +310,31 @@ async def test_writes_keep_their_order():
         asyncio.ensure_future(peer.notify("n", {"i": i}))
     await tick(10)
     assert [m["params"]["i"] for m in end.sent] == list(range(20))
+
+
+async def test_notify_without_params_omits_params():
+    end = Raw()
+    peer = RpcPeer(end.channel).start()
+    await peer.notify("ping")
+    await tick()
+    assert end.sent == [{"jsonrpc": "2.0", "method": "ping"}]
+
+
+async def test_a_base_exception_in_a_handler_is_not_turned_into_a_reply():
+    # Like SystemExit or KeyboardInterrupt: not an error to answer, so it propagates.
+    class Stop(BaseException):
+        pass
+
+    end = Raw()
+    peer = RpcPeer(end.channel)
+
+    def stop(_p, _c):
+        raise Stop
+
+    peer.on_request("stop", stop)
+    peer.start()
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "stop"})
+    await tick(10)
+    assert end.sent == []
+    for task in list(peer._tasks):
+        task.cancel()

@@ -280,7 +280,10 @@ class RpcPeer:
         call = Call("notification", method, params)
 
         async def send(final: Any) -> None:
-            await self._write(self._message(method=method, params=final))
+            message = self._message(method=method)
+            if final is not None:
+                message["params"] = final
+            await self._write(message)
 
         await self._run_outbound(call, send)
 
@@ -486,7 +489,7 @@ class RpcPeer:
                 if self._close_info is None:
                     self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
                 raise
-            except BaseException as error:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
                 if self._close_info is not None:
                     return
                 if isinstance(error, RpcError):
