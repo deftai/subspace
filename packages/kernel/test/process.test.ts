@@ -3,7 +3,7 @@ import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
-import { spawnProcess, SpawnError } from '@deft-subspace/kernel/node';
+import { cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
 
 const node = process.execPath;
 
@@ -210,4 +210,44 @@ test('a group is forgotten once its last member is gone', { skip: !posix }, asyn
   } finally {
     killAll([app.pid!]);
   }
+});
+
+// Windows command resolution runs anywhere: the environment and the file system are passed in.
+const winEnv = { Path: 'C:\\bin;C:\\nodejs', PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+const files =
+  (...paths: string[]) =>
+  (path: string) =>
+    paths.some((p) => p.toLowerCase() === path.toLowerCase());
+
+test('Windows: a .cmd shim found through PATHEXT runs via cmd.exe', () => {
+  const launch = windowsLaunch('npx', ['-y', 'some agent'], winEnv, files('C:\\nodejs\\npx.cmd'));
+  assert.equal(launch, 'C:\\nodejs\\npx.CMD ^"-y^" ^"some^ agent^"');
+});
+
+test('Windows: an .exe, or a command not found, runs as given', () => {
+  assert.equal(windowsLaunch('node', ['x'], winEnv, files('C:\\nodejs\\node.exe', 'C:\\nodejs\\node.cmd')), undefined);
+  assert.equal(windowsLaunch('missing', [], winEnv, files()), undefined);
+});
+
+test('Windows: PATH order, then PATHEXT order', () => {
+  assert.equal(windowsFind('tool', winEnv, files('C:\\nodejs\\tool.exe', 'C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD');
+  assert.equal(windowsFind('tool', winEnv, files('C:\\bin\\tool.cmd', 'C:\\bin\\tool.exe')), 'C:\\bin\\tool.EXE');
+  assert.equal(windowsFind('tool.cmd', winEnv, files('C:\\nodejs\\tool.cmd')), 'C:\\nodejs\\tool.cmd');
+  assert.equal(windowsFind('D:\\x\\run', winEnv, files('D:\\x\\run.bat')), 'D:\\x\\run.BAT');
+  assert.equal(windowsFind('./run', winEnv, files('./run.cmd', 'C:\\bin\\run.cmd')), './run.CMD');
+  assert.equal(windowsFind('tool', { PATH: 'C:\\bin' }, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD'); // default PATHEXT
+});
+
+test('Windows: cmd.exe metacharacters in arguments are escaped', () => {
+  assert.equal(
+    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\']),
+    'C:\\Program^ Files\\nodejs\\npx.cmd ^"a^&b^|c\\^"d^" ^"100^%^" ^"end\\\\^"',
+  );
+  // npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
+  assert.equal(cmdLine('C:\\p\\node_modules\\.bin\\agent.cmd', ['a&b']), 'C:\\p\\node_modules\\.bin\\agent.cmd ^^^"a^^^&b^^^"');
+});
+
+test('the not-found hint names .cmd shims on Windows', () => {
+  assert.match(notFoundHint('npx', undefined, true), /\.cmd shims/);
+  assert.doesNotMatch(notFoundHint('npx', undefined, false), /\.cmd/);
 });

@@ -239,3 +239,54 @@ async def test_an_apps_own_signal_handler_is_left_alone(mode):
     finally:
         _kill_all(app, pids)
 
+
+# Windows command resolution runs anywhere: the environment and the file system are passed in.
+
+WIN_ENV = {"Path": r"C:\bin;C:\nodejs", "PATHEXT": ".COM;.EXE;.BAT;.CMD"}
+
+
+def _files(*paths: str):
+    found = {p.lower() for p in paths}
+    return lambda path: path.lower() in found
+
+
+def test_windows_runs_a_cmd_shim_found_through_pathext_via_cmd_exe():
+    from deft_subspace.kernel.process import _windows_launch
+
+    line = _windows_launch("npx", ["-y", "some agent"], WIN_ENV, _files(r"C:\nodejs\npx.cmd"))
+    assert line == r'C:\nodejs\npx.CMD ^"-y^" ^"some^ agent^"'
+
+
+def test_windows_runs_an_exe_as_given():
+    from deft_subspace.kernel.process import _windows_launch
+
+    assert _windows_launch("node", ["x"], WIN_ENV, _files(r"C:\nodejs\node.exe", r"C:\nodejs\node.cmd")) is None
+    assert _windows_launch("missing", [], WIN_ENV, _files()) is None
+
+
+def test_windows_follows_path_order_then_pathext_order():
+    from deft_subspace.kernel.process import _windows_find
+
+    assert _windows_find("tool", WIN_ENV, _files(r"C:\nodejs\tool.exe", r"C:\bin\tool.cmd")) == r"C:\bin\tool.CMD"
+    assert _windows_find("tool", WIN_ENV, _files(r"C:\bin\tool.cmd", r"C:\bin\tool.exe")) == r"C:\bin\tool.EXE"
+    assert _windows_find("tool.cmd", WIN_ENV, _files(r"C:\nodejs\tool.cmd")) == r"C:\nodejs\tool.cmd"
+    assert _windows_find(r"D:\x\run", WIN_ENV, _files(r"D:\x\run.bat")) == r"D:\x\run.BAT"
+    assert _windows_find("./run", WIN_ENV, _files("./run.cmd", r"C:\bin\run.cmd")) == "./run.CMD"
+    assert _windows_find("tool", {"PATH": r"C:\bin"}, _files(r"C:\bin\tool.cmd")) == r"C:\bin\tool.CMD"  # default PATHEXT
+
+
+def test_windows_escapes_cmd_metacharacters_in_arguments():
+    from deft_subspace.kernel.process import _cmd_line
+
+    assert _cmd_line(r"C:\Program Files\nodejs\npx.cmd", ['a&b|c"d', "100%", "end\\"]) == (
+        r'C:\Program^ Files\nodejs\npx.cmd ^"a^&b^|c\^"d^" ^"100^%^" ^"end\\^"'
+    )
+    # npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
+    assert _cmd_line(r"C:\p\node_modules\.bin\agent.cmd", ["a&b"]) == r'C:\p\node_modules\.bin\agent.cmd ^^^"a^^^&b^^^"'
+
+
+def test_the_not_found_hint_names_cmd_shims_on_windows():
+    from deft_subspace.kernel.process import _not_found_hint
+
+    assert ".cmd shims" in _not_found_hint("npx", None, True)
+    assert ".cmd" not in _not_found_hint("npx", None, False)

@@ -10,6 +10,8 @@
  *   been read to the end, so a final reply written just before exit is not
  *   lost.
  * - A missing program becomes a SpawnError with a hint, not an uncaught error.
+ * - On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
+ *   file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
  *
  * Process groups outlive this process unless it stops them, so the live ones
  * are killed when it exits: on 'exit', and, on POSIX, on SIGINT, SIGTERM and
@@ -21,6 +23,8 @@
  * of it.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import type { Channel } from './channel.ts';
@@ -128,23 +132,112 @@ function removeSignalHooks(): void {
 const pollFirstMs = 50;
 const pollMaxMs = 1000;
 
+// -- Windows command resolution -------------------------------------------------------------
+
+const defaultPathext = '.COM;.EXE;.BAT;.CMD';
+const cmdMeta = /([()\][%!^"`<>&|;, *?])/g;
+const npmShim = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i;
+
+/** Windows environment names are case-insensitive (`Path`, `PATH`). */
+function envGet(env: Record<string, string | undefined>, name: string): string | undefined {
+  for (const [key, value] of Object.entries(env)) if (key.toUpperCase() === name) return value;
+  return undefined;
+}
+
+/**
+ * @internal Where Windows would find `command`, trying each PATHEXT extension.
+ * A bare name is looked up in PATH; a name with a directory is used as is.
+ */
+export function windowsFind(
+  command: string,
+  env: Record<string, string | undefined>,
+  isFile: (path: string) => boolean,
+): string | undefined {
+  const win = path.win32;
+  const exts = (envGet(env, 'PATHEXT') || defaultPathext).split(';').filter(Boolean);
+  const ext = win.extname(command).toUpperCase();
+  const names = ext && exts.some((e) => e.toUpperCase() === ext) ? [command] : exts.map((e) => command + e);
+  const hasDir = /[\\/:]/.test(command);
+  const pathDirs = (envGet(env, 'PATH') ?? '').split(';').filter(Boolean);
+  const dirs = hasDir ? [''] : pathDirs.map((d) => d.replace(/^"|"$/g, ''));
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = dir ? win.join(dir, name) : name;
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function escapeCmdArgument(arg: string, double: boolean): string {
+  // As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
+  // cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
+  let escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  escaped = `"${escaped}"`.replace(cmdMeta, '^$1');
+  return double ? escaped.replace(cmdMeta, '^$1') : escaped;
+}
+
+/** @internal A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally. */
+export function cmdLine(script: string, args: readonly string[]): string {
+  const double = npmShim.test(script); // npm shims pass their arguments through cmd.exe again
+  return [path.win32.normalize(script).replace(cmdMeta, '^$1'), ...args.map((a) => escapeCmdArgument(a, double))].join(' ');
+}
+
+/**
+ * @internal Windows can only start a `.cmd`/`.bat` file through cmd.exe (Node refuses
+ * to without a shell since CVE-2024-27980): the command line to run, or undefined
+ * when `command` is not one (and runs as given).
+ */
+export function windowsLaunch(
+  command: string,
+  args: readonly string[],
+  env: Record<string, string | undefined>,
+  isFile: (path: string) => boolean,
+): string | undefined {
+  const found = windowsFind(command, env, isFile);
+  if (!found || !['.cmd', '.bat'].includes(path.win32.extname(found).toLowerCase())) return undefined;
+  return cmdLine(found, args);
+}
+
+/** @internal */
+export function notFoundHint(command: string, cwd: string | undefined, windows: boolean): string {
+  const where = cwd ? ` (cwd: ${cwd})` : '';
+  const shims = windows ? ' On Windows it is looked up with PATHEXT, so .cmd shims such as npx.cmd are found too.' : '';
+  return `Is "${command}" installed and on PATH?${where}${shims}`;
+}
+
+const isFile = (file: string): boolean => {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
 // -- The supervised process -----------------------------------------------------------------
 
 export async function spawnProcess(command: string, options: SpawnOptions = {}): Promise<SupervisedProcess> {
-  const groups = process.platform !== 'win32';
-  const child: ChildProcess = spawn(command, [...(options.args ?? [])], {
-    cwd: options.cwd,
-    env: { ...process.env, ...(options.env ?? {}) },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: groups,
-  });
+  const windows = process.platform === 'win32';
+  const groups = !windows;
+  const env = { ...process.env, ...(options.env ?? {}) };
+  const args = [...(options.args ?? [])];
+  const line = windows ? windowsLaunch(command, args, env, isFile) : undefined;
+  const child: ChildProcess =
+    line === undefined
+      ? spawn(command, args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: groups })
+      : spawn(envGet(env, 'COMSPEC') || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+          cwd: options.cwd,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsVerbatimArguments: true,
+        });
 
   await new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', (error: NodeJS.ErrnoException) => {
       const hint =
         error.code === 'ENOENT'
-          ? `Is "${command}" installed and on PATH?${options.cwd ? ` (cwd: ${options.cwd})` : ''}`
+          ? notFoundHint(command, options.cwd, windows)
           : error.code === 'EACCES'
             ? `"${command}" is not executable.`
             : error.message;

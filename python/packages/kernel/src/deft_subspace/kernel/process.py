@@ -11,6 +11,8 @@
 - `exited`, `ended()` and `stop()` can be cancelled (e.g. by `asyncio.wait_for`)
   without affecting the process or later calls.
 - A missing program becomes a SpawnError with a hint.
+- On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
+  file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
 
 Process groups outlive this process unless it stops them, so the live ones are
 killed when it exits: at normal interpreter exit (atexit, which also covers
@@ -28,7 +30,9 @@ from __future__ import annotations
 import asyncio
 import atexit
 import codecs
+import ntpath
 import os
+import re
 import signal as signals
 import subprocess
 import sys
@@ -129,6 +133,69 @@ def _remove_signal_hooks() -> None:
         except (OSError, ValueError):
             pass
         _hooked.discard(sig)
+
+
+# -- Windows command resolution ------------------------------------------------------------
+
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+_CMD_META = re.compile(r'([()\][%!^"`<>&|;, *?])')
+_NPM_SHIM = re.compile(r"node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$", re.IGNORECASE)
+
+
+def _env_get(env: Mapping[str, str], name: str) -> str | None:
+    """Windows environment names are case-insensitive (`Path`, `PATH`)."""
+    for key, value in env.items():
+        if key.upper() == name:
+            return value
+    return None
+
+
+def _windows_find(command: str, env: Mapping[str, str], is_file: Callable[[str], bool]) -> str | None:
+    """Where Windows would find `command`, trying each PATHEXT extension, or None.
+
+    A bare name is looked up in PATH; a name with a directory is used as is.
+    """
+    exts = [e for e in (_env_get(env, "PATHEXT") or _DEFAULT_PATHEXT).split(";") if e]
+    _, ext = ntpath.splitext(command)
+    names = [command] if ext and ext.upper() in (e.upper() for e in exts) else [command + e for e in exts]
+    has_dir = any(c in command for c in "\\/:")
+    dirs = [""] if has_dir else [d.strip('"') for d in (_env_get(env, "PATH") or "").split(";") if d]
+    for directory in dirs:
+        for name in names:
+            path = ntpath.join(directory, name) if directory else name
+            if is_file(path):
+                return path
+    return None
+
+
+def _escape_cmd_argument(arg: str, double: bool) -> str:
+    # As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
+    # cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
+    arg = re.sub(r'(\\*)"', r'\1\1\\"', arg)
+    arg = re.sub(r"(\\*)$", r"\1\1", arg)
+    arg = _CMD_META.sub(r"^\1", f'"{arg}"')
+    return _CMD_META.sub(r"^\1", arg) if double else arg
+
+
+def _cmd_line(script: str, args: Sequence[str]) -> str:
+    """A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally."""
+    double = _NPM_SHIM.search(script) is not None  # npm shims pass their arguments through cmd.exe again
+    return " ".join([_CMD_META.sub(r"^\1", ntpath.normpath(script)), *(_escape_cmd_argument(a, double) for a in args)])
+
+
+def _windows_launch(command: str, args: Sequence[str], env: Mapping[str, str], is_file: Callable[[str], bool]) -> str | None:
+    """Windows can only start a `.cmd`/`.bat` file through cmd.exe: the command line to run, or None
+    when `command` is not one (and runs as given)."""
+    found = _windows_find(command, env, is_file)
+    if found is None or ntpath.splitext(found)[1].lower() not in (".cmd", ".bat"):
+        return None
+    return _cmd_line(found, args)
+
+
+def _not_found_hint(command: str, cwd: object, windows: bool) -> str:
+    where = f" (cwd: {cwd})" if cwd else ""
+    shims = " On Windows it is looked up with PATHEXT, so .cmd shims such as npx.cmd are found too." if windows else ""
+    return f'Is "{command}" installed and on PATH?{where}{shims}'
 
 
 # -- The supervised process ----------------------------------------------------------------
@@ -357,7 +424,11 @@ async def _start(
         protocol = _Protocol(limit, loop)
         return protocol
 
-    transport, _ = await loop.subprocess_exec(factory, command, *args, env=env, **kwds)  # type: ignore[arg-type]
+    line = _windows_launch(command, args, env, os.path.isfile) if _WINDOWS else None
+    if line is not None:
+        transport, _ = await loop.subprocess_shell(factory, line, env=env, **kwds)  # type: ignore[arg-type]
+    else:
+        transport, _ = await loop.subprocess_exec(factory, command, *args, env=env, **kwds)  # type: ignore[arg-type]
     assert protocol is not None
     return asyncio.subprocess.Process(transport, protocol, loop), protocol.stdout_closed
 
@@ -392,8 +463,7 @@ async def spawn_process(
             **extra,
         )
     except FileNotFoundError as error:
-        where = f" (cwd: {cwd})" if cwd else ""
-        raise SpawnError(command, "ENOENT", f'Is "{command}" installed and on PATH?{where}') from error
+        raise SpawnError(command, "ENOENT", _not_found_hint(command, cwd, _WINDOWS)) from error
     except PermissionError as error:
         raise SpawnError(command, "EACCES", f'"{command}" is not executable.') from error
     except OSError as error:
