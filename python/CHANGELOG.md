@@ -9,3 +9,4 @@
 - `AbortSignal.any(...)`: the combined signal can now be `dispose()`d (or used as a context manager) to remove its listeners from the source signals; before, they stayed until a source fired.
 - `serve_agent`: a finished turn no longer leaves a listener on the connection's signal (one leaked per turn), and a finished tool call or terminal no longer leaves one on its turn's signal; MCP-over-ACP requests no longer leave one on their server's signal.
 - `model_agent`: results of tool calls that ran when a turn hit `max_steps` or was cancelled are no longer dropped: they go to the model with the next prompt, as `PromptInput.tool_results` (new field, default empty).
+- `serve_agent(connection_closed=...)`: new optional hook, called with the ids of the sessions still open when the connection closes (`close_session` is still not called for them). `model_agent` uses it to drop those sessions' conversations, which it kept forever before.

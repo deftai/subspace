@@ -273,6 +273,12 @@ export interface AgentOptions {
   }): Promise<void | Record<string, unknown>> | void | Record<string, unknown>;
   /** Called when the client closes a session (`session/close`), after its turn is cancelled. */
   closeSession?(sessionId: string): Promise<void> | void;
+  /**
+   * Called when the connection closes, with the sessions still open on it,
+   * after their turns stopped and their MCP connections closed. `closeSession`
+   * is not called for them; drop here what you keep per session.
+   */
+  connectionClosed?(sessionIds: string[]): Promise<void> | void;
   /** Queue a prompt that arrives while a turn is running, instead of refusing it. Default false. */
   queuePrompts?: boolean;
   /** Handlers for the client's calls to your vendor extension methods (see `extensionRequest`, `handle`). */
@@ -322,7 +328,8 @@ interface AgentSession {
  * Something that lives with a session (MCP connections, turns, background
  * work). Close runs every `stop`, removes the session, then every `release`,
  * then `closeSession`: today's order. A closed connection runs `disconnect`
- * only (MCP connections close; turns and their background work stop).
+ * only (MCP connections close; turns and their background work stop), then
+ * `connectionClosed` with the sessions that were open.
  */
 interface SessionPart<T> {
   name: string;
@@ -336,10 +343,12 @@ interface SessionPart<T> {
 class SessionLifecycle {
   readonly sessions = new Map<string, AgentSession>();
   private readonly parts: Array<SessionPart<any>> = [];
-  private readonly closeSession: ((sessionId: string) => Promise<void> | void) | undefined;
+  private readonly closeSession: AgentOptions['closeSession'];
+  private readonly connectionClosed: AgentOptions['connectionClosed'];
 
-  constructor(closeSession?: (sessionId: string) => Promise<void> | void) {
-    this.closeSession = closeSession;
+  constructor(hooks: Pick<AgentOptions, 'closeSession' | 'connectionClosed'> = {}) {
+    this.closeSession = hooks.closeSession;
+    this.connectionClosed = hooks.connectionClosed;
   }
 
   attach<T>(part: SessionPart<T>): void {
@@ -385,9 +394,9 @@ class SessionLifecycle {
   }
 
   async disconnect(): Promise<void> {
-    await Promise.all(
-      [...this.sessions.values()].flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session)))
-    );
+    const open = [...this.sessions.values()];
+    await Promise.all(open.flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session))));
+    await this.connectionClosed?.(open.map((session) => session.id));
   }
 }
 const SESSIONS = stateKey<SessionLifecycle>('sessions');
@@ -486,7 +495,7 @@ function sessionsLayer(options: AgentOptions, replayWriter: (ctx: EndpointContex
     requires: [NEGOTIATED],
     provides: [SESSIONS],
     create: (ctx) => {
-      const sessions = new SessionLifecycle(options.closeSession);
+      const sessions = new SessionLifecycle({ closeSession: options.closeSession, connectionClosed: options.connectionClosed });
       ctx.set(SESSIONS, sessions);
       return sessions;
     },

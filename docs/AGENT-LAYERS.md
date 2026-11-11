@@ -175,6 +175,8 @@ It defines, in order:
   stop through the connection's signal. `closeSession` is **not** called for
   each session. A test pins this. (Calling the full session close here would
   be a behaviour change; if wanted later, it is an option, off by default.)
+  Then `connectionClosed`, if given, is called once with the ids of the
+  sessions that were open, to drop what the agent keeps per session.
 
 ## The v1 / v2 turn lifecycles
 

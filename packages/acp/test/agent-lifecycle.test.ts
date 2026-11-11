@@ -64,6 +64,37 @@ test('a closed connection stops turns and closes MCP connections, without closeS
   assert.deepEqual(events.sort(), ['mcp closed', 'turn stopped']);
 });
 
+test('a closed connection calls connectionClosed with its open sessions, after their teardown', async () => {
+  const events: string[] = [];
+  const connector: McpConnector = {
+    transports: ['stdio'],
+    async connect() {
+      return { request: async () => ({ result: { tools: [] } }), close: async () => void events.push('mcp closed') };
+    },
+  };
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, {
+    name: 'hook',
+    protocols: [1],
+    mcpConnector: connector,
+    closeSession: (id) => void events.push(`closeSession ${id}`),
+    connectionClosed: (ids) => void events.push(`connectionClosed ${[...ids].sort().join(',')}`),
+    async prompt(turn) {
+      await turn.mcp('files').listTools();
+      return 'end_turn';
+    },
+  });
+  const client = await AcpClient.connect(clientEnd);
+  const a = await client.newSession({ cwd: '/w', mcpServers: [server] });
+  await a.prompt('go').done;
+  const b = await client.newSession({ cwd: '/w' });
+  const closed = await client.newSession({ cwd: '/w' });
+  await closed.close();
+  await client.close();
+  for (let i = 0; i < 50 && !events.some((e) => e.startsWith('connectionClosed')); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(events, [`closeSession ${closed.id}`, 'mcp closed', `connectionClosed ${[a.id, b.id].sort().join(',')}`]);
+});
+
 test('session/new returning an id that is already open is refused, and the open session is kept', async () => {
   const events: string[] = [];
   const connector: McpConnector = {

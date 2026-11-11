@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -106,6 +107,32 @@ async def test_results_of_tools_that_ran_when_the_turn_ended_go_with_the_next_pr
     await session.prompt("four")
     assert [(r.id, r.content) for r in sent[3].tool_results] == [("b", "slow done")]
     await client.close()
+
+
+async def test_a_closed_connection_drops_its_sessions_conversations():
+    model = ScriptedModel([])
+    closed_sessions = []
+    # Resuming reopens a session by id, so a conversation kept after its connection closed would be reused.
+    options = model_agent(model=model, load_session=lambda request: None, connection_closed=closed_sessions.append)
+    first = await connect(options)
+    session = await first.new_session("/work")
+    await session.prompt("one")
+    await first.close()
+    await until_true(lambda: closed_sessions)
+    assert closed_sessions == [[session.id]]
+    second = await connect(options)
+    resumed = await second.resume_session(session.id, "/work")
+    await resumed.prompt("two")
+    await second.close()
+    assert len(model.setups) == 2, "a new conversation: the old one was dropped with its connection"
+
+
+async def until_true(check, ms=2000):
+    for _ in range(ms // 5):
+        if check():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("timed out waiting")
 
 
 async def test_serve_tools_over_mcp_over_acp():

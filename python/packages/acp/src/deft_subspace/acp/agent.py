@@ -773,7 +773,8 @@ class _SessionPart:
     """Something that lives with a session (MCP connections, turns, background
     work). Close runs every `stop`, removes the session, then every `release`,
     then `close_session`. A closed connection runs `disconnect` only (MCP
-    connections close; turns and their background work stop)."""
+    connections close; turns and their background work stop), then
+    `connection_closed` with the sessions that were open."""
 
     name: str
     create: Callable[[_AgentSession], Any]
@@ -784,10 +785,11 @@ class _SessionPart:
 
 
 class _SessionLifecycle:
-    def __init__(self, close_session: Callable[[str], Any] | None) -> None:
+    def __init__(self, close_session: Callable[[str], Any] | None, connection_closed: Callable[[list[str]], Any] | None = None) -> None:
         self.sessions: dict[str, _AgentSession] = {}
         self._parts: list[_SessionPart] = []
         self._close_session = close_session
+        self._connection_closed = connection_closed
 
     def attach(self, part: _SessionPart) -> None:
         self._parts.append(part)
@@ -838,7 +840,10 @@ class _SessionLifecycle:
             if part.disconnect is not None:
                 await _resolve(part.disconnect(session.parts.get(part.name), session))
 
-        await asyncio.gather(*(one(part, session) for session in list(self.sessions.values()) for part in self._parts))
+        open_ = list(self.sessions.values())
+        await asyncio.gather(*(one(part, session) for session in open_ for part in self._parts))
+        if self._connection_closed is not None:
+            await _resolve(self._connection_closed([session.id for session in open_]))
 
 
 SESSIONS: StateKey[_SessionLifecycle] = state_key("sessions")
@@ -874,6 +879,7 @@ class _Options:
     new_session: Callable[[NewSessionRequest], Any] | None
     load_session: Callable[[LoadSessionRequest], Any] | None
     close_session: Callable[[str], Any] | None
+    connection_closed: Callable[[list[str]], Any] | None
     queue_prompts: bool
     extensions: list[ExtensionHandler]
     methods: dict[str, Callable[[Any, InboundContext], Any]]
@@ -1000,7 +1006,7 @@ def _sessions_layer(options: _Options, replay_writer: Callable[[EndpointContext,
         requests["session/resume"] = resume_session
 
     def create(ctx: EndpointContext) -> _SessionLifecycle:
-        sessions = _SessionLifecycle(options.close_session)
+        sessions = _SessionLifecycle(options.close_session, options.connection_closed)
         ctx.set(SESSIONS, sessions)
         return sessions
 
@@ -1283,6 +1289,7 @@ def serve_agent(
     new_session: Callable[[NewSessionRequest], Any] | None = None,
     load_session: Callable[[LoadSessionRequest], Any] | None = None,
     close_session: Callable[[str], Any] | None = None,
+    connection_closed: Callable[[list[str]], Any] | None = None,
     queue_prompts: bool = False,
     extensions: list[ExtensionHandler] | None = None,
     methods: dict[str, Callable[[Any, InboundContext], Any]] | None = None,
@@ -1307,6 +1314,9 @@ def serve_agent(
       answered after. Raise `RpcError.not_found(...)` for an unknown id. Providing it
       advertises loading and resuming.
     - `close_session(session_id)`: the client closed a session (`session/close`), after its turn was cancelled.
+    - `connection_closed(session_ids)`: the connection closed, with the sessions still open on it, after
+      their turns stopped and their MCP connections closed. `close_session` is not called for them;
+      drop here what you keep per session.
     - `queue_prompts`: queue a prompt that arrives while a turn is running, instead of refusing it.
     - `extensions`: handlers for the client's calls to your vendor extension methods (see `extension_request`, `handle`).
     - `methods`: more request handlers `(params, context)`, e.g. vendor `_name/method` extensions.
@@ -1327,6 +1337,7 @@ def serve_agent(
         new_session=new_session,
         load_session=load_session,
         close_session=close_session,
+        connection_closed=connection_closed,
         queue_prompts=queue_prompts,
         extensions=list(extensions or []),
         methods=dict(methods or {}),

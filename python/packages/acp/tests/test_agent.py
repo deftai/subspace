@@ -1296,6 +1296,31 @@ async def test_a_closed_connection_stops_turns_and_closes_mcp_without_close_sess
     assert sorted(events) == ["mcp closed", "turn stopped"]
 
 
+async def test_a_closed_connection_calls_connection_closed_with_its_open_sessions_after_their_teardown() -> None:
+    events: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        await turn.mcp("files").list_tools()
+        return "end_turn"
+
+    client = serve(
+        prompt=prompt,
+        protocols=[1],
+        mcp_connector=RecordingConnector(events),
+        close_session=lambda sid: events.append(f"closeSession {sid}"),
+        connection_closed=lambda ids: events.append(f"connectionClosed {','.join(sorted(ids))}"),
+    )
+    await client.init(1)
+    a = await client.new_session(mcpServers=[SERVER])
+    await client.peer.request("session/prompt", {"sessionId": a, "prompt": []})
+    b = await client.new_session()
+    closed = await client.new_session()
+    await client.peer.request("session/close", {"sessionId": closed})
+    await client.close()
+    await until(lambda: any(e.startswith("connectionClosed") for e in events))
+    assert events == [f"closeSession {closed}", "mcp closed", f"connectionClosed {','.join(sorted([a, b]))}"]
+
+
 async def test_session_new_returning_an_id_that_is_already_open_is_refused_and_the_open_session_is_kept() -> None:
     events: list[str] = []
     connector = RecordingConnector(events)

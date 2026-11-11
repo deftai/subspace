@@ -87,6 +87,11 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
     inputSchema: toolInputSchema(definition),
     validated: !!definition.schema,
   }));
+  const forget = (sessionId: string) => {
+    conversations.delete(sessionId);
+    cwds.delete(sessionId);
+    unsent.delete(sessionId);
+  };
   const conversationFor = (turn: AgentTurn): ModelConversation => {
     let conversation = conversations.get(turn.sessionId);
     if (!conversation) {
@@ -106,10 +111,13 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
       return { sessionId };
     },
     closeSession: async (sessionId) => {
-      conversations.delete(sessionId);
-      cwds.delete(sessionId);
-      unsent.delete(sessionId);
+      forget(sessionId);
       await agentOptions.closeSession?.(sessionId);
+    },
+    // A closed connection does not close its sessions: drop their conversations here.
+    connectionClosed: async (sessionIds) => {
+      for (const sessionId of sessionIds) forget(sessionId);
+      await agentOptions.connectionClosed?.(sessionIds);
     },
     async prompt(turn): Promise<StopReason> {
       const conversation = conversationFor(turn);

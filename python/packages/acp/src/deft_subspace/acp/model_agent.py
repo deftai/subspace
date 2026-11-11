@@ -108,6 +108,7 @@ def model_agent(
     tools: ToolSet | None = None,
     max_steps: int = 50,
     close_session: Callable[[str], Any] | None = None,
+    connection_closed: Callable[[list[str]], Any] | None = None,
     **agent_options: Any,
 ) -> dict[str, Any]:
     """`serve_agent` keyword arguments for an agent backed by a model.
@@ -139,12 +140,24 @@ def model_agent(
         cwds[session_id] = request.cwd
         return {"sessionId": session_id}
 
-    async def on_close(session_id: str) -> None:
+    def forget(session_id: str) -> None:
         conversations.pop(session_id, None)
         cwds.pop(session_id, None)
         unsent.pop(session_id, None)
+
+    async def on_close(session_id: str) -> None:
+        forget(session_id)
         if close_session is not None:
             result = close_session(session_id)
+            if inspect.isawaitable(result):
+                await result
+
+    async def on_connection_closed(session_ids: list[str]) -> None:
+        # A closed connection does not close its sessions: drop their conversations here.
+        for session_id in session_ids:
+            forget(session_id)
+        if connection_closed is not None:
+            result = connection_closed(session_ids)
             if inspect.isawaitable(result):
                 await result
 
@@ -176,7 +189,13 @@ def model_agent(
         # The last input was never sent.
         return stop_with("max_turn_requests", nxt.tool_results)
 
-    return {**agent_options, "new_session": new_session, "close_session": on_close, "prompt": prompt}
+    return {
+        **agent_options,
+        "new_session": new_session,
+        "close_session": on_close,
+        "connection_closed": on_connection_closed,
+        "prompt": prompt,
+    }
 
 
 async def _run_tool_call(turn: AgentTurn, tools: ToolSet, call: ModelToolCall) -> ToolResult:
