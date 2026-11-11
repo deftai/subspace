@@ -6,24 +6,46 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: option_c_dual_transport_echo
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  typescript:
+    name: typescript (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.15.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
           cache: "pnpm"
-      - name: Install workspace packages
+      - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Run dual-transport tests (A/B/C)
+      - name: Type-check
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build
+      - name: The built CLIs run (dist, without the source condition)
+        shell: bash
+        run: |
+          for module in packages/cli/dist/cli.js packages/devtools/dist/cli.js packages/create-subspace/dist/index.js; do
+            node --input-type=module -e "const m = await import('./$module'); const code = await m.main(['--help']); if (code !== 0) process.exit(code);" > /dev/null
+            echo "ok $module"
+          done
+      - name: Test
         run: pnpm test
+        # TODO: the Windows test run has not been seen green yet (some tests
+        # assume POSIX: process groups, signals, paths). Drop this once it is.
+        continue-on-error: ${{ matrix.os == 'windows-latest' }}
 
   python:
     name: python (${{ matrix.os }}, ${{ matrix.python }})

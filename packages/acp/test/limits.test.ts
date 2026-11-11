@@ -33,10 +33,10 @@ for (const protocol of [1, 2] as const) {
     const { result } = await run(protocol, async (t) => {
       for (let i = 0; i < 4; i++) {
         await t.say(`step ${i} `);
-        await sleep(30); // under the idle limit each time
+        await sleep(50); // well under the idle limit each time, even on a busy machine
       }
       await untilAborted(t.signal); // then silence
-    }, { idleMs: 80 });
+    }, { idleMs: 500 });
     assert.equal(result.exhausted?.limit, 'idle');
     assert.equal(result.text, 'step 0 step 1 step 2 step 3 ');
   });

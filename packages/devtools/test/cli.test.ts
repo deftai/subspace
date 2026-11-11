@@ -82,6 +82,15 @@ test('the CLI writes the HTML and prints its path, or prints a summary', async (
     assert.equal(await main([input, '--bogus'], io), 2);
     assert.equal(await main([join(dir, 'missing.jsonl')], io), 1);
     assert.match(err.join(''), /Usage[\s\S]*Unknown option --bogus[\s\S]*Cannot read/);
+
+    // --name=value; a missing value or a value for a switch is a usage error.
+    out.length = 0;
+    assert.equal(await main([input, `--out=${join(dir, 'y.html')}`, '--title=T'], io), 0);
+    assert.equal(out.join(''), `${join(dir, 'y.html')}\n`);
+    err.length = 0;
+    assert.equal(await main([input, '--title'], io), 2);
+    assert.equal(await main([input, '--summary=yes'], io), 2);
+    assert.match(err.join(''), /--title needs a value[\s\S]*--summary takes no value/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

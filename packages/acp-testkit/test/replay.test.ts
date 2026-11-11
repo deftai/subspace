@@ -120,6 +120,31 @@ test('a different request is a divergence: the request gets an error naming both
   assert.equal(closed.reason, 'remote-ended');
 });
 
+test('requests sent together may arrive in another order; check sees the recorded message with live ids', async () => {
+  const at = (dir: 'in' | 'out', msg: unknown) => JSON.stringify({ v: 1, kind: 'message', t: 0, dir, msg });
+  const text = [
+    JSON.stringify({ v: 1, kind: 'header', started: new Date(0).toISOString(), peer: 'client' }),
+    at('out', { jsonrpc: '2.0', id: 'r-a', method: 'x/a', params: { n: 1 } }),
+    at('out', { jsonrpc: '2.0', id: 'r-b', method: 'x/b', params: { n: 2 } }),
+    at('out', { jsonrpc: '2.0', method: 'x/note', params: {} }),
+    at('in', { jsonrpc: '2.0', id: 'r-a', result: { a: true } }),
+    at('in', { jsonrpc: '2.0', id: 'r-b', result: { b: true } }),
+  ].join('\n');
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  const checked: Array<[unknown, unknown]> = [];
+  const replay = replayAgent(agentEnd, text, { check: (expected, got) => void checked.push([expected.id, got.id]) });
+  const peer = new RpcPeer(clientEnd).start();
+  // Recorded a, b, note; sent note, b, a.
+  peer.notify('x/note', {});
+  const b = peer.request('x/b', { n: 2 });
+  const a = peer.request('x/a', { n: 1 });
+  assert.deepEqual(await Promise.all([a, b]), [{ a: true }, { b: true }]);
+  await replay.done;
+  assert.equal(checked.length, 3);
+  for (const [expected, got] of checked) assert.equal(expected, got);
+  await peer.close();
+});
+
 test('a client that never sends what was recorded fails within waitMs instead of hanging', async () => {
   const { rec } = await recordScripted(1);
   const [agentEnd, clientEnd] = channelPair<unknown>();

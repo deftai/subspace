@@ -42,3 +42,53 @@ test('refuses a non-empty folder, an unknown template, a missing folder, and a b
   assert.match(plain.out, /not on npm yet/);
   assert.equal(JSON.parse(await readFile(join(dir, 'plain', 'package.json'), 'utf8')).dependencies['@deft-subspace/acp'], '0.0.0-experiment');
 });
+
+test('linked to a checkout: pnpm instructions, and npm is told it cannot install link: dependencies', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-subspace-'));
+  let out = '';
+  let err = '';
+  const io = (agent: string) => ({ out: (t: string) => void (out += t), err: (t: string) => void (err += t), env: { npm_config_user_agent: agent } });
+  assert.equal(await main([join(dir, 'a'), '--subspace', repo], io('pnpm/10.0.0 node/v22')), 0);
+  assert.match(out, /pnpm install/);
+  assert.doesNotMatch(out, /^ {2}npm install/m);
+  assert.equal(err, '');
+  out = '';
+  assert.equal(await main([join(dir, 'b'), '--subspace', repo], io('npm/10.9.0 node/v22')), 0);
+  assert.match(out, /pnpm install/);
+  assert.match(err, /npm cannot install/);
+  // A folder name with a space is quoted in the cd line.
+  out = '';
+  assert.equal(await main([join(dir, 'd e')], io('npm/10.9.0 node/v22')), 0);
+  assert.match(out, /cd '.*d e'/);
+});
+
+test('rejects unknown flags, missing values, and a target that is a file; odd names still make a valid package name', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-subspace-'));
+  const typo = await create('--templat', 'agent', join(dir, 'proj'));
+  assert.equal(typo.code, 2);
+  assert.match(typo.err, /--templat\b/);
+  assert.match(typo.err, /--template/);
+  const missing = await create(join(dir, 'proj2'), '-t');
+  assert.equal(missing.code, 2);
+  assert.match(missing.err, /needs a value/);
+  assert.doesNotMatch(missing.err, /undefined/);
+  await writeFile(join(dir, 'file'), 'x');
+  const file = await create(join(dir, 'file'));
+  assert.equal(file.code, 1);
+  assert.match(file.err, /not a folder/);
+  assert.equal((await create(join(dir, '日本'))).code, 0);
+  const name = JSON.parse(await readFile(join(dir, '日本', 'package.json'), 'utf8')).name;
+  assert.match(name, /^[a-z0-9][a-z0-9-]*$/);
+  assert.equal((await create(join(dir, 'eq'), '--template=agent')).code, 0);
+  assert.equal(JSON.parse(await readFile(join(dir, 'eq', 'package.json'), 'utf8')).scripts.start, 'node src/agent.ts');
+});
+
+test('the claude-agent template confines its file tools to the working folder, symbolic links included', async () => {
+  const dir = join(await mkdtemp(join(tmpdir(), 'create-subspace-')), 'ca');
+  assert.equal((await create(dir, '--template', 'claude-agent')).code, 0);
+  const source = await readFile(join(dir, 'src', 'agent.ts'), 'utf8');
+  // insideWorkspace follows symbolic links to where they lead (a check on the path alone does not).
+  assert.match(source, /readdir\(await insideWorkspace\(root, path\)\)/);
+  assert.match(source, /readFile\(await insideWorkspace\(root, path\), 'utf8'\)/);
+  assert.doesNotMatch(source, /readFile\(path,/);
+});

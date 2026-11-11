@@ -15,12 +15,16 @@
  * Each scenario runs in a fresh temporary workspace (empty, or a copy of a
  * fixture folder), through `start()`, with the connection recorded. A
  * failing scenario leaves a failure bundle: the trace, the results, and the
- * workspace's files. Regression snapshots (`snapshot`) record each turn's
- * outcome once and compare later runs to it.
+ * workspace's files; a passing one removes its workspace and trace. Regression
+ * snapshots (`snapshot`) record each turn's outcome once and compare later
+ * runs to it. In CI (`requireSnapshots`, on when the CI variable is set) a
+ * missing snapshot fails instead of being written.
  */
-import { cp, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   allow,
   firstOf,
@@ -94,6 +98,7 @@ export interface Scenario {
   permissions?: ScenarioPermissions;
   /** Per turn, unless the turn sets its own. Default 120 s. */
   timeoutMs?: number;
+  /** At least one: a scenario with none fails. */
   turns: ScenarioTurn[];
   /** A snapshot file (relative to the scenario file) to compare each turn's outcome with. */
   snapshot?: string;
@@ -127,21 +132,29 @@ export interface TurnReport {
 export interface ScenarioReport {
   name: string;
   pass: boolean;
-  /** Set when the scenario could not run (the agent did not start, a turn threw). */
+  /** Set when the scenario could not run (it has no turns, the agent did not start, a turn threw). */
   error?: string;
   turns: TurnReport[];
+  /** The temporary workspace; removed after a pass unless `keep`. */
   workspace: string;
+  /** The connection trace; removed after a pass unless `keep`. */
   trace: string;
   /** Where the failure bundle is, when it failed. */
   bundle?: string;
   /** The turns' tool-call argument outcomes together, when the agent reported any. */
   toolInput?: ToolInputSummary;
-  /** Snapshot status: written (new or --update), matched, or differed. */
-  snapshot?: 'written' | 'matched' | 'differed';
-  /** How the run differs from the snapshot beyond single turns (a different number of turns). */
+  /**
+   * Snapshot status: written (new or --update), matched, differed, missing
+   * (with `requireSnapshots`), or unreadable (not valid JSON; left as it is).
+   * Only written and matched pass.
+   */
+  snapshot?: SnapshotStatus;
+  /** How the run differs from the snapshot beyond single turns (a different number of turns, a missing or unreadable file). */
   snapshotFailures?: string[];
   durationMs: number;
 }
+
+export type SnapshotStatus = 'written' | 'matched' | 'differed' | 'missing' | 'unreadable';
 
 export interface RunOptions {
   /** Resolve `workspace.from` and `snapshot` against this folder (the scenario file's). Default: cwd. */
@@ -150,6 +163,10 @@ export interface RunOptions {
   artifacts?: string;
   /** Write snapshots instead of comparing with them. */
   updateSnapshots?: boolean;
+  /** A missing snapshot fails instead of being written. Default: on when the CI environment variable is set (not "false" or "0"). */
+  requireSnapshots?: boolean;
+  /** Keep the workspace and trace of a passing scenario. Default false (a failing one's are always kept). */
+  keep?: boolean;
   /** Each event of each turn, for progress output. */
   onEvent?: (event: TurnEvent, scenario: string) => void;
 }
@@ -260,6 +277,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   const env = typeof scenario.agent === 'string' ? undefined : scenario.agent.env;
   let agent: Awaited<ReturnType<typeof start>> | undefined;
   try {
+    // Without turns nothing is checked: that is not a pass.
+    if (!scenario.turns?.length) throw new Error('the scenario has no turns');
     agent = await start(target, {
       cwd: workspace,
       // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace.
@@ -304,20 +323,61 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
 
   const reported = report.turns.flatMap((t) => (t.toolInput ? [t.toolInput] : []));
   if (reported.length) report.toolInput = mergeToolInput(reported);
-  if (scenario.snapshot && !report.error) report.snapshot = await compareSnapshot(resolve(baseDir, scenario.snapshot), report, options.updateSnapshots ?? false);
-  report.pass = !report.error && report.turns.every((t) => t.pass) && report.snapshot !== 'differed';
+  if (scenario.snapshot && !report.error) {
+    const require = options.requireSnapshots ?? inCI();
+    report.snapshot = await compareSnapshot(resolve(baseDir, scenario.snapshot), report, options.updateSnapshots ?? false, require);
+  }
+  report.pass = !report.error && report.turns.every((t) => t.pass) && (report.snapshot === undefined || report.snapshot === 'written' || report.snapshot === 'matched');
   report.durationMs = Date.now() - started;
   if (!report.pass) report.bundle = await writeBundle(report, options.artifacts ?? join(tmpdir(), 'subspace-scenarios'));
+  else if (!options.keep) {
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+    await rm(dirname(tracePath), { recursive: true, force: true }).catch(() => {});
+  }
   return report;
 }
 
-async function compareSnapshot(path: string, report: ScenarioReport, update: boolean): Promise<'written' | 'matched' | 'differed'> {
+function inCI(): boolean {
+  const ci = process.env.CI;
+  return !!ci && ci !== 'false' && ci !== '0';
+}
+
+async function compareSnapshot(path: string, report: ScenarioReport, update: boolean, require: boolean): Promise<SnapshotStatus> {
   const outcomes = report.turns.map((t) => t.outcome);
-  const existing = await readFile(path, 'utf8').then((text) => JSON.parse(text) as TurnOutcome[]).catch(() => undefined);
-  if (!existing || update) {
+  const write = async () => {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, `${JSON.stringify(outcomes, null, 2)}\n`);
-    return 'written';
+    // Written beside it, then renamed over it: a run reading it at the same time sees the old file or the new one, never half of one.
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(outcomes, null, 2)}\n`);
+      await rename(temporary, path);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {});
+      throw error;
+    }
+    return 'written' as const;
+  };
+  if (update) return write();
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      report.snapshotFailures = [`cannot read ${path}: ${(error as Error).message}`];
+      return 'unreadable';
+    }
+    if (!require) return write();
+    report.snapshotFailures = [`no snapshot at ${path} (snapshots are not written in CI; run without CI, or with --update, and commit it)`];
+    return 'missing';
+  }
+  let existing: TurnOutcome[];
+  try {
+    existing = JSON.parse(text) as TurnOutcome[];
+    if (!Array.isArray(existing)) throw new Error('not a list of turns');
+  } catch (error) {
+    // Kept as it is: overwriting would hide a bad merge or a hand edit.
+    report.snapshotFailures = [`${path} is not a valid snapshot (${(error as Error).message}); fix it or rerun with --update`];
+    return 'unreadable';
   }
   const differences: string[] = [];
   outcomes.forEach((outcome, i) => {
@@ -338,8 +398,10 @@ async function compareSnapshot(path: string, report: ScenarioReport, update: boo
 
 /** The trace, the report and the workspace's files, in one folder. */
 async function writeBundle(report: ScenarioReport, artifacts: string): Promise<string> {
-  const dir = join(artifacts, report.name.replace(/[^A-Za-z0-9._-]+/g, '-'));
-  await mkdir(dir, { recursive: true });
+  // One folder per run, inside the artifacts folder whatever the scenario is called.
+  const safe = report.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+/, '').slice(0, 80) || 'scenario';
+  await mkdir(artifacts, { recursive: true });
+  const dir = await mkdtemp(join(artifacts, `${safe}-`));
   await writeFile(join(dir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   await cp(report.trace, join(dir, 'trace.jsonl')).catch(() => {});
   const files = await listFiles(report.workspace);
@@ -352,7 +414,7 @@ export async function loadScenarios(path: string): Promise<Scenario[]> {
   const full = isAbsolute(path) ? path : resolve(path);
   let value: unknown;
   if (full.endsWith('.json')) value = JSON.parse(await readFile(full, 'utf8'));
-  else value = ((await import(full)) as { default?: unknown }).default;
+  else value = ((await import(pathToFileURL(full).href)) as { default?: unknown }).default;
   const scenarios = Array.isArray(value) ? value : (value as { scenarios?: unknown })?.scenarios ?? [value];
   if (!Array.isArray(scenarios) || !scenarios.every((s) => s && typeof s === 'object' && typeof (s as Scenario).name === 'string' && Array.isArray((s as Scenario).turns))) {
     throw new Error(`${path}: not a scenario file (each scenario needs a name, an agent and turns)`);
@@ -378,7 +440,11 @@ export function formatScenarios(reports: ScenarioReport[]): string {
   return lines.join('\n');
 }
 
-const xml = (text: string) => text.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
+// Control characters (other than tab and newlines) and lone surrogates are not allowed in XML at all: dropped.
+const xml = (text: string) =>
+  text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+    .replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
 
 /** JUnit XML for CI: a test case per turn, grouped by scenario. */
 export function formatJUnit(reports: ScenarioReport[]): string {

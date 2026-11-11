@@ -26,7 +26,7 @@ export {
   type ToolCallHandle,
   type ToolCallInit,
 } from './agent.ts';
-export { Turn } from './turn.ts';
+export { Turn, type TurnHistory } from './turn.ts';
 export {
   agentEndpoint,
   stateKey,
@@ -64,6 +64,7 @@ export {
   type ModelReply,
   type ModelTool,
   type ModelToolCall,
+  type ModelToolResult,
 } from './model-agent.ts';
 export { checkToolInput, tool, toolInputSchema, toolOutputText, type ToolContext, type ToolDefinition, type ToolSet } from './tools.ts';
 export { connectSession, openSession, type ConnectedSession, type ConnectSessionOptions, type SessionSetup } from './open.ts';

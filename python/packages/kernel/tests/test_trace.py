@@ -26,6 +26,15 @@ async def test_trace_tap_records_every_message_and_round_trips():
     assert parse_trace(format_trace(records)) == records
 
 
+def test_a_note_keeps_explicit_none_data_and_leaves_out_missing_data():
+    records = []
+    tap = trace_tap(records.append, peer="client", clock=manual_clock())
+    tap.note("none", None)
+    tap.note("missing")
+    assert records[1] == {"v": 1, "kind": "note", "t": 0, "text": "none", "data": None}
+    assert records[2] == {"v": 1, "kind": "note", "t": 0, "text": "missing"}
+
+
 def test_parse_trace_names_a_bad_line_and_requires_a_header():
     with pytest.raises(ValueError, match="line 2 is not JSON"):
         parse_trace('{"v":1,"kind":"header","started":"x","peer":"c"}\nnope\n')
@@ -33,3 +42,42 @@ def test_parse_trace_names_a_bad_line_and_requires_a_header():
         parse_trace('{"v":1,"kind":"note","t":0,"text":"x"}\n')
     with pytest.raises(ValueError, match="line 1 is not a version 1"):
         parse_trace('{"v":9,"kind":"header"}\n')
+
+
+def test_a_trace_record_is_a_copy_changing_the_message_later_does_not_change_it():
+    import datetime
+
+    records: list = []
+    tap = trace_tap(records.append, peer="a")
+    raw = bytearray(b"ab")
+    message = {"jsonrpc": "2.0", "method": "m", "params": {"list": [{"a": 1}], "n": None, "f": 1.5, "t": True, "raw": raw, "when": datetime.date(2026, 1, 1)}}
+    tap("out", message)
+    message["params"]["list"][0]["a"] = 2
+    message["params"]["list"].append({"a": 3})
+    raw[0] = 0
+    recorded = records[1]["msg"]["params"]
+    assert recorded["list"] == [{"a": 1}]
+    assert recorded["raw"] == bytearray(b"ab") and recorded["raw"] is not raw
+    assert (recorded["n"], recorded["f"], recorded["t"], recorded["when"]) == (None, 1.5, True, datetime.date(2026, 1, 1))
+
+
+def test_a_trace_tap_records_a_cyclic_or_uncopyable_message_instead_of_raising():
+    import threading
+
+    records: list = []
+    tap = trace_tap(records.append, peer="a")
+    cyclic: dict = {"jsonrpc": "2.0", "method": "m", "params": {"list": []}}
+    cyclic["params"]["list"].append(cyclic)
+    tap("out", cyclic)
+    recorded = records[1]["msg"]
+    assert recorded is not cyclic and recorded["params"]["list"][0] is recorded
+    # Deeply nested, but not cyclic: recorded all the same.
+    deep: dict = {"leaf": True}
+    for _ in range(5000):
+        deep = {"next": deep}
+    tap("out", deep)
+    assert len(records) == 3
+    # Not copyable at all: recorded as it is.
+    uncopyable = {"method": "m", "params": {"lock": threading.Lock()}}
+    tap("in", uncopyable)
+    assert records[3]["msg"] is uncopyable

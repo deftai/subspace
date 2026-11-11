@@ -143,12 +143,12 @@ test('a broken agent fails the checks it breaks', async () => {
     // Ignores cancel, sends nothing, accepts any session id, never asks permission.
     .onNotification('session/cancel', () => {})
     .onRequest('session/prompt', async ({ params }) => {
-      if (textOf(params.prompt as never) === DEFAULT_PROMPTS.longPrompt) await sleep(400);
+      if (textOf(params.prompt as never) === DEFAULT_PROMPTS.longPrompt) await sleep(3000);
       return { stopReason: 'end_turn' };
     })
     .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
   // The long turn sends no update to cancel after; the suite gives up after turnTimeoutMs.
-  const report = await checkAgent(link.client, { cancelGraceMs: 100, turnTimeoutMs: 200 });
+  const report = await checkAgent(link.client, { cancelGraceMs: 1000, turnTimeoutMs: 1000 });
   assert.deepEqual(summary(report), [
     'initialize.version:pass',
     'auth.methods:pass',
@@ -163,6 +163,38 @@ test('a broken agent fails the checks it breaks', async () => {
   ]);
   assert.match(report.find((r) => r.id === 'session.unknown')!.detail, /answered/);
   assert.match(formatReport(report), /FAIL  session\.unknown/);
+});
+
+test('a permission turn that neither asks nor ends fails cancel.permission instead of skipping it', async () => {
+  const link = byteLink();
+  serveAgent(link.agent, {
+    name: 'stuck',
+    async prompt(turn) {
+      await untilAborted(turn.signal);
+      return 'cancelled';
+    },
+  });
+  // The turn never asks, so turnTimeoutMs always runs out; only the cancel afterwards needs time.
+  const report = await checkAgent(link.client, { only: ['cancel.permission'], turnTimeoutMs: 100, cancelGraceMs: 1000 });
+  assert.deepEqual(summary(report), ['cancel.permission:fail']);
+  assert.match(report[0]!.detail, /neither asked permission nor ended within 100 ms/);
+});
+
+test('trailingUpdateMs: how long after the end updates are still counted', async () => {
+  const link = byteLink();
+  serveAgent(link.agent, {
+    name: 'late-update',
+    async prompt(turn) {
+      await turn.say('OK');
+      // An update sent 150 ms after the turn ended.
+      setTimeout(() => void turn.say('late').catch(() => {}), 150);
+      return 'end_turn';
+    },
+  });
+  const only = ['session.new', 'prompt.ends', 'prompt.updates-before-end'];
+  const report = await checkAgent(link.client, { only, trailingUpdateMs: 1000 });
+  assert.deepEqual(summary(report), ['session.new:pass', 'prompt.ends:pass', 'prompt.updates-before-end:fail']);
+  assert.match(report[2]!.detail, /1 after/);
 });
 
 test('an agent that answers cancel too late fails, and one with no v1/v2 fails initialize', async () => {

@@ -17,6 +17,7 @@
  *   own handlers replace them one by one.
  */
 import type { ElicitationHandler } from './client.ts';
+import { defineLazy } from './lazy.ts';
 import type { PermissionPolicy } from './permissions.ts';
 import type { BackgroundItem, PlanEntry, ToolCall, TurnEvent } from './model.ts';
 
@@ -140,8 +141,13 @@ export class TextTracker {
     if (index === undefined) seen.ids.set(event.messageId, (index = seen.ids.size));
     // Same rule as result.text: messages are joined by a blank line unless the earlier ends a line.
     const separator = first && index > 0 && seen.lastEnd !== '\n' ? '\n\n' : '';
-    if (event.text) seen.lastEnd = event.text.slice(-1);
-    return { text: event.text, messageId: event.messageId, first, index, separator };
+    // The text ends with the delta: reading the delta does not join the whole text.
+    if (event.delta) seen.lastEnd = event.delta.slice(-1);
+    else if (event.text) seen.lastEnd = event.text.slice(-1);
+    // `text` is read from the event when looked at (then a plain field), as on the event.
+    const info = {} as TextInfo;
+    defineLazy(info, 'text', () => event.text);
+    return Object.assign(info, { messageId: event.messageId, first, index, separator });
   }
 
   end(kind: 'message' | 'thought' | 'user_message', event: { messageId: string; complete: boolean }): TextEndInfo {

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import signal as signals
 import sys
 import threading
@@ -106,20 +107,41 @@ class _Trace:
     cwd: str
     file: Any = None
     tap: Any = None
+    _flush_at: Any = None
+
+    #: How soon after a record the file is flushed (seconds): records are buffered, not
+    #: written to disk one system call each.
+    FLUSH_S = 0.05
 
     def open(self) -> _Trace:
         """A trace written to `path` as it happens (JSON Lines, the kernel's trace format)."""
         self.file = open(self.path, "w", encoding="utf-8")
 
         def write(record: Any) -> None:
-            if not self.file.closed:
-                self.file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-                self.file.flush()
+            if self.file.closed:
+                return
+            self.file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            if self._flush_at is None:
+                try:
+                    self._flush_at = asyncio.get_running_loop().call_later(self.FLUSH_S, self._flush)
+                except RuntimeError:  # no loop: write through
+                    self._flush()
 
         self.tap = trace_tap(write, peer="client", label=self.label, meta={"agent": self.label, "cwd": self.cwd})
         return self
 
+    def _flush(self) -> None:
+        self._flush_at = None
+        if self.file is not None and not self.file.closed:
+            try:
+                self.file.flush()
+            except (OSError, ValueError):
+                pass
+
     def close(self) -> None:
+        if self._flush_at is not None:
+            self._flush_at.cancel()
+            self._flush_at = None
         if self.file is not None and not self.file.closed:
             self.file.close()
 
@@ -394,7 +416,9 @@ async def run(
 @dataclass
 class _StdioChannel:
     """This process's stdin and stdout as a byte channel. Reads come from a daemon
-    thread (portable, and a blocked read never keeps the program alive)."""
+    thread (portable, and a blocked read never keeps the program alive). Writes go
+    through one writer thread, in order, so frames never interleave, even when a send
+    is cancelled while its write is under way."""
 
     reader: Any
     writer: Any
@@ -402,6 +426,9 @@ class _StdioChannel:
     _started: bool = False
     _ended: bool = False
     _closed: bool = False
+    #: (bytes, the sender's loop, a future for the result); None ends the writer.
+    _writes: queue.SimpleQueue[tuple[bytes | None, asyncio.AbstractEventLoop, asyncio.Future[None]] | None] = field(default_factory=queue.SimpleQueue)
+    _writing: bool = False
 
     def _start(self) -> None:
         if self._started:
@@ -439,27 +466,89 @@ class _StdioChannel:
             raise EndOfChannel()
         return item
 
+    def _start_writer(self) -> None:
+        if self._writing:
+            return
+        self._writing = True
+
+        def settle(loop: asyncio.AbstractEventLoop, future: asyncio.Future[None], error: BaseException | None) -> None:
+            def done() -> None:
+                if future.done():
+                    return
+                if error is None:
+                    future.set_result(None)
+                else:
+                    future.set_exception(ChannelClosed(str(error)))
+
+            try:
+                loop.call_soon_threadsafe(done)
+            except RuntimeError:
+                pass  # the loop is gone
+
+        def run() -> None:
+            failed: BaseException | None = None
+            while True:
+                entry = self._writes.get()
+                if entry is None:
+                    return
+                # Everything queued so far goes out with one flush.
+                batch = [entry]
+                while True:
+                    try:
+                        more = self._writes.get_nowait()
+                    except queue.Empty:
+                        break
+                    if more is None:
+                        self._writes.put(None)
+                        break
+                    batch.append(more)
+                if failed is None:
+                    try:
+                        for data, _loop, _future in batch:
+                            if data is not None:
+                                self.writer.write(data)
+                        self.writer.flush()
+                    except (OSError, ValueError) as error:
+                        failed = error
+                for _data, loop, future in batch:
+                    settle(loop, future, failed)
+
+        threading.Thread(target=run, name="serve_stdio:stdout", daemon=True).start()
+
+    def _enqueue(self, data: bytes | None) -> asyncio.Future[None]:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        self._start_writer()
+        self._writes.put((data, loop, future))
+        return future
+
     async def send(self, item: bytes) -> None:
         if self._closed:
             raise ChannelClosed("stdout closed")
-
-        def write() -> None:
-            self.writer.write(item)
-            self.writer.flush()
-
-        try:
-            await asyncio.to_thread(write)
-        except (OSError, ValueError) as error:
-            raise ChannelClosed(str(error)) from error
+        # Shielded: once queued, the frame is written whole whatever happens to this send.
+        await asyncio.shield(self._enqueue(item))
 
     async def close(self) -> None:
+        """End our side: what was sent is written and flushed first."""
         if self._closed:
             return
         self._closed = True
+        flushed = self._enqueue(None)
+        self._writes.put(None)
         try:
-            self.writer.flush()
-        except (OSError, ValueError):
+            await flushed
+        except ChannelClosed:
             pass
+
+    async def abort(self) -> None:
+        """Stop sending, and return at once instead of waiting for what was already sent.
+
+        Nothing is interrupted: the (daemon) writer thread still writes what was queued, and on
+        a stdout nobody reads it stays blocked there. Interpreter shutdown can then still hang
+        flushing stdout; only something reading the pipe, or closing it, ends that."""
+        self._closed = True
+        if self._writing:
+            self._writes.put(None)
 
 
 def serve_stdio(*, redirect_console: bool = True, **options: Any) -> RpcPeer:

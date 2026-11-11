@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from deft_subspace.kernel import AbortError, AbortSignal
+from deft_subspace.kernel import AbortController, AbortError, AbortSignal
 
 from .mcp import HttpMcpServer, McpOutcome, SseMcpServer, StdioMcpServer
 from .mcp_caller import McpCallOptions
@@ -57,6 +57,8 @@ class SessionMcpConnections:
 
     def __init__(self, connector: McpConnector | None, cwd: str) -> None:
         self._open: dict[str, asyncio.Future[McpConnection]] = {}
+        #: Aborts the connects in flight when the connections are dropped (close, or new servers).
+        self._connecting = AbortController()
         self._connector = connector
         self._cwd = cwd
         self._closed = False
@@ -81,8 +83,9 @@ class SessionMcpConnections:
             raise RuntimeError(problem)
         connection = self._open.get(server.name)
         if connection is None:
-            # Not the turn's signal: the connection outlives the turn that opened it.
-            opened: asyncio.Future[McpConnection] = asyncio.ensure_future(self._connector.connect(server, McpConnectContext(cwd=self._cwd)))
+            # Not the turn's signal: the connection outlives the turn that opened it. Dropping it aborts the connect.
+            context = McpConnectContext(cwd=self._cwd, signal=self._connecting.signal)
+            opened: asyncio.Future[McpConnection] = asyncio.ensure_future(self._connector.connect(server, context))
             self._open[server.name] = opened
             name = server.name
 
@@ -127,6 +130,9 @@ class SessionMcpConnections:
     async def _close_open(self) -> None:
         open_ = list(self._open.values())
         self._open.clear()
+        # A connect still in flight is aborted rather than waited for (up to its own timeout).
+        self._connecting.abort(AbortError("MCP connections closed"))
+        self._connecting = AbortController()
 
         async def close_one(connection: asyncio.Future[McpConnection]) -> None:
             try:

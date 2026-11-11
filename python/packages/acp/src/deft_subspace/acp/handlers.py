@@ -22,8 +22,9 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
-from typing import Any
+from typing import Any, cast
 
+from .lazy import LazyField
 from .model import (
     ExhaustedEvent,
     MessageEndEvent,
@@ -37,8 +38,10 @@ from .model import (
     ToolCallEvent,
     TurnEvent,
     UsageEvent,
+    TextAt,
     UserMessageEndEvent,
     UserMessageEvent,
+    text_source,
 )
 
 
@@ -56,6 +59,10 @@ class TextInfo:
     #: What to write before this chunk so the stream reads like `result.text`: a blank line
     #: before a later message (unless the last one ended a line), else ''.
     separator: str
+
+
+# Read from the message when looked at, as on the event.
+setattr(TextInfo, "text", LazyField("text", ""))
 
 
 @dataclass(frozen=True)
@@ -137,7 +144,8 @@ class TextTracker:
     def __init__(self) -> None:
         self._kinds: dict[str, tuple[dict[str, int], list[str]]] = {}
 
-    def info(self, kind: str, message_id: str, text: str) -> TextInfo:
+    def info(self, kind: str, message_id: str, text: Any, delta: str | None = None) -> TextInfo:
+        """`text` is the message so far: a str, or an event's stored text (read only if looked at)."""
         ids, last = self._kinds.setdefault(kind, ({}, [""]))
         index = ids.get(message_id)
         first = index is None
@@ -146,9 +154,14 @@ class TextTracker:
             ids[message_id] = index
         # Same rule as result.text: messages are joined by a blank line unless the earlier ends a line.
         separator = "\n\n" if first and index > 0 and last[0] != "\n" else ""
-        if text:
-            last[0] = text[-1]
-        return TextInfo(text=text, message_id=message_id, first=first, index=index, separator=separator)
+        # The text ends with the delta: reading the delta does not join the whole text.
+        if delta:
+            last[0] = delta[-1]
+        else:
+            whole = text.read() if isinstance(text, TextAt) else text
+            if whole:
+                last[0] = whole[-1]
+        return TextInfo(text=cast(str, text), message_id=message_id, first=first, index=index, separator=separator)
 
     def end(self, kind: str, message_id: str, complete: bool) -> TextEndInfo:
         ids = self._kinds.get(kind, ({}, [""]))[0]
@@ -168,11 +181,11 @@ async def dispatch(event: TurnEvent, h: TurnHandlers, text: TextTracker | None =
     tracker = text or TextTracker()
     # Text is always tracked, so the end handlers know each message's index.
     if isinstance(event, MessageEvent):
-        await _call(h.on_message, event.delta, tracker.info("message", event.message_id, event.text), event)
+        await _call(h.on_message, event.delta, tracker.info("message", event.message_id, text_source(event), event.delta), event)
     elif isinstance(event, ThoughtEvent):
-        await _call(h.on_thought, event.delta, tracker.info("thought", event.message_id, event.text), event)
+        await _call(h.on_thought, event.delta, tracker.info("thought", event.message_id, text_source(event), event.delta), event)
     elif isinstance(event, UserMessageEvent):
-        await _call(h.on_user_message, event.delta, tracker.info("user_message", event.message_id, event.text), event)
+        await _call(h.on_user_message, event.delta, tracker.info("user_message", event.message_id, text_source(event), event.delta), event)
     elif isinstance(event, MessageEndEvent):
         await _call(h.on_message_end, event.text, tracker.end("message", event.message_id, event.complete), event)
     elif isinstance(event, ThoughtEndEvent):

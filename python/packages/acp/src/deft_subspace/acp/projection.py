@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .model import (
     BackgroundItem,
     MessageEvent,
     OtherWork,
+    TextAt,
     PlanEvent,
     SessionInfoEvent,
     StateEvent,
@@ -103,10 +104,46 @@ def _terminal_event(applied: AppliedTerminal) -> TerminalEvent:
     return TerminalEvent(terminal=applied.terminal.snapshot(), replaced=applied.replaced, appended=applied.appended)
 
 
+class _TextLog:
+    """A message's text: appended deltas, joined when read.
+
+    An event keeps the log and the length it had, so a turn's events do not each hold a
+    copy of the message so far (and appending is not a copy of it). A rewrite (v2 whole
+    message) starts a new log.
+    """
+
+    __slots__ = ("_joined", "_pending", "length")
+
+    def __init__(self, text: str = "") -> None:
+        self._joined = text
+        self._pending: list[str] = []
+        self.length = len(text)
+
+    def append(self, delta: str) -> None:
+        self._pending.append(delta)
+        self.length += len(delta)
+
+    def text(self, length: int | None = None) -> str:
+        """The text, or its first `length` characters (the text when an event was made)."""
+        if self._pending:
+            self._joined += "".join(self._pending)
+            self._pending = []
+        return self._joined if length is None or length == len(self._joined) else self._joined[:length]
+
+    def at_now(self) -> TextAt:
+        return TextAt(self, self.length)
+
+
+def _text_event(kind: TextKind, message_id: str, delta: str, log: _TextLog) -> TurnEvent:
+    event = _TEXT_EVENTS[kind](message_id, delta, "")
+    event.__dict__["text"] = log.at_now()
+    return event
+
+
 @dataclass
 class _Message:
     kind: TextKind
-    text: str = ""
+    log: _TextLog = field(default_factory=_TextLog)
 
 
 class TurnProjection:
@@ -115,6 +152,8 @@ class TurnProjection:
         #: Agent terminals (v2), shared with the session so they outlive the turn.
         self.terminals = terminals if terminals is not None else Terminals()
         self._messages: dict[str, _Message] = {}
+        #: `text`, until a message changes.
+        self._text: str | None = None
         self._order: list[str] = []
         self._segment = 0
         self._last_kind: Literal["text", "other"] = "other"
@@ -193,15 +232,18 @@ class TurnProjection:
     def text(self) -> str:
         """All agent message text, in order. Messages are separated by a blank line,
         except where the earlier one already ends a line."""
-        out = ""
+        if self._text is not None:
+            return self._text
+        parts: list[str] = []
         for message_id in self._order:
             message = self._messages[message_id]
-            if message.kind != "message" or not message.text:
+            if message.kind != "message" or not message.log.length:
                 continue
-            if out and not out.endswith("\n"):
-                out += "\n\n"
-            out += message.text
-        return out
+            if parts and not parts[-1].endswith("\n"):
+                parts.append("\n\n")
+            parts.append(message.log.text())
+        self._text = "".join(parts)
+        return self._text
 
     def _message_id(self, update: dict[str, Any], kind: TextKind) -> str:
         given = update.get("messageId")
@@ -224,8 +266,12 @@ class TurnProjection:
         message_id = self._message_id(update, kind)
         self._last_kind = "text"
         message = self._message(message_id, kind)
-        message.text += delta
-        return [_TEXT_EVENTS[kind](message_id, delta, message.text)] if delta else []
+        if not delta:
+            return []
+        message.log.append(delta)
+        if message.kind == "message":
+            self._text = None
+        return [_text_event(kind, message_id, delta, message.log)]
 
     def _whole(self, kind: TextKind, update: dict[str, Any]) -> list[TurnEvent]:
         """v2 whole-message upsert: report only what is new, so streamed text is never shown twice."""
@@ -234,9 +280,13 @@ class TurnProjection:
         content = update.get("content")
         text = "".join(_text_of(b) for b in content) if isinstance(content, list) else ""
         message = self._message(message_id, kind)
-        delta = text[len(message.text) :] if text.startswith(message.text) else text
-        message.text = text
-        return [_TEXT_EVENTS[kind](message_id, delta, text)] if delta else []
+        before = message.log.text()
+        delta = text[len(before) :] if text.startswith(before) else text
+        if text != before:
+            message.log = _TextLog(text)
+            if message.kind == "message":
+                self._text = None
+        return [_text_event(kind, message_id, delta, message.log)] if delta else []
 
     def _tool(self, update: dict[str, Any], create: bool) -> list[TurnEvent]:
         self._last_kind = "other"
@@ -309,6 +359,7 @@ class TurnProjection:
         if not isinstance(update.get("toolCallId"), str):
             return []
         call, created = self._upsert({"toolCallId": update["toolCallId"]}, False)
+        # Appended in place: snapshots keep the length they had, so they do not change.
         if update.get("content") is not None:
             call.content.append(update["content"])
         return [ToolCallEvent(call.snapshot(), created)]

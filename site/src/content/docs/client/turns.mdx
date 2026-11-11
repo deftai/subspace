@@ -13,6 +13,18 @@ for await (const event of turn) {
 const result = await turn.done;
 ```
 
+## Long turns
+
+A turn keeps every event, so `turn.history` and a second iteration see them all. For a long turn whose events you only stream, bound that with the `history` prompt option (Python: `history=`):
+
+```ts
+const turn = session.prompt('Watch the build', { history: 1000 }); // or 'none'
+```
+
+`'all'` (the default) keeps every event, a number keeps the last that many, and `'none'` keeps none. An event is dropped only after every iterator running at the time, and the turn's handlers, have had it, so a running reader misses nothing; an iterator started later begins at the oldest event kept. An iterator you stop reading without ending it (`break`, `return()`) holds events back until it is garbage collected. `text`, `toolCalls` and the result are not affected.
+
+Events share what they refer to: a `terminal` event's `output`, a `tool_call` snapshot's `content` and a message event's `text` are copied from the turn's state the first time you read them, not into every event. They still show the state at that event, and once read they are that event's own: change or replace them as you like, nothing else sees it.
+
 ## Events
 
 The same on v1 and v2.

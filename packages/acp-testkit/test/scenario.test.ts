@@ -1,8 +1,9 @@
 /** The scenario runner: expectations, workspaces, permissions, snapshots, bundles, reports and waivers. */
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { link, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { applyWaivers, formatReport } from '@deft-subspace/acp-testkit';
@@ -55,10 +56,17 @@ test('a failing scenario lists what failed and leaves a bundle (trace, report, f
   assert.match(missing.error ?? '', /no\/such\/agent/);
 });
 
+test('a scenario with no turns fails: it would check nothing', async () => {
+  const artifacts = await mkdtemp(join(tmpdir(), 'scenario-artifacts-'));
+  const report = await runScenario({ name: 'empty', agent, turns: [] }, { artifacts });
+  assert.equal(report.pass, false);
+  assert.match(report.error ?? '', /no turns/);
+});
+
 test('snapshots: written once, matched after, a change differs until accepted with updateSnapshots', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshots-'));
   const scenario = (prompt: string): Scenario => ({ name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: [{ prompt }] });
-  assert.equal((await runScenario(scenario('hi'), { baseDir: dir })).snapshot, 'written');
+  assert.equal((await runScenario(scenario('hi'), { baseDir: dir, requireSnapshots: false })).snapshot, 'written');
   assert.equal((await runScenario(scenario('hi'), { baseDir: dir })).snapshot, 'matched');
   const changed = await runScenario(scenario('hello'), { baseDir: dir, artifacts: dir });
   assert.equal(changed.snapshot, 'differed');
@@ -68,10 +76,24 @@ test('snapshots: written once, matched after, a change differs until accepted wi
   assert.equal((await runScenario(scenario('hello'), { baseDir: dir })).snapshot, 'matched');
 });
 
+test('snapshots are replaced whole, never rewritten in place, so a reader sees the old file or the new one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshot-atomic-'));
+  const scenario: Scenario = { name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: [{ prompt: 'hi' }] };
+  assert.equal((await runScenario(scenario, { baseDir: dir, requireSnapshots: false })).snapshot, 'written');
+  // A second name for the same file: a write in place would change it too.
+  const before = await readFile(join(dir, 'greets.snapshot.json'), 'utf8');
+  await link(join(dir, 'greets.snapshot.json'), join(dir, 'old.json'));
+  const changed: Scenario = { ...scenario, turns: [{ prompt: 'hello' }] };
+  assert.equal((await runScenario(changed, { baseDir: dir, updateSnapshots: true })).snapshot, 'written');
+  assert.equal(await readFile(join(dir, 'old.json'), 'utf8'), before);
+  assert.notEqual(await readFile(join(dir, 'greets.snapshot.json'), 'utf8'), before);
+  assert.deepEqual((await readdir(dir)).sort(), ['greets.snapshot.json', 'old.json']);
+});
+
 test('snapshots: a differing turn fails in every report, and so does a different number of turns', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshot-reports-'));
   const scenario = (...prompts: string[]): Scenario => ({ name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: prompts.map((prompt) => ({ prompt })) });
-  assert.equal((await runScenario(scenario('hi', 'hi'), { baseDir: dir })).snapshot, 'written');
+  assert.equal((await runScenario(scenario('hi', 'hi'), { baseDir: dir, requireSnapshots: false })).snapshot, 'written');
   const changed = await runScenario(scenario('hello', 'hi'), { baseDir: dir, artifacts: dir });
   assert.deepEqual(changed.turns.map((t) => t.pass), [false, true]);
   assert.match(formatScenarios([changed]), /no {2}1\./);
@@ -145,4 +167,68 @@ test('./ agent paths are relative to the scenario file; sameAs compares two work
   );
   assert.equal(report.turns[1]!.pass, true, formatScenarios([report]));
   assert.deepEqual(report.turns[2]!.failures, ['c.txt differs from a.txt']);
+});
+
+test('snapshots: an unreadable snapshot fails and is kept; in CI mode a missing one fails instead of being written', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshot-strict-'));
+  const scenario: Scenario = { name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: [{ prompt: 'hi' }] };
+  await writeFile(join(dir, 'greets.snapshot.json'), '[{"end": "completed", <<<<<<< merge conflict');
+  const broken = await runScenario(scenario, { baseDir: dir, artifacts: dir });
+  assert.equal(broken.pass, false);
+  assert.equal(broken.snapshot, 'unreadable');
+  assert.match(await readFile(join(dir, 'greets.snapshot.json'), 'utf8'), /merge conflict/);
+  assert.match(formatScenarios([broken]), /snapshot: .*greets\.snapshot\.json/);
+  // updateSnapshots still replaces it.
+  assert.equal((await runScenario(scenario, { baseDir: dir, updateSnapshots: true })).snapshot, 'written');
+
+  const missing = await runScenario({ ...scenario, snapshot: 'new.snapshot.json' }, { baseDir: dir, artifacts: dir, requireSnapshots: true });
+  assert.equal(missing.pass, false);
+  assert.equal(missing.snapshot, 'missing');
+  assert.equal(existsSync(join(dir, 'new.snapshot.json')), false);
+  assert.match(formatJUnit([missing]), /name="snapshot"><failure/);
+  // The CI environment variable turns it on by default.
+  const saved = process.env.CI;
+  process.env.CI = 'true';
+  try {
+    assert.equal((await runScenario({ ...scenario, snapshot: 'other.snapshot.json' }, { baseDir: dir, artifacts: dir })).snapshot, 'missing');
+  } finally {
+    if (saved === undefined) delete process.env.CI;
+    else process.env.CI = saved;
+  }
+});
+
+test('a passing scenario removes its workspace and trace; bundles are unique and stay inside the artifacts folder', async () => {
+  const passed = await runScenario({ name: 'quiet', agent, turns: [{ prompt: 'hi' }] });
+  assert.equal(passed.pass, true);
+  assert.equal(existsSync(passed.workspace), false);
+  assert.equal(existsSync(dirname(passed.trace)), false);
+  const kept = await runScenario({ name: 'kept', agent, turns: [{ prompt: 'hi' }] }, { keep: true });
+  assert.equal(existsSync(kept.workspace), true);
+
+  const artifacts = await mkdtemp(join(tmpdir(), 'scenario-bundles-'));
+  const failing = (name: string): Scenario => ({ name, agent, turns: [{ prompt: 'hi', expect: { text: { contains: 'Nope' } } }] });
+  const a = await runScenario(failing('..'), { artifacts });
+  const b = await runScenario(failing('..'), { artifacts });
+  assert.equal(dirname(a.bundle!), artifacts);
+  assert.notEqual(a.bundle, b.bundle);
+  assert.equal((await readdir(artifacts)).length, 2);
+  assert.ok((await stat(join(a.bundle!, 'report.json'))).isFile());
+  assert.doesNotMatch(basename(a.bundle!), /^\./);
+  // A failed run keeps its workspace for the bundle.
+  assert.equal(existsSync(a.workspace), true);
+});
+
+test('JUnit drops characters XML cannot carry', () => {
+  const outcome = { end: 'completed' as const, stopReason: 'end_turn', text: '', toolCalls: [] };
+  const turn = { prompt: 'a\u0001b', pass: false, failures: ['bad \u001b[31mred\u0000'], outcome, updates: 0, permissions: [], durationMs: 1 };
+  const junit = formatJUnit([{ name: 'ctl', pass: false, turns: [turn], workspace: '', trace: '', durationMs: 1 }]);
+  assert.doesNotMatch(junit, /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
+  assert.match(junit, /name="1\. ab"/);
+});
+
+test('loadScenarios imports a module by file URL', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario module #1 '));
+  await writeFile(join(dir, 'suite.mjs'), `export default { name: 'm', agent: 'claude', turns: [{ prompt: 'hi' }] };`);
+  const [scenario] = await loadScenarios(join(dir, 'suite.mjs'));
+  assert.equal(scenario!.name, 'm');
 });

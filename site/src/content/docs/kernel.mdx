@@ -6,11 +6,11 @@ description: Channels, framing, and a JSON-RPC peer with timeouts and cancellati
 import Example from '../../components/Example.astro';
 import kernel from '../../../../examples/kernel.ts?raw';
 
-`@deft-subspace/kernel` is the protocol-neutral layer under the ACP package. It runs in Node, Bun, Deno and browsers, and fits other JSON-RPC protocols too.
+`@deft-subspace/kernel` is the protocol-neutral layer under the ACP package. It is written for Node, Bun, Deno and browsers (CI tests it on Node), and fits other JSON-RPC protocols too.
 
 <Example file="kernel.ts" ts={kernel} />
 
 - **`Channel`**: a readable and a writable stream of messages. `channelPair()` joins two ends in memory; `pipeChannel()` connects one to another.
 - **`ndjson(byteChannel)`**: newline-delimited JSON framing over bytes. Lines that are not JSON are skipped and reported (`onDiagnostic`), split multi-byte characters are kept, and over-long lines are dropped without buffering them.
 - **`RpcPeer`**: requests and notifications, with `timeoutMs`, an `AbortSignal` per request (sending `$/cancel_request` with `cancelRequest`), `onRequest` handlers that get a `signal`, and a `tap` that sees every message. Remote errors are `RpcError`s; local ones (timeout, aborted, closed) are `LocalError`s with a `kind`.
-- **`spawnProcess(command, options)`** (from `./node`): starts a program in its own process group, with stdio as a byte channel, the end of its stderr kept for error messages, and `stop()` ending the whole group.
+- **`spawnProcess(command, options)`** (from `./node`): starts a program in its own process group, with stdio as a byte channel, the end of its stderr kept for error messages, and `stop()` ending the whole group. On Windows there are no process groups: `stop()` ends the program itself, and what it started may outlive it.

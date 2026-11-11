@@ -16,13 +16,25 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar
 
-from deft_subspace.kernel import AbortController, AbortSignal, Channel, InboundContext, RpcError, RpcPeer, cancel_request
+from deft_subspace.kernel import (
+    AbortController,
+    AbortSignal,
+    Channel,
+    ErrorCode,
+    InboundContext,
+    LocalError,
+    RpcError,
+    RpcPeer,
+    cancel_request,
+)
 
 from . import schemas
 from .background import SessionWork, Work, base64
@@ -209,12 +221,14 @@ class TerminalDisplay:
     async def exit(self, *, exit_code: int | None = None, signal: str | None = None) -> None:
         """The process exited."""
         status = {k: v for k, v in (("exitCode", exit_code), ("signal", signal)) if v is not None}
+        self._writer.terminals.discard(self._work)
         await self._terminal({"exitStatus": status, **({"capabilities": None} if self._cancellable else {})})
         assert self._writer.work is not None
         await self._writer.work.finish(self._work)
 
     async def detach(self) -> None:
         """Keep it running in the background after the turn (listed until it exits)."""
+        self._writer.terminals.discard(self._work)
         assert self._writer.work is not None
         await self._writer.work.detach(self._work)
 
@@ -288,6 +302,8 @@ class _TurnWriter:
         self.segment = 0
         self.last_was_text = False
         self.open: set[str] = set()
+        #: The turn's terminals (v2), until they exit or are detached.
+        self.terminals: set[Work] = set()
         self.turn_id = _random_uuid()[:8]
 
     def update(self, update: dict[str, Any]) -> Awaitable[None]:
@@ -311,9 +327,17 @@ class _TurnWriter:
             }
         )
 
-    async def fail_open_tool_calls(self) -> None:
+    async def end_open_work(self, reason: Any) -> None:
+        """The turn was cancelled or its handler raised: fail the tool calls it left
+        open, and stop and drop the terminals it neither detached nor exited."""
         for id in list(self.open):
             await self.tool_update(id, {"status": "failed"})
+        for work in list(self.terminals):
+            self.terminals.discard(work)
+            if work.listed or work.final or self.work is None:
+                continue
+            work.controller.abort(reason)
+            await self.work.finish(work)
 
     async def chunk(self, kind: Literal["agent_message_chunk", "agent_thought_chunk"], text: str) -> None:
         if not self.last_was_text:
@@ -342,6 +366,8 @@ class _TurnWriter:
         self.last_was_text = False
         call_id = id if id is not None else f"call-{_random_uuid()[:8]}"
         cancellable = cancellable and self.protocol == 2 and self.work is not None
+        # One created already finished is neither open nor work.
+        done = _is_final(status)
         fields: dict[str, Any] = {
             "title": title,
             "kind": kind if kind is not None else "other",
@@ -349,10 +375,11 @@ class _TurnWriter:
             "content": content if content is not None else [],
             "locations": locations if locations is not None else [],
             **({"rawInput": raw_input} if raw_input is not None else {}),
-            **({"capabilities": {"cancel": {}}} if cancellable else {}),
+            **({"capabilities": {"cancel": {}}} if cancellable and not done else {}),
         }
-        self.open.add(call_id)
-        work = self.work.add("tool_call", call_id, cancellable, self.signal) if self.work is not None else None
+        if not done:
+            self.open.add(call_id)
+        work = self.work.add("tool_call", call_id, cancellable, self.signal) if self.work is not None and not done else None
         # v1 creates with tool_call; v2 has only the upsert.
         await self.update({"sessionUpdate": "tool_call" if self.protocol == 1 else "tool_call_update", "toolCallId": call_id, **fields})
         return ToolCallHandle(self, call_id, work)
@@ -602,6 +629,7 @@ class AgentTurn:
             raise CapabilityError("agent terminals (protocol v2)", "client")
         terminal_id = id if id is not None else f"term-{_random_uuid()[:8]}"
         work = w.work.add("terminal", terminal_id, cancellable, w.signal)
+        w.terminals.add(work)
         display = TerminalDisplay(w, terminal_id, work, cancellable)
         await display._terminal(
             {
@@ -633,11 +661,18 @@ class AgentTurn:
         w = self._writer
         w.last_was_text = False
         tool_call_id = fields["toolCallId"]
-        if create:
+        final = _is_final(fields.get("status"))
+        # Tracked as tool_call() does: open (and v2 work) from a create until a final status.
+        if create and not final and tool_call_id not in w.open:
             w.open.add(tool_call_id)
-        if _is_final(fields.get("status")):
+            if w.work is not None and w.work.get("tool_call", tool_call_id) is None:
+                w.work.add("tool_call", tool_call_id, False, w.signal)
+        if final:
             w.open.discard(tool_call_id)
         await w.update({**fields, "sessionUpdate": "tool_call" if create and self.protocol == 1 else "tool_call_update"})
+        work = w.work.get("tool_call", tool_call_id) if final and w.work is not None else None
+        if work is not None and w.work is not None:
+            await w.work.finish(work)
 
     async def send_update(self, update: dict[str, Any]) -> None:
         """Send any `session/update` as given. You are responsible for it suiting `protocol`."""
@@ -712,9 +747,10 @@ class AgentTurn:
                 return ElicitAnswer("accept", content if content else None, elicitation_id)
             if action == "decline":
                 return ElicitAnswer("decline", None, elicitation_id)
-        except Exception:  # noqa: BLE001
-            # Aborted with the turn, or an error answer.
-            pass
+        except Exception as error:
+            # Aborted with the turn, or the connection gone: nobody answered. Anything else is the caller's.
+            if not self.signal.aborted and not LocalError.is_(error, "aborted") and not LocalError.is_(error, "closed"):
+                raise
         return ElicitAnswer("cancel", None, elicitation_id)
 
 
@@ -738,6 +774,8 @@ class _Negotiated:
 
     protocol: ProtocolVersion
     client_capabilities: dict[str, Any]
+    #: initialize was answered: a second one is refused (the protocol can't change mid-connection).
+    initialized: bool = False
 
 
 NEGOTIATED: StateKey[_Negotiated] = state_key("negotiated")
@@ -758,7 +796,8 @@ class _SessionPart:
     """Something that lives with a session (MCP connections, turns, background
     work). Close runs every `stop`, removes the session, then every `release`,
     then `close_session`. A closed connection runs `disconnect` only (MCP
-    connections close; turns and their background work stop)."""
+    connections close; turns and their background work stop), then
+    `connection_closed` with the sessions that were open."""
 
     name: str
     create: Callable[[_AgentSession], Any]
@@ -769,10 +808,11 @@ class _SessionPart:
 
 
 class _SessionLifecycle:
-    def __init__(self, close_session: Callable[[str], Any] | None) -> None:
+    def __init__(self, close_session: Callable[[str], Any] | None, connection_closed: Callable[[list[str]], Any] | None = None) -> None:
         self.sessions: dict[str, _AgentSession] = {}
         self._parts: list[_SessionPart] = []
         self._close_session = close_session
+        self._connection_closed = connection_closed
 
     def attach(self, part: _SessionPart) -> None:
         self._parts.append(part)
@@ -823,7 +863,14 @@ class _SessionLifecycle:
             if part.disconnect is not None:
                 await _resolve(part.disconnect(session.parts.get(part.name), session))
 
-        await asyncio.gather(*(one(part, session) for session in list(self.sessions.values()) for part in self._parts))
+        open_ = list(self.sessions.values())
+        # Every part is told, and the connection-level hook runs, even if one part fails.
+        results = await asyncio.gather(*(one(part, session) for session in open_ for part in self._parts), return_exceptions=True)
+        if self._connection_closed is not None:
+            await _resolve(self._connection_closed([session.id for session in open_]))
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 SESSIONS: StateKey[_SessionLifecycle] = state_key("sessions")
@@ -859,6 +906,7 @@ class _Options:
     new_session: Callable[[NewSessionRequest], Any] | None
     load_session: Callable[[LoadSessionRequest], Any] | None
     close_session: Callable[[str], Any] | None
+    connection_closed: Callable[[list[str]], Any] | None
     queue_prompts: bool
     extensions: list[ExtensionHandler]
     methods: dict[str, Callable[[Any, InboundContext], Any]]
@@ -882,6 +930,8 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
     accepted = options.protocols
 
     def initialize(call: EndpointCall, ctx: CallContext, _state: Any, _next: Next) -> Any:
+        if ctx.get(NEGOTIATED).initialized:
+            raise RpcError(ErrorCode.INVALID_REQUEST, "Already initialized")
         params = call.params if isinstance(call.params, dict) else {}
         asked = _as_number(params.get("protocolVersion"))
         best: ProtocolVersion = max(accepted)
@@ -890,7 +940,7 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
             if asked == p:
                 protocol = p
         caps = params.get("capabilities") if protocol == 2 else params.get("clientCapabilities")
-        ctx.set(NEGOTIATED, _Negotiated(protocol, caps if isinstance(caps, dict) else {}))
+        ctx.set(NEGOTIATED, _Negotiated(protocol, caps if isinstance(caps, dict) else {}, initialized=True))
         info = {"name": options.name, "version": options.version}
         transports = options.mcp_transports
         if transports is None:
@@ -904,14 +954,23 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
                 session_mcp = session.get("mcp")
                 session["mcp"] = {**mcp, **(session_mcp if isinstance(session_mcp, dict) else {})}
             return {"protocolVersion": 2, "info": info, "capabilities": {**extra, **({"session": session} if session else {})}, "authMethods": []}
+        # Merged like v2's: extra session and MCP capabilities add to these, they don't replace them.
+        rest = {k: v for k, v in extra.items() if k not in ("sessionCapabilities", "mcpCapabilities")}
+        extra_session = extra.get("sessionCapabilities")
+        extra_mcp = extra.get("mcpCapabilities")
+        mcp_capabilities = {**mcp, **(extra_mcp if isinstance(extra_mcp, dict) else {})}
         return {
             "protocolVersion": 1,
             "agentInfo": info,
             "agentCapabilities": {
                 "loadSession": load_session,
-                "sessionCapabilities": {"close": {}, **({"resume": {}} if load_session else {})},
-                **({"mcpCapabilities": mcp} if mcp else {}),
-                **extra,
+                **rest,
+                "sessionCapabilities": {
+                    "close": {},
+                    **({"resume": {}} if load_session else {}),
+                    **(extra_session if isinstance(extra_session, dict) else {}),
+                },
+                **({"mcpCapabilities": mcp_capabilities} if mcp_capabilities else {}),
             },
             "authMethods": [],
         }
@@ -943,6 +1002,9 @@ def _sessions_layer(options: _Options, replay_writer: Callable[[EndpointContext,
             session_id = str(created["sessionId"])
         else:
             session_id = _random_uuid()
+        # Never replace an open session (its turns, background work and MCP servers would be left running).
+        if session_id in sessions.sessions:
+            raise RpcError.invalid_params(f"Session {session_id} is already open", {"sessionId": session_id})
         sessions.open(session_id, servers, params["cwd"])
         return {"sessionId": session_id}
 
@@ -982,7 +1044,7 @@ def _sessions_layer(options: _Options, replay_writer: Callable[[EndpointContext,
         requests["session/resume"] = resume_session
 
     def create(ctx: EndpointContext) -> _SessionLifecycle:
-        sessions = _SessionLifecycle(options.close_session)
+        sessions = _SessionLifecycle(options.close_session, options.connection_closed)
         ctx.set(SESSIONS, sessions)
         return sessions
 
@@ -1023,22 +1085,41 @@ def _mcp_layer(options: _Options) -> AgentLayer[_McpPart]:
     )
 
 
+TurnPhase = Literal["queued", "running", "finishing", "ended"]
+"""Where a prompt is in its session's queue: waiting for the turn ahead (`queued`), in the
+prompt handler (`running`), sending its last updates (`finishing`: open tool calls failed,
+v2's idle state), then `ended`. Only an ended turn lets the next one start, so its updates
+never interleave. Queued and running turns make the session busy; a finishing one does not
+(a prompt sent on its idle state waits the moment it takes to end)."""
+
+
+@dataclass(eq=False)
+class _SessionTurn:
+    controller: AbortController
+    #: Settles when the turn is `ended`.
+    ended: asyncio.Future[None]
+    phase: TurnPhase = "queued"
+
+
 @dataclass(eq=False)
 class _TurnsPart:
-    """A session's turns: the running one, the queue, and background work (v2)."""
+    """A session's turns (the queue) and background work (v2)."""
 
     work: SessionWork
-    #: Settles when the last queued turn ends.
-    tail: asyncio.Future[None]
-    controller: AbortController | None = None
-    #: Prompts waiting for the running one (with `queue_prompts`).
-    waiting: set[AbortController] = field(default_factory=set)
+    #: Turns not yet ended, in order: the first is running or finishing, the rest are queued.
+    turns: deque[_SessionTurn] = field(default_factory=deque)
 
 
-def _done_future() -> asyncio.Future[None]:
-    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    future.set_result(None)
-    return future
+def _abort_turns(turns: _TurnsPart, reason: BaseException) -> None:
+    """Stop every turn of the session that has not ended, the running one and the queued ones."""
+    for turn in list(turns.turns):
+        turn.controller.abort(reason)
+
+
+def _cancelling() -> bool:
+    """Whether the current task itself is being cancelled (not just something it awaited)."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 def _turns_layer(options: _Options) -> AgentLayer[None]:
@@ -1047,26 +1128,17 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
     def create(ctx: EndpointContext) -> None:
         def make(session: _AgentSession) -> _TurnsPart:
             session_id = session.id
-            return _TurnsPart(
-                work=SessionWork(lambda update: ctx.client.notify("session/update", {"sessionId": session_id, "update": update})),
-                tail=_done_future(),
-            )
+            return _TurnsPart(work=SessionWork(lambda update: ctx.client.notify("session/update", {"sessionId": session_id, "update": update})))
 
         def stop(turns: _TurnsPart, _session: _AgentSession, reason: BaseException) -> None:
-            if turns.controller is not None:
-                turns.controller.abort(reason)
-            for waiting in list(turns.waiting):
-                waiting.abort(reason)
+            _abort_turns(turns, reason)
             # Closing stops background work too.
             turns.work.close_all()
 
         def disconnect(turns: _TurnsPart, _session: _AgentSession) -> None:
             # The client gone: detached work no longer follows the turn's signal, so stop it here.
             reason = Exception("connection closed")
-            if turns.controller is not None:
-                turns.controller.abort(reason)
-            for waiting in list(turns.waiting):
-                waiting.abort(reason)
+            _abort_turns(turns, reason)
             turns.work.close_all(reason)
 
         ctx.get(SESSIONS).attach(_SessionPart(name="turns", create=make, stop=stop, disconnect=disconnect))
@@ -1078,7 +1150,8 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
         turns: _TurnsPart = sessions.part(session, "turns")
         negotiated = ctx.get(NEGOTIATED)
         protocol = negotiated.protocol
-        busy = turns.controller is not None or len(turns.waiting) > 0
+        # A turn that is only finishing (its handler returned) does not refuse the next prompt; that one waits for its end.
+        busy = any(t.phase in ("queued", "running") for t in turns.turns)
         if busy and not options.queue_prompts:
             raise RpcError.invalid_params(f"Session {session.id} already has a turn running")
         controller = AbortController()
@@ -1097,46 +1170,63 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
             sessions.part(session, "mcp"),
         )
         # Wait for the turn ahead (if any), in order.
-        ahead = turns.tail
-        tail: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        turns.tail = tail
+        ahead = turns.turns[-1].ended if turns.turns else None
+        entry = _SessionTurn(controller, asyncio.get_running_loop().create_future())
+        turns.turns.append(entry)
 
-        def release() -> None:
-            if not tail.done():
-                tail.set_result(None)
+        async def run() -> StopReason:
+            stop: StopReason = "cancelled"
+            failure: Exception | None = None
 
-        turns.waiting.add(controller)
+            async def finish() -> None:
+                # The turn's last updates go out before the next turn may start.
+                nonlocal stop
+                if signal.aborted:
+                    stop = "cancelled"
+                entry.phase = "finishing"
+                try:
+                    if stop == "cancelled" or failure is not None:
+                        await writer.end_open_work(signal.reason if signal.aborted else failure)
+                    if protocol == 2:
+                        await writer.idle(stop, {"message": str(failure)} if failure is not None else None)
+                finally:
+                    entry.phase = "ended"
+                    # Let go of the connection's signal: it outlives the turn.
+                    signal.dispose()
+                    if entry in turns.turns:
+                        turns.turns.remove(entry)
+                    if not entry.ended.done():
+                        entry.ended.set_result(None)
 
-        async def run(on_start: Callable[[], Awaitable[None]] | None = None) -> StopReason:
-            await ahead
-            turns.waiting.discard(controller)
-            if signal.aborted:
-                release()
-                return "cancelled"
-            turns.controller = controller
-            if on_start is not None:
-                await on_start()
             try:
-                stop = await _resolve(options.prompt(turn))
-                if stop is None:
-                    stop = "end_turn"
-            except Exception as error:
+                if ahead is not None:
+                    await asyncio.shield(ahead)
+                if not signal.aborted:
+                    entry.phase = "running"
+                    if protocol == 2:
+                        await writer.state("running")
+                    result = await _resolve(options.prompt(turn))
+                    stop = result if result is not None else "end_turn"
+            except asyncio.CancelledError:
+                if not signal.aborted or _cancelling():
+                    # This task itself was cancelled: end the turn, then let the cancel go on.
+                    with contextlib.suppress(Exception):
+                        await finish()
+                    raise
+                # The handler cancelled its own work when the signal fired (task.cancel()).
+                stop = "cancelled"
+            except Exception as error:  # noqa: BLE001 - every handler error ends the turn
                 if signal.aborted:
                     stop = "cancelled"
                 elif isinstance(error, PermissionDenied):
                     # The agent stopped because the user said no: a normal end.
                     stop = "end_turn"
                 else:
-                    if protocol == 1:
-                        raise
-                    await writer.idle("error", {"message": str(error)})
-                    return "error"
-            finally:
-                turns.controller = None
-                release()
-            if signal.aborted:
-                stop = "cancelled"
-                await writer.fail_open_tool_calls()
+                    stop = "error"
+                    failure = error
+            await finish()
+            if failure is not None and protocol == 1:
+                raise failure
             return stop
 
         if protocol == 1:
@@ -1147,9 +1237,7 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
 
         async def later() -> None:
             try:
-                stop = await run(lambda: writer.state("running"))
-                if stop != "error":
-                    await writer.idle(stop)
+                await run()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1163,12 +1251,8 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
         session = sessions.sessions.get(session_id) if isinstance(session_id, str) else None
         if session is None:
             return
-        turns: _TurnsPart = sessions.part(session, "turns")
-        if turns.controller is not None:
-            turns.controller.abort(Exception("cancelled by the client"))
         # Queued prompts are cancelled too: the client asked for the session to stop.
-        for waiting in list(turns.waiting):
-            waiting.abort(Exception("cancelled by the client"))
+        _abort_turns(sessions.part(session, "turns"), Exception("cancelled by the client"))
 
     return AgentLayer(
         name="turns",
@@ -1243,6 +1327,7 @@ def serve_agent(
     new_session: Callable[[NewSessionRequest], Any] | None = None,
     load_session: Callable[[LoadSessionRequest], Any] | None = None,
     close_session: Callable[[str], Any] | None = None,
+    connection_closed: Callable[[list[str]], Any] | None = None,
     queue_prompts: bool = False,
     extensions: list[ExtensionHandler] | None = None,
     methods: dict[str, Callable[[Any, InboundContext], Any]] | None = None,
@@ -1259,13 +1344,17 @@ def serve_agent(
       (or the agent connects itself). v1 always takes stdio. Default: the connector's
       transports, else none (v1: stdio).
     - `mcp_connector`: connects to the session's `stdio`, `http` and `sse` MCP servers for `turn.mcp(name)`.
-    - `new_session(request)`: may return a session id (a str, or `{"sessionId": ...}`).
+    - `new_session(request)`: may return a session id (a str, or `{"sessionId": ...}`). An id that
+      is already open is refused (-32602), the open session kept.
     - `load_session(request)`: reopen an existing session: v1 `session/load` (with `replay`)
       and `session/resume` (without), v2 `session/resume` (with `replay` when the client asks
       for it). Replay history through `request.replay` before returning; the client is
       answered after. Raise `RpcError.not_found(...)` for an unknown id. Providing it
       advertises loading and resuming.
     - `close_session(session_id)`: the client closed a session (`session/close`), after its turn was cancelled.
+    - `connection_closed(session_ids)`: the connection closed, with the sessions still open on it, after
+      their turns stopped and their MCP connections closed. `close_session` is not called for them;
+      drop here what you keep per session.
     - `queue_prompts`: queue a prompt that arrives while a turn is running, instead of refusing it.
     - `extensions`: handlers for the client's calls to your vendor extension methods (see `extension_request`, `handle`).
     - `methods`: more request handlers `(params, context)`, e.g. vendor `_name/method` extensions.
@@ -1286,6 +1375,7 @@ def serve_agent(
         new_session=new_session,
         load_session=load_session,
         close_session=close_session,
+        connection_closed=connection_closed,
         queue_prompts=queue_prompts,
         extensions=list(extensions or []),
         methods=dict(methods or {}),

@@ -27,7 +27,7 @@ Any [ACP registry](/subspace/client/agents-file/) id works too, and so do agents
 - **A session, ready.** `agent.session`, `agent.run(prompt, handlers)` and `agent.prompt(prompt, handlers)`; `agent.newSession()` opens more, in the same mode.
 - **Login when needed.** If opening the session fails because the agent needs a login and it offers exactly one method it handles itself, that method is used, once.
 - **Questions.** Form questions from the agent are advertised; a turn's `onQuestion` answers them, and without one they are declined.
-- **Clean exits.** Ctrl-C cancels the running turn and stops the agent's process group before exiting (`handleSignals: false` to opt out). `agent.close()`, or `await using agent = await start(...)` on Node 24 and later.
+- **Clean exits.** Ctrl-C cancels the running turn and stops the agent's process group (on Windows, its own process) before exiting (`handleSignals: false` to opt out). `agent.close()`, or `await using agent = await start(...)` on Node 24 and later.
 
 ## Permissions are required
 
@@ -52,6 +52,17 @@ const { run, close } = await connectSession(channel, {
 await run('What does this repo do?');
 await close();
 ```
+
+## Which entry point do I want
+
+| You have | Use | From | You get |
+|---|---|---|---|
+| An agent name (`claude`, a registry id, one in `agents.toml`) or a command, in Node | `start(agent, options)` | `@deft-subspace/acp/node` | The program started and connected, a session open in its ask-first mode, files confined to `cwd`, Ctrl-C handled; `run`, `prompt`, `close`. Needs a permission answer. |
+| The same, for one prompt | `run(agent, prompt, options)` | `@deft-subspace/acp/node` | `start()`, one turn, `close()`; resolves with the `TurnResult`. |
+| A program to start, and you want the plain client | `connectAgent(command, options)` | `@deft-subspace/acp/node` | `{ client, process, close }` after `initialize`. No session, no mode switch, no catalog; permissions are rejected unless you set them. |
+| A channel already (a socket, a pipe, an in-process agent, a browser) | `connectSession(channel, options)` | `@deft-subspace/acp` | `start()` without the process: connected, a session open (one login retry, the mode switched if offered), `run`, `prompt`, `close`. Needs a permission answer. |
+| An `AcpClient` already, and want a session the way `start()` opens one | `openSession(client, setup)` | `@deft-subspace/acp` | `{ session, modeWarning }`: `session/new`, the one-method login retry, and the mode switch. |
+| A channel, and you want every choice yourself | `AcpClient.connect(channel, options)` | `@deft-subspace/acp` | The client after `initialize`. Sessions, handlers, files and terminals are up to you. |
 
 ## Seeing what happened, and errors that help
 

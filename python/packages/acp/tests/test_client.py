@@ -299,3 +299,20 @@ async def test_overlapping_config_changes_apply_in_order():
     await asyncio.gather(session.set_model("b"), session.set_model("a"))
     assert session.model is not None and session.model.current_value == "a", "the later change wins"
     await client.close()
+
+
+async def test_a_settled_permission_request_leaves_no_listener_on_the_turn():
+    counts: list[int] = []
+    holder: dict = {}
+
+    async def prompt(turn):
+        for _ in range(5):
+            await turn.request_permission("Run it?")
+            counts.append(len(holder["session"]._state.turn.questions.signal._listeners))
+
+    client = await connect({"prompt": prompt}, on_permission="allow")
+    session = await client.new_session("/tmp")
+    holder["session"] = session
+    await session.prompt("go")
+    assert len(set(counts)) == 1, counts
+    await client.close()

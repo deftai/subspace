@@ -38,4 +38,4 @@ The conversation history is append-only, so the model's thinking stays valid fro
 
 ## Another model
 
-A model is an adapter: `{ conversation({ system, tools, cwd }) }` returning `{ send(input, { onText, onThinking, signal }) }`, which keeps its own history and returns the model's stop reason and tool calls. `claude()` is about 150 lines; another provider's adapter would be the same size.
+A model is an adapter: `{ conversation({ system, tools, cwd }) }` returning `{ send(input, { onText, onThinking, signal }) }`, which keeps its own history and returns the model's stop reason and tool calls. `input` is `{ prompt }` or `{ toolResults }`. When the previous turn ended (at `maxSteps`, or cancelled) after tools ran but before the model heard back, the next prompt also has `interruptedToolResults`: give them to the model before the prompt. An adapter that ignores the field still gets every prompt. `claude()` is about 150 lines; another provider's adapter would be the same size.

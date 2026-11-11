@@ -7,12 +7,14 @@ where they don't need the client classes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
 import pytest
 from deft_subspace.acp.agent import AgentTurn, PermissionDenied, serve_agent
+from deft_subspace.acp.background import SessionWork
 from deft_subspace.acp.capabilities import CapabilityError
 from deft_subspace.acp.endpoint import AgentLayer, CallContext, EndpointCall, agent_endpoint, state_key
 from deft_subspace.acp.extensions import extension_request, handle
@@ -267,6 +269,28 @@ async def test_endpoint_notifications_keep_order_when_a_hook_is_slow() -> None:
     await client.close()
 
 
+async def test_endpoint_notifications_through_hooks_use_one_sender_and_fail_one_at_a_time() -> None:
+    from deft_subspace.acp import endpoint as endpoint_module
+
+    async def hook(call: EndpointCall, ctx: Any, state: Any, next_: Any) -> Any:
+        if call.params["n"] == 3:
+            raise ValueError("no 3")
+        await asyncio.sleep(0)
+        return await next_()
+
+    endpoint, client = connect(name="sender", layers=[AgentLayer[None](name="hook", outbound=hook)])
+    before = len(endpoint_module._tasks)
+    sends = [endpoint.client.notify("session/update", {"n": n}) for n in range(50)]
+    # One task sends them all, not one per notification.
+    assert len(endpoint_module._tasks) - before <= 1
+    sends[10].cancel()  # cancelled before its turn: not sent
+    results = await asyncio.gather(*sends, return_exceptions=True)
+    await tick()
+    assert isinstance(results[3], ValueError)
+    assert [p["n"] for _m, p in client.notes] == [n for n in range(50) if n not in (3, 10)]
+    await client.close()
+
+
 async def test_endpoint_cancel_request_aborts_the_handler_signal() -> None:
     aborted = False
 
@@ -352,6 +376,34 @@ async def test_initialize_v2_shape_and_version_choice() -> None:
     await client.close()
     client = serve(prompt=lambda turn: None)
     assert (await client.peer.request("initialize", {"protocolVersion": 7}))["protocolVersion"] == 2
+    await client.close()
+
+
+async def test_initialize_v1_capabilities_merge_into_session_and_mcp_capabilities() -> None:
+    client = serve(
+        prompt=lambda turn: None,
+        load_session=lambda request: None,
+        mcp_transports=["http"],
+        capabilities={"sessionCapabilities": {"list": {}}, "mcpCapabilities": {"sse": True}},
+    )
+    result = await client.init(1)
+    assert result["agentCapabilities"] == {
+        "loadSession": True,
+        "sessionCapabilities": {"close": {}, "resume": {}, "list": {}},
+        "mcpCapabilities": {"http": True, "sse": True},
+    }
+    await client.close()
+
+
+async def test_a_second_initialize_is_refused_and_the_protocol_kept() -> None:
+    client = serve(prompt=lambda turn: None)
+    assert (await client.init(2))["protocolVersion"] == 2
+    with pytest.raises(RpcError) as info:
+        await client.init(1)
+    assert info.value.code == -32600
+    sid = await client.new_session()
+    # Still v2: the prompt is answered at once with a message id.
+    assert "messageId" in await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
     await client.close()
 
 
@@ -631,6 +683,209 @@ async def test_prompt_errors_v1_internal_error_v2_idle_error() -> None:
     sid = await client.new_session()
     await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
     assert await client.idle() == {"sessionUpdate": "state_update", "state": "idle", "stopReason": "error", "error": {"message": "boom"}}
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_finished_turns_leave_no_listener_on_the_connection(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool("t", lambda call: "ok")
+
+    agent_end, client_end = channel_pair()
+    agent = serve_agent(agent_end, name="leak", prompt=prompt, protocols=[protocol])
+    client = Client(client_end).start()
+    await client.init(protocol)
+    sid = await client.new_session()
+    before = len(agent.signal._listeners)
+    for n in range(1, 21):
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+        if protocol == 2:
+            await client.idle(n)
+    await tick()
+    assert len(agent.signal._listeners) == before
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_tool_call_created_already_finished_is_not_left_open(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool_call("done already", status="completed")
+        raise ValueError("boom")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    with contextlib.suppress(RpcError):
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    if protocol == 2:
+        await client.idle()
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["completed"]
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_elicit_lets_an_error_answer_through_instead_of_answering_cancel(protocol: int) -> None:
+    seen: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        try:
+            seen.append((await turn.elicit("name?")).action)
+        except RpcError as error:
+            seen.append(f"error {error.code}")
+        return "end_turn"
+
+    def broken(params: Any, ctx: Any) -> Any:
+        raise RpcError(-32603, "client broke")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    client.peer.on_request("elicitation/create", broken)
+    await client.init(protocol, caps={"elicitation": {"form": {}}})
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    if protocol == 2:
+        await client.idle()
+    assert seen == ["error -32603"]
+    await client.close()
+
+
+async def test_v2_a_tool_call_finished_through_tool_call_update_stops_being_cancellable_work() -> None:
+    ids: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        call = await turn.tool_call("grep", cancellable=True)
+        ids.append(call.id)
+        await turn.tool_call_update({"toolCallId": call.id, "status": "completed"})
+        await turn.tool_call_update({"toolCallId": "raw-1", "title": "raw", "status": "in_progress"}, create=True)
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[2])
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    await client.idle()
+    with pytest.raises(RpcError, match="No running tool call"):
+        await client.peer.request("tool_call/cancel", {"sessionId": sid, "toolCallId": ids[0]})
+    # A raw create is tracked like tool_call(): known, though not cancellable.
+    with pytest.raises(RpcError, match="cannot be cancelled"):
+        await client.peer.request("tool_call/cancel", {"sessionId": sid, "toolCallId": "raw-1"})
+    await client.close()
+
+
+async def test_session_work_stops_listening_on_the_turn_when_an_item_finishes() -> None:
+    sent: list[Any] = []
+
+    async def send(update: dict[str, Any]) -> None:
+        sent.append(update)
+
+    work = SessionWork(send)
+    turn = AbortController()
+    for n in range(5):
+        await work.finish(work.add("tool_call", f"c{n}", False, turn.signal))
+    assert turn.signal._listeners == []
+
+
+def _flow(updates: list[dict[str, Any]]) -> list[str]:
+    """States and message text, in order."""
+    out: list[str] = []
+    for u in updates:
+        if u["sessionUpdate"] == "state_update":
+            out.append(u["state"])
+        elif u["sessionUpdate"] == "agent_message_chunk":
+            out.append(f"say:{u['content']['text']}")
+    return out
+
+
+async def test_v2_queue_prompts_a_turn_goes_idle_before_the_next_queued_one_starts() -> None:
+    async def prompt(turn: AgentTurn) -> str:
+        await sleep(10)
+        await turn.say(turn.text)
+        return "end_turn"
+
+    async def slow_idle(call: Any, next_: Any) -> Any:
+        # A slow write of the idle state: the next turn must still wait for it.
+        update = call.params.get("update") if isinstance(call.params, dict) else None
+        if isinstance(update, dict) and update.get("state") == "idle":
+            await sleep(20)
+        return await next_(call.params)
+
+    client = serve(prompt=prompt, protocols=[2], queue_prompts=True, peer={"outbound": [slow_idle]})
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "one"}]})
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "two"}]})
+    await client.idle(2)
+    assert _flow(client.updates()) == ["running", "say:one", "idle", "running", "say:two", "idle"]
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_prompt_handler_that_raises_fails_its_open_tool_calls(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool_call("grep")
+        raise ValueError("boom")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    if protocol == 1:
+        with pytest.raises(RpcError, match="boom"):
+            await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    else:
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+        assert (await client.idle())["stopReason"] == "error"
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["pending", "failed"]
+    await client.close()
+
+
+async def test_v2_a_turn_whose_running_state_fails_to_send_still_frees_the_session() -> None:
+    fail_next = True
+
+    async def outbound(call: Any, next_: Any) -> Any:
+        nonlocal fail_next
+        update = call.params.get("update") if isinstance(call.params, dict) else None
+        if fail_next and isinstance(update, dict) and update.get("sessionUpdate") == "state_update" and update.get("state") == "running":
+            fail_next = False
+            raise RuntimeError("send failed")
+        return await next_(call.params)
+
+    client = serve(prompt=lambda turn: "end_turn", protocols=[2], peer={"outbound": [outbound]})
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    assert (await client.idle())["stopReason"] == "error"
+    # Not refused as busy: the first turn ended.
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    assert (await client.idle(2))["stopReason"] == "end_turn"
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_handler_cancelled_through_a_task_ends_the_turn_cancelled(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> str:
+        async def work() -> None:
+            await turn.tool_call("grep")
+            await asyncio.sleep(30)
+
+        task = asyncio.ensure_future(work())
+        turn.signal.add_listener(lambda _reason: task.cancel())
+        await task  # raises CancelledError on session/cancel
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    answer = asyncio.ensure_future(client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}))
+    await until(lambda: any(u["sessionUpdate"] in ("tool_call", "tool_call_update") for u in client.updates()))
+    await client.peer.notify("session/cancel", {"sessionId": sid})
+    if protocol == 1:
+        assert await answer == {"stopReason": "cancelled"}
+    else:
+        await answer
+        assert (await client.idle())["stopReason"] == "cancelled"
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["pending", "failed"]
     await client.close()
 
 
@@ -1158,6 +1413,86 @@ async def test_a_closed_connection_stops_turns_and_closes_mcp_without_close_sess
     assert sorted(events) == ["mcp closed", "turn stopped"]
 
 
+async def test_session_close_aborts_an_mcp_connect_still_in_flight_instead_of_waiting_for_it() -> None:
+    events: list[str] = []
+    started = asyncio.Event()
+
+    class SlowConnector:
+        @property
+        def transports(self) -> list[str]:
+            return ["stdio"]
+
+        async def connect(self, server: Any, context: McpConnectContext) -> Any:
+            started.set()
+            assert context.signal is not None
+            await context.signal.wait()
+            events.append("connect aborted")
+            context.signal.throw_if_aborted()
+
+    async def prompt(turn: AgentTurn) -> str:
+        with contextlib.suppress(Exception):
+            await turn.mcp("files").list_tools()
+        return "cancelled"
+
+    client = serve(prompt=prompt, protocols=[1], mcp_connector=SlowConnector())
+    await client.init(1)
+    sid = await client.new_session(mcpServers=[SERVER])
+    turn = asyncio.ensure_future(client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}))
+    await started.wait()
+    assert await asyncio.wait_for(client.peer.request("session/close", {"sessionId": sid}), 1) == {}
+    assert events == ["connect aborted"]
+    await turn
+    await client.close()
+
+
+async def test_a_closed_connection_calls_connection_closed_with_its_open_sessions_after_their_teardown() -> None:
+    events: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        await turn.mcp("files").list_tools()
+        return "end_turn"
+
+    client = serve(
+        prompt=prompt,
+        protocols=[1],
+        mcp_connector=RecordingConnector(events),
+        close_session=lambda sid: events.append(f"closeSession {sid}"),
+        connection_closed=lambda ids: events.append(f"connectionClosed {','.join(sorted(ids))}"),
+    )
+    await client.init(1)
+    a = await client.new_session(mcpServers=[SERVER])
+    await client.peer.request("session/prompt", {"sessionId": a, "prompt": []})
+    b = await client.new_session()
+    closed = await client.new_session()
+    await client.peer.request("session/close", {"sessionId": closed})
+    await client.close()
+    await until(lambda: any(e.startswith("connectionClosed") for e in events))
+    assert events == [f"closeSession {closed}", "mcp closed", f"connectionClosed {','.join(sorted([a, b]))}"]
+
+
+async def test_session_new_returning_an_id_that_is_already_open_is_refused_and_the_open_session_is_kept() -> None:
+    events: list[str] = []
+    connector = RecordingConnector(events)
+
+    async def prompt(turn: AgentTurn) -> str:
+        await turn.mcp("files").list_tools()
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[1], mcp_connector=connector, new_session=lambda request: "fixed")
+    await client.init(1)
+    sid = await client.new_session(mcpServers=[SERVER])
+    assert await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}) == {"stopReason": "end_turn"}
+    with pytest.raises(RpcError) as info:
+        await client.new_session(mcpServers=[SERVER])
+    assert info.value.code == -32602
+    # The first session is untouched: same MCP connection, still usable.
+    assert await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}) == {"stopReason": "end_turn"}
+    assert connector.connects == 1 and events == []
+    await client.peer.request("session/close", {"sessionId": sid})
+    assert events == ["mcp closed"]
+    await client.close()
+
+
 async def test_mcp_connection_is_kept_for_the_session_and_unknown_servers_raise() -> None:
     events: list[str] = []
     connector = RecordingConnector(events)
@@ -1183,3 +1518,20 @@ async def test_mcp_connection_is_kept_for_the_session_and_unknown_servers_raise(
     assert errors[0] == 'The session has no MCP server "nope" (servers: files, web)'
     assert "which the connector does not support (stdio)" in errors[1]
     await client.close()
+
+
+async def test_a_part_failing_to_disconnect_still_lets_the_others_and_connection_closed_run() -> None:
+    from deft_subspace.acp.agent import _SessionLifecycle, _SessionPart
+
+    events: list[str] = []
+
+    def failing(_value: object, session: object) -> None:
+        raise RuntimeError("mcp close failed")
+
+    lifecycle = _SessionLifecycle(None, lambda ids: events.append(f"connectionClosed {','.join(sorted(ids))}"))
+    lifecycle.attach(_SessionPart(name="mcp", create=lambda s: None, disconnect=failing))
+    lifecycle.attach(_SessionPart(name="turns", create=lambda s: None, disconnect=lambda _v, s: events.append(f"turns {s.id}")))
+    lifecycle.open("a", [], "/")
+    with pytest.raises(RuntimeError, match="mcp close failed"):
+        await lifecycle.disconnect()
+    assert events == ["turns a", "connectionClosed a"]

@@ -250,6 +250,8 @@ class McpProvider:
             # No notification may follow the answer.
             done = True
             served.active.pop(request_id, None)
+            # Let go of the server's signal: it outlives the request.
+            signal.dispose()
 
     async def _run(
         self,

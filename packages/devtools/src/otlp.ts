@@ -13,7 +13,7 @@ import { spansFromTrace, type OtelApi } from '@deft-subspace/acp';
 import type { TraceRecord } from '@deft-subspace/kernel';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { resourceFromAttributes } from '@opentelemetry/resources';
-import { BatchSpanProcessor, TracerProvider, type ReadableSpan, type SpanExporter } from '@opentelemetry/sdk-trace';
+import { BatchSpanProcessor, TracerProvider, type ReadableSpan, type SpanExporter, type SpanProcessor } from '@opentelemetry/sdk-trace';
 
 export interface ExportTraceOptions {
   /** The OTLP traces endpoint, e.g. `http://localhost:4318/v1/traces`. */
@@ -25,10 +25,16 @@ export interface ExportTraceOptions {
   titles?: boolean;
   /** @internal Where the spans go instead of OTLP (tests). */
   exporter?: SpanExporter;
+  /** @internal How many spans may wait to be sent (tests). Default 100 000. */
+  maxQueueSize?: number;
 }
 
-/** Export the trace's spans; resolves with how many were sent once the collector took them, rejects if it did not. */
-export async function exportTrace(input: readonly unknown[], options: ExportTraceOptions = {}): Promise<{ spans: number }> {
+/**
+ * Export the trace's spans; resolves with how many were sent once the
+ * collector took them (and how many did not fit the queue and were dropped),
+ * rejects if the collector did not take them.
+ */
+export async function exportTrace(input: readonly unknown[], options: ExportTraceOptions = {}): Promise<{ spans: number; dropped: number }> {
   // As read from a file: only well-formed records.
   const records = input.filter(isRecord);
   const header = records.find((r) => r.kind === 'header');
@@ -50,10 +56,18 @@ export async function exportTrace(input: readonly unknown[], options: ExportTrac
     shutdown: () => exporter.shutdown(),
     ...(exporter.forceFlush ? { forceFlush: () => exporter.forceFlush!() } : {}),
   };
+  // Every span made, so the ones the batch queue drops when full are not lost silently.
+  let made = 0;
+  const counter: SpanProcessor = {
+    onStart: () => {},
+    onEnd: () => void made++,
+    forceFlush: async () => {},
+    shutdown: async () => {},
+  };
   const provider = new TracerProvider({
     resource: resourceFromAttributes({ 'service.name': options.serviceName ?? label ?? 'subspace' }),
     // Batched: one request per 512 spans, sent on the flush below.
-    spanProcessors: [new BatchSpanProcessor({ exporter: counting, maxExportBatchSize: 512, maxQueueSize: 100_000 })],
+    spanProcessors: [counter, new BatchSpanProcessor({ exporter: counting, maxExportBatchSize: 512, maxQueueSize: options.maxQueueSize ?? 100_000 })],
   });
   // This provider, not a global one: the export is self-contained.
   const api: OtelApi = {
@@ -72,7 +86,7 @@ export async function exportTrace(input: readonly unknown[], options: ExportTrac
     await provider.shutdown().catch(() => {});
   }
   if (failure) throw failure;
-  return { spans: count };
+  return { spans: count, dropped: Math.max(0, made - count) };
 }
 
 function isRecord(value: unknown): value is TraceRecord {

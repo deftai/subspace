@@ -92,12 +92,19 @@ for (const protocol of [1, 2] as const) {
     assert.deepEqual(seen[0]?.clientInfo, { name: 'tool-user', version: '0.0.0' });
     assert.equal(new Set(seen.map((c) => c.requestId)).size, seen.length);
 
+    const asked = seen.length;
     const slow = session.prompt('slow');
-    setTimeout(() => void slow.cancel(), 30);
+    // Cancelled once the client's tool is running (up to 2 s), then the agent's catch has run.
+    const poll = async (done: () => boolean) => {
+      for (let i = 0; i < 400 && !done(); i++) await new Promise((r) => setTimeout(r, 5));
+    };
+    await poll(() => seen.length > asked);
+    void slow.cancel();
     await slow.done;
+    await poll(() => (log.at(-1) as unknown[])[0] === 'slow');
     assert.deepEqual(log.at(-1), ['slow', 'aborted']);
     // The client's handler was aborted too.
-    for (let i = 0; i < 50 && !aborted.value; i++) await new Promise((r) => setTimeout(r, 5));
+    await poll(() => aborted.value);
     assert.equal(aborted.value, true);
     await client.close();
   });

@@ -98,6 +98,8 @@ for (const protocol of [1, 2] as const) {
 
   test(`v${protocol}: elicitation answers, fails closed, and cancels with the turn`, async () => {
     const answers: unknown[] = [];
+    let waiting!: () => void;
+    const waitAsked = new Promise<void>((resolve) => (waiting = resolve));
     const { client } = await pair(
       protocol,
       {
@@ -111,7 +113,10 @@ for (const protocol of [1, 2] as const) {
       {
         elicitation: async (request, signal) => {
           if (request.message === 'boom') throw new Error('UI crashed');
-          if (request.message === 'wait') return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ action: 'accept' })));
+          if (request.message === 'wait') {
+            waiting();
+            return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ action: 'accept' })));
+          }
           assert.equal(request.mode, 'form');
           return { action: 'accept', content: { name: 'Ada' } };
         },
@@ -119,7 +124,7 @@ for (const protocol of [1, 2] as const) {
     );
     const session = await client.newSession({ cwd: '/tmp' });
     const turn = session.prompt('go');
-    await sleep(40);
+    await waitAsked; // cancel while the third question is open
     await turn.cancel();
     await turn.done;
     assert.deepEqual(answers, [{ action: 'accept', content: { name: 'Ada' } }, { action: 'decline' }, { action: 'cancel' }]);
@@ -182,6 +187,31 @@ test('v1: terminals run inside the workspace, report output and exit, truncate, 
     assert.match(String(seen.refused), /refused to run rm/);
     assert.match(String(seen.outside), /outside the workspace/);
     await client.close();
+  } finally {
+    await terminals.dispose();
+    await rm(ws, { recursive: true, force: true });
+  }
+});
+
+test('workspaceTerminals: the output limit keeps the newest bytes, drops only a character it cut in half', async () => {
+  const ws = await mkdtemp(join(tmpdir(), 'deft-subspace-term-'));
+  const terminals = workspaceTerminals(ws);
+  const run = async (script: string, outputByteLimit: number) => {
+    const { terminalId } = await terminals.create({ sessionId: 's', command: process.execPath, args: ['-e', script], outputByteLimit });
+    await terminals.waitForExit({ sessionId: 's', terminalId });
+    return terminals.output({ sessionId: 's', terminalId });
+  };
+  try {
+    // 'ab' + U+FFFD (3 bytes) + '123456': 11 bytes.
+    const script = "process.stdout.write('ab\\uFFFD'); setTimeout(() => process.stdout.write('123456'), 20)";
+    // The cut falls before U+FFFD: a real one is kept.
+    assert.deepEqual(await run(script, 9), { output: '\uFFFD123456', truncated: true, exitStatus: { exitCode: 0, signal: null } });
+    // The cut falls inside it: its tail is dropped.
+    assert.equal((await run(script, 8)).output, '123456');
+    // Many small writes past the limit.
+    const many = await run("for (let i = 0; i < 3000; i++) process.stdout.write(String(i % 10))", 1000);
+    assert.equal(many.output.length, 1000);
+    assert.equal(many.output.slice(-3), '789');
   } finally {
     await terminals.dispose();
     await rm(ws, { recursive: true, force: true });

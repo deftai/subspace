@@ -11,13 +11,14 @@
   something else arrives or the turn ends.
 - `cancel()` tells the agent, answers its open permission questions with
   `cancelled`, and ends the turn if the agent does not confirm in time.
+- `history` (a prompt option) bounds what the turn keeps for a long turn; see `TurnHistory`.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
+from typing import Any, Literal, Union
 
 from .handlers import TextTracker, TurnHandlers, dispatch
 from .model import (
@@ -43,6 +44,34 @@ _ENDS = (*_TEXT, ToolCallEvent, PlanEvent, PermissionEvent, TerminalEvent)
 _END_OF = {MessageEvent: MessageEndEvent, ThoughtEvent: ThoughtEndEvent, UserMessageEvent: UserMessageEndEvent}
 
 
+TurnHistory = Union[Literal["all", "none"], int]
+"""What a turn keeps of its events, for `history` and for iterating it again: "all" (the
+default) keeps every event; a number keeps the last that many; "none" keeps none. An event is
+only dropped once every iteration running at the time (and the turn's handlers) has had it, so
+a running reader never misses one; an iteration started later begins at the oldest event kept.
+An iteration dropped mid-turn without ending it holds events back until it is garbage
+collected and asyncio closes it.
+`text`, `tool_calls` and the result are not affected."""
+
+
+class _Cursor:
+    __slots__ = ("index",)
+
+    def __init__(self, index: int) -> None:
+        #: The absolute index of the next event this iteration reads.
+        self.index = index
+
+
+def _handler_error(error: BaseException) -> BaseException:
+    """What the turn raises for a failed handler: its error, or, for a cancelled one, an error that
+    does not look like the awaiting task being cancelled."""
+    if not isinstance(error, asyncio.CancelledError):
+        return error
+    failure = RuntimeError("A turn handler was cancelled")
+    failure.__cause__ = error
+    return failure
+
+
 class TurnView:
     """What the turn knows so far, for `text` and `tool_calls`."""
 
@@ -52,14 +81,37 @@ class TurnView:
 
 
 class Turn:
-    def __init__(self, turn_id: str, on_cancel: Callable[[], Awaitable[None]], view: TurnView | None = None) -> None:
+    def __init__(
+        self,
+        turn_id: str,
+        on_cancel: Callable[[], Awaitable[None]],
+        view: TurnView | None = None,
+        spawn: Callable[[Coroutine[Any, Any, Any]], Any] | None = None,
+        history: TurnHistory = "all",
+    ) -> None:
         self.id = turn_id
-        self._events: list[TurnEvent] = []
+        #: Events kept, from `_head` on; `_dropped` events came before them.
+        self._events: list[TurnEvent | None] = []
+        self._head = 0
+        self._dropped = 0
+        #: How many events to keep; None keeps all.
+        self._history: int | None = None
+        if history == "none":
+            self._history = 0
+        elif history != "all":
+            if not isinstance(history, int) or isinstance(history, bool) or history < 0:
+                raise ValueError(f"history must be 'all', 'none' or a whole number >= 0, not {history!r}")
+            self._history = history
+        #: Where each running iteration is.
+        self._cursors: set[_Cursor] = set()
         self._waiters: list[asyncio.Future[None]] = []
         self._finished: tuple[bool, Any] | None = None
         self._on_cancel = on_cancel
         self._view = view
         self._cancelling: asyncio.Task[None] | None = None
+        #: Runs work the turn starts itself (the session's task spawner), keeping a reference to it.
+        self._spawn = spawn or self._keep
+        self._tasks: set[asyncio.Task[Any]] = set()
         loop = asyncio.get_running_loop()
         self._done: asyncio.Future[TurnResult] = loop.create_future()
         # Iterating without awaiting the result must not log "exception was never retrieved".
@@ -81,8 +133,13 @@ class Turn:
 
     @property
     def history(self) -> list[TurnEvent]:
-        """Events so far."""
-        return list(self._events)
+        """Events so far (the ones kept, with the `history` option)."""
+        return self._events[self._head :]  # type: ignore[return-value]  # entries from _head on are events
+
+    @property
+    def _total(self) -> int:
+        """How many events the turn has had, kept or not."""
+        return self._dropped + len(self._events) - self._head
 
     @property
     def text(self) -> str:
@@ -119,20 +176,28 @@ class Turn:
         return self._cancelling is not None
 
     async def __aiter__(self) -> AsyncIterator[TurnEvent]:
-        index = 0
-        while True:
-            while index < len(self._events):
-                event = self._events[index]
-                index += 1
-                yield event
-            if self._finished is not None:
-                ok, value = self._finished
-                if not ok:
-                    raise value
-                return
-            waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            self._waiters.append(waiter)
-            await waiter
+        cursor = _Cursor(self._dropped)
+        self._cursors.add(cursor)
+        try:
+            while True:
+                while cursor.index < self._total:
+                    event = self._events[self._head + cursor.index - self._dropped]
+                    cursor.index += 1
+                    assert event is not None
+                    yield event
+                if self._finished is not None:
+                    ok, value = self._finished
+                    if not ok:
+                        raise value
+                    return
+                # Caught up: what this reader held back can go.
+                self._trim()
+                waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                self._waiters.append(waiter)
+                await waiter
+        finally:
+            self._cursors.discard(cursor)
+            self._trim()
 
     # ---- internal ------------------------------------------------------------
 
@@ -150,7 +215,25 @@ class Turn:
             if isinstance(event, _TEXT):
                 self._open = event
             self._events.append(event)
+        self._trim()
         self._wake()
+
+    def _trim(self) -> None:
+        """Drop events past `history` that every running iteration has had."""
+        if self._history is None:
+            return
+        until = min([self._total - self._history, *(c.index for c in self._cursors)])
+        if until <= self._dropped:
+            return
+        count = until - self._dropped
+        for i in range(self._head, self._head + count):
+            self._events[i] = None
+        self._head += count
+        self._dropped = until
+        # A new list once most of it is dropped, so dropping stays cheap.
+        if self._head > 64 and self._head * 2 > len(self._events):
+            del self._events[: self._head]
+            self._head = 0
 
     def _close(self, complete: bool) -> None:
         """End the open message, if any."""
@@ -164,6 +247,7 @@ class Turn:
         if self._finished is not None:
             return
         self._close(result.stop_reason == "end_turn" and not result.cancelled)
+        self._trim()
         self._finished = (True, result)
         self._wake()
         self._settle(lambda: self._done.done() or self._done.set_result(result))
@@ -172,6 +256,7 @@ class Turn:
         if self._finished is not None:
             return
         self._close(False)
+        self._trim()
         self._finished = (False, error)
         self._wake()
         self._settle(lambda: self._done.done() or self._done.set_exception(error))
@@ -190,26 +275,44 @@ class Turn:
                     self._dispatched += 1
                     for notify in list(self._progress):
                         notify()
-            except Exception as error:  # noqa: BLE001
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as error:  # noqa: BLE001
+                task = asyncio.current_task()
+                # This task being cancelled is handled when it ends (`ended`).
+                if isinstance(error, asyncio.CancelledError) and task is not None and task.cancelling():
+                    raise
                 # The turn's own failure ends the loop too; only a handler's error is kept.
                 if self._finished is None or self._finished[0] or self._finished[1] is not error:
-                    self._handler_failed.append(error)
-                    asyncio.ensure_future(self.cancel())
+                    self._handler_failed.append(_handler_error(error))
+                    self._spawn(self.cancel())
+
+        def ended(task: asyncio.Task[None]) -> None:
+            # Handlers that will never run again are a failure, as a handler's error is.
+            if task.cancelled() and not self._handler_failed:
+                self._handler_failed.append(_handler_error(asyncio.CancelledError()))
+                if self._finished is None:
+                    self._spawn(self.cancel())
+            # Nothing waits for handlers that will not run again.
+            for notify in list(self._progress):
+                notify()
 
         self._observer = asyncio.get_running_loop().create_task(run(), name=f"{self.id}:handlers")
+        self._observer.add_done_callback(ended)
 
     async def caught_up(self, max_ms: float = 1000) -> None:
         """Wait until the handlers have run for every event so far (at most `max_ms`), so that
         a question to the user comes after what the agent said before asking it."""
-        if self._observer is None or self._finished is not None:
+        observer = self._observer
+        if observer is None or observer.done() or self._finished is not None:
             return
-        target = len(self._events)
+        target = self._total
         if self._dispatched >= target:
             return
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         def check() -> None:
-            if (self._dispatched >= target or self._finished is not None) and not future.done():
+            if (self._dispatched >= target or self._finished is not None or observer.done()) and not future.done():
                 future.set_result(None)
 
         self._progress.append(check)
@@ -235,6 +338,12 @@ class Turn:
                 complete()
 
         observer.add_done_callback(after)
+
+    def _keep(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def _wake(self) -> None:
         waiters, self._waiters = self._waiters, []

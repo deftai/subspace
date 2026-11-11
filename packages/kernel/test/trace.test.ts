@@ -34,3 +34,50 @@ test('parseTrace names a bad line and requires a header', () => {
   assert.throws(() => parseTrace('{"v":1,"kind":"note","t":0,"text":"x"}\n'), /starts with a header/);
   assert.throws(() => parseTrace('{"v":9,"kind":"header"}\n'), /line 1 is not a version 1/);
 });
+
+test('a trace record is a copy: changing the message later does not change it', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  const bytes = new Uint8Array([1, 2]);
+  const message = { jsonrpc: '2.0', method: 'm', params: { list: [{ a: 1 }], nothing: null, bytes, when: new Date(0) } };
+  tap('out', message);
+  message.params.list[0]!.a = 2;
+  message.params.list.push({ a: 3 });
+  bytes[0] = 9;
+  const recorded = (records[1] as { msg: typeof message }).msg;
+  assert.deepEqual(recorded.params.list, [{ a: 1 }]);
+  assert.equal(recorded.params.nothing, null);
+  assert.deepEqual([...recorded.params.bytes], [1, 2]);
+  assert.ok(recorded.params.when instanceof Date);
+  assert.notEqual(recorded.params, message.params);
+});
+
+test('a trace record keeps an own __proto__ field of parsed JSON', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  tap('in', JSON.parse('{"jsonrpc":"2.0","method":"m","params":{"__proto__":{"x":1},"y":2}}'));
+  const params = (records[1] as { msg: { params: Record<string, unknown> } }).msg.params;
+  assert.deepEqual(Object.keys(params), ['__proto__', 'y']);
+  assert.equal(Object.getPrototypeOf(params), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(params, '__proto__')?.value, { x: 1 });
+});
+
+test('a trace tap records a cyclic or uncloneable message instead of throwing', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  const cyclic: Record<string, unknown> = { jsonrpc: '2.0', method: 'm', params: { list: [] as unknown[] } };
+  (cyclic.params as { list: unknown[] }).list.push(cyclic);
+  tap('out', cyclic);
+  const recorded = (records[1] as { msg: typeof cyclic }).msg;
+  assert.notEqual(recorded, cyclic);
+  assert.equal((recorded.params as { list: unknown[] }).list[0], recorded);
+  // Deeply nested, but not cyclic: copied all the same.
+  let deep: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 20_000; i++) deep = { next: deep };
+  tap('out', deep);
+  assert.equal(records.length, 3);
+  // Not cloneable at all: recorded as it is.
+  const withFunction = { method: 'm', params: new (class Params { f = () => {} })() };
+  tap('in', withFunction);
+  assert.equal((records[3] as { msg: unknown }).msg, withFunction);
+});

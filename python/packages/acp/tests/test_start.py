@@ -145,3 +145,56 @@ async def test_open_session_switches_to_an_offered_mode():
     opened = await open_session(client, cwd="/w")
     assert opened.mode_warning is None
     await client.close()
+
+
+async def test_stdio_writes_go_through_one_writer_whole_and_in_order_even_when_a_send_is_cancelled():
+    import asyncio
+    import threading
+
+    from deft_subspace.acp.start import _StdioChannel
+
+    class Out:
+        def __init__(self) -> None:
+            self.data = bytearray()
+            self.flushes = 0
+            self.threads: set[str] = set()
+            self.slow = threading.Event()
+
+        def write(self, data: bytes) -> None:
+            self.threads.add(threading.current_thread().name)
+            if data == b"slow\n":
+                self.slow.wait(1)
+            for byte in data:  # a byte at a time: interleaved writes would show
+                self.data.append(byte)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    out = Out()
+    channel = _StdioChannel(reader=None, writer=out)
+    slow = asyncio.ensure_future(channel.send(b"slow\n"))
+    await asyncio.sleep(0.01)
+    slow.cancel()  # its write is under way: it still goes out whole, first
+    sends = [asyncio.ensure_future(channel.send(f"frame {i}\n".encode())) for i in range(50)]
+    out.slow.set()
+    await asyncio.gather(*sends)
+    await channel.close()
+    assert out.data.decode().split("\n")[:-1] == ["slow", *(f"frame {i}" for i in range(50))]
+    assert out.threads == {"serve_stdio:stdout"}
+    # Frames queued together share a flush.
+    assert out.flushes < 52
+    with pytest.raises(Exception):
+        await channel.send(b"late\n")
+
+
+async def test_start_trace_is_buffered_and_flushed_soon_after(tmp_path):
+    import asyncio
+
+    from deft_subspace.acp.start import _Trace
+
+    trace = _Trace(str(tmp_path / "t.jsonl"), "x", "/").open()
+    for i in range(100):
+        trace.tap("out", {"jsonrpc": "2.0", "method": "n", "params": {"i": i}})
+    await asyncio.sleep(_Trace.FLUSH_S * 3)
+    assert len(parse_trace((tmp_path / "t.jsonl").read_text())) == 101
+    trace.close()

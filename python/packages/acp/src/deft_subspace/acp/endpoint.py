@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field, replace
 from typing import Any, Generic, Literal, TypeVar
@@ -229,8 +230,10 @@ class _Endpoint:
             for key in layer.provides:
                 owners[key.name] = layer.name
 
-        # Notifications are serialized: hooks then write, one at a time.
-        self._notify_tail: asyncio.Future[Any] | None = None
+        # Notifications are serialized: hooks then write, one at a time, by one sender task
+        # that runs while any are queued.
+        self._notify_queue: deque[tuple[str, Any, asyncio.Future[None]]] = deque()
+        self._notify_sender: asyncio.Task[None] | None = None
         self._outbound_hooks = [l for l in layers if l.outbound is not None]
         self._inbound_hooks = [l for l in layers if l.inbound is not None]
 
@@ -283,21 +286,39 @@ class _Endpoint:
         # No hooks, nothing to reorder: the peer writes in call order.
         if not self._outbound_hooks:
             return self.peer.notify(method, params)
-        previous = self._notify_tail
+        sent: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        sent.add_done_callback(_quiet)
+        self._notify_queue.append((method, params, sent))
+        if self._notify_sender is None or self._notify_sender.done():
+            self._notify_sender = _spawn(self._send_notifications())
+        return sent
+
+    async def _send_notifications(self) -> None:
         peer = self.peer
 
         async def send(call: EndpointCall) -> None:
             await peer.notify(call.method, call.params)
 
-        async def run() -> None:
-            if previous is not None:
-                await asyncio.wait({previous})
-            await self.outbound_chain("notification", EndpointCall(method, params), send)
-
-        sent = _spawn(run())
-        sent.add_done_callback(_quiet)
-        self._notify_tail = sent
-        return sent
+        queue = self._notify_queue
+        try:
+            while queue:
+                method, params, sent = queue[0]
+                # One its caller cancelled before its turn is not sent.
+                if not sent.done():
+                    try:
+                        await self.outbound_chain("notification", EndpointCall(method, params), send)
+                    except Exception as error:  # noqa: BLE001
+                        if not sent.done():
+                            sent.set_exception(error)
+                    else:
+                        if not sent.done():
+                            sent.set_result(None)
+                queue.popleft()
+        except asyncio.CancelledError:
+            # The sender itself was cancelled (the loop is shutting down): nothing more goes out.
+            while queue:
+                queue.popleft()[2].cancel()
+            raise
 
     # ---- inbound -------------------------------------------------------------
 

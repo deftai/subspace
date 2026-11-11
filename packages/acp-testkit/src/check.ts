@@ -63,3 +63,18 @@ export function within<T, F>(promise: Promise<T>, ms: number, fallback: F): Prom
 }
 
 export const TIMED_OUT = Symbol('timed out');
+
+/**
+ * @internal The temporary folder, as Node's os.tmpdir() finds it, without
+ * importing node:os (this entry point runs outside Node too).
+ */
+export function defaultTempDir(): string {
+  const proc = (globalThis as { process?: { platform?: string; env?: Record<string, string | undefined> } }).process;
+  const env = proc?.env ?? {};
+  if (proc?.platform === 'win32') {
+    const dir = env.TEMP || env.TMP || `${env.SystemRoot || env.windir || 'C:\\Windows'}\\temp`;
+    return dir.length > 1 && dir.endsWith('\\') && !dir.endsWith(':\\') ? dir.slice(0, -1) : dir;
+  }
+  const dir = env.TMPDIR || env.TMP || env.TEMP || '/tmp';
+  return dir.length > 1 && dir.endsWith('/') ? dir.slice(0, -1) : dir;
+}

@@ -12,6 +12,8 @@ import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Union
 
+from .lazy import Lazy, LazyField, stored
+
 if TYPE_CHECKING:
     from acp import schema as v1
     from acp.experimental.v2 import schema as v2
@@ -65,12 +67,19 @@ class ToolCall:
     cancellable: bool = False
 
     def snapshot(self) -> ToolCall:
-        """A copy that later updates do not change."""
-        return ToolCall(
+        """A copy that later updates do not change.
+
+        Content only grows by appending (a replacement is a new list), so the copy keeps
+        the list and its length and copies that much the first time its `content` is read;
+        from then on `content` is the copy's own list. The items are shared, as in any
+        shallow copy; so is the list until it is read: change a live tool call's `content`
+        in place (not through updates) and snapshots not yet read see the change.
+        """
+        source = stored(self, "content")
+        snap = ToolCall(
             id=self.id,
             title=self.title,
             status=self.status,
-            content=list(self.content),
             locations=list(self.locations),
             name=self.name,
             kind=self.kind,
@@ -78,6 +87,43 @@ class ToolCall:
             raw_output=self.raw_output,
             cancellable=self.cancellable,
         )
+        snap.__dict__["content"] = source if isinstance(source, _ContentAt) else _ContentAt(source, len(source))
+        return snap
+
+
+class _ContentAt(Lazy):
+    """A tool call's content list as it was: the list and its length at the time."""
+
+    __slots__ = ("items", "length")
+
+    def __init__(self, items: list[Any], length: int) -> None:
+        self.items = items
+        self.length = length
+
+    def read(self) -> list[Any]:
+        return self.items[: self.length]
+
+
+# Read through the descriptor: a snapshot's content is copied the first time it is read.
+setattr(ToolCall, "content", LazyField("content", None))
+
+
+class TextAt(Lazy):
+    """A message's text as it was: its log and the length it had, read when looked at."""
+
+    __slots__ = ("log", "length")
+
+    def __init__(self, log: Any, length: int) -> None:
+        self.log = log
+        self.length = length
+
+    def read(self) -> str:
+        return self.log.text(self.length)
+
+
+def text_source(event: Any) -> Any:
+    """@internal The stored `text` of an event: a str or a `TextAt`, without reading it."""
+    return stored(event, "text", "")
 
 
 # ---- background work (v2) ----------------------------------------------------
@@ -211,6 +257,12 @@ class UserMessageEvent:
     delta: str
     text: str
     type: Literal["user_message"] = field(default="user_message", init=False)
+
+
+# A text event's text may be a `TextAt`, read the first time it is looked at, so a turn's
+# events do not each keep a copy of the message so far.
+for _cls in (MessageEvent, ThoughtEvent, UserMessageEvent):
+    setattr(_cls, "text", LazyField("text", ""))
 
 
 @dataclass(frozen=True)
@@ -354,6 +406,7 @@ class TurnResult:
     #: True when the turn was cancelled from this side.
     cancelled: bool
     #: True when the agent did not confirm a cancel in time and the turn was ended here.
+    #: Queued prompts then wait for its confirmation (`session.draining`).
     forced: bool = False
     #: v2: the error an `error` stop carried.
     error: Any = None
