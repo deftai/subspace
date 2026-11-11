@@ -155,12 +155,17 @@ class _Pending:
 
 #: Python 3.12+ can start a task eagerly: it runs at once, in its own task, until it first
 #: waits, so a write or a handler that does not wait costs no trip through the event loop.
+#:
+#: Not when the loop has a task factory (`loop.set_task_factory`): an eager task would
+#: bypass it, so then tasks are created as usual. And a handler that raises SystemExit or
+#: KeyboardInterrupt before its first `await` raises it inside the read loop, which ends
+#: with it; asyncio lets it out of the event loop then, as it does from a lazy task.
 _EAGER = sys.version_info >= (3, 12)
 
 
 def _new_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
     loop = asyncio.get_running_loop()
-    if _EAGER:
+    if _EAGER and loop.get_task_factory() is None:
         return asyncio.Task(coroutine, loop=loop, name=name, eager_start=True)  # type: ignore[call-arg]
     return loop.create_task(coroutine, name=name)
 

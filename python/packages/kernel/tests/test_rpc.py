@@ -594,6 +594,29 @@ async def test_a_write_to_an_idle_channel_and_a_handler_that_does_not_wait_need_
     await peer.close()
 
 
+async def test_a_custom_task_factory_still_makes_the_handler_and_writer_tasks():
+    loop = asyncio.get_running_loop()
+    made: list[str] = []
+
+    def factory(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        made.append(kwargs.get("name") or "")
+        return asyncio.Task(coro, loop=loop, **kwargs)
+
+    end = Raw()
+    loop.set_task_factory(factory)  # type: ignore[arg-type]
+    try:
+        peer = RpcPeer(end.channel, name="p")
+        peer.on_request("echo", lambda params, _context: params)
+        peer.start()
+        await end.send({"jsonrpc": "2.0", "id": 1, "method": "echo", "params": 1})
+        await tick(5)
+        assert {"jsonrpc": "2.0", "id": 1, "result": 1} in end.sent
+        assert "p:echo" in made and "p:write" in made
+        await peer.close()
+    finally:
+        loop.set_task_factory(None)
+
+
 async def test_nothing_more_is_dispatched_once_a_handler_closes_the_peer():
     # On 3.12+ a handler starts eagerly, inside the read loop: once one closes the peer, the
     # messages already buffered behind it must not be dispatched on the closed connection.
