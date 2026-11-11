@@ -120,8 +120,7 @@ export class TurnProjection {
         this.lastKind = 'other';
         const applied = this.terminals.apply(update);
         if (!applied) return { events: [] };
-        const { terminal, appended, replaced } = applied;
-        return { events: [{ type: 'terminal', terminal: { ...terminal }, ...(appended ? { appended } : {}), replaced }] };
+        return { events: [this.terminalEvent(applied)] };
       }
       case 'usage_update':
         return { events: [{ type: 'usage', used: Number(update.used), size: Number(update.size), cost: update.cost }] };
@@ -270,10 +269,15 @@ export class TurnProjection {
     for (const next of updates) {
       const applied = this.terminals.apply(next);
       if (!applied) continue;
-      const { terminal, appended, replaced } = applied;
-      events.push({ type: 'terminal', terminal: { ...terminal }, ...(appended ? { appended } : {}), replaced });
+      events.push(this.terminalEvent(applied));
     }
     return events;
+  }
+
+  /** A terminal event: a snapshot whose output is read from the shared log, not copied. */
+  private terminalEvent(applied: NonNullable<ReturnType<Terminals['apply']>>): TurnEvent {
+    const { terminal, appended, replaced } = applied;
+    return { type: 'terminal', terminal: this.terminals.snapshot(terminal.id)!, ...(appended ? { appended } : {}), replaced };
   }
 
   private toolChunk(update: Update): TurnEvent[] {

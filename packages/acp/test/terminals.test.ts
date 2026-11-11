@@ -9,6 +9,8 @@ import { test } from 'node:test';
 import * as officialV1 from '@agentclientprotocol/sdk';
 import * as officialV2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AcpClient, terminalText, type TurnEvent } from '@deft-subspace/acp';
+import { TurnProjection } from '../src/projection.ts';
+import { Terminals } from '../src/terminals.ts';
 import { byteLink } from './helpers.ts';
 
 const b64 = (bytes: Uint8Array | string) => Buffer.from(bytes).toString('base64');
@@ -186,4 +188,38 @@ test('v1 agent terminals: a terminal gets its command when the tool call gets it
   assert.deepEqual(commands, [undefined, 'npm test']);
   assert.equal(session.terminals.get('t')?.command, 'npm test');
   await client.close();
+});
+
+test('terminal output: chunks are stored once, events share them, memory stays linear', () => {
+  const terminals = new Terminals(64 * 1024);
+  const projection = new TurnProjection('t', terminals);
+  const events: Array<Extract<TurnEvent, { type: 'terminal' }>> = [];
+  const chunk = (i: number) => Buffer.alloc(1000, 48 + (i % 10));
+  for (let i = 0; i < 500; i++) {
+    for (const event of projection.apply({ sessionUpdate: 'terminal_output_chunk', terminalId: 'T', data: b64(chunk(i)) }).events) {
+      if (event.type === 'terminal') events.push(event);
+    }
+  }
+  // The event's output is read from the shared store, not a copy per event.
+  assert.equal(typeof Object.getOwnPropertyDescriptor(events[0]!.terminal, 'output')?.get, 'function');
+  // Kept output is capped and stored in a few segments, not one buffer per chunk.
+  const storage = terminals.storage('T')!;
+  assert.equal(storage.bytes, 64 * 1024);
+  assert.ok(storage.segments <= 4, `segments ${storage.segments}`);
+  assert.ok(storage.capacity <= 3 * 64 * 1024, `capacity ${storage.capacity}`);
+  // Every snapshot still has the output as it was then, capped from the front.
+  const expected = (n: number) => Buffer.concat(Array.from({ length: n }, (_, i) => chunk(i))).subarray(-64 * 1024);
+  for (const n of [1, 2, 65, 66, 300, 500]) assert.deepEqual(Buffer.from(events[n - 1]!.terminal.output), expected(n), `after ${n} chunks`);
+  assert.deepEqual(Buffer.from(terminals.get('T')!.output), expected(500));
+  // A snapshot spreads and serializes like a plain object.
+  assert.equal({ ...events[0]!.terminal }.output.length, 1000);
+  assert.equal(Object.keys(JSON.parse(JSON.stringify(events[0]!.terminal)).output).length, 1000);
+  // A replacing snapshot starts over; earlier events keep theirs.
+  projection.apply({ sessionUpdate: 'terminal_update', terminalId: 'T', output: { data: b64('fresh') } });
+  assert.equal(terminalText(terminals.get('T')!), 'fresh');
+  assert.deepEqual(Buffer.from(events[499]!.terminal.output), expected(500));
+  // One chunk larger than the cap keeps its tail.
+  projection.apply({ sessionUpdate: 'terminal_output_chunk', terminalId: 'T', data: b64(Buffer.alloc(70 * 1024, 120)) });
+  assert.equal(terminals.get('T')!.output.length, 64 * 1024);
+  assert.equal(terminals.get('T')!.output.at(-1), 120);
 });
