@@ -404,6 +404,7 @@ class TurnResult:
     #: True when the turn was cancelled from this side.
     cancelled: bool
     #: True when the agent did not confirm a cancel in time and the turn was ended here.
+    #: Queued prompts then wait for its confirmation (`session.draining`).
     forced: bool = False
     #: v2: the error an `error` stop carried.
     error: Any = None

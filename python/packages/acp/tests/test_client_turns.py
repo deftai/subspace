@@ -87,9 +87,11 @@ async def test_v2_a_force_ended_turns_late_updates_and_idle_do_not_land_in_the_n
     r1 = await first
     assert r1.forced
     assert not session.busy
+    assert session.draining, "the queued prompt waits for the confirmation"
     confirmed.set()
     r2 = await second
     assert (r2.stop_reason, r2.text) == ("end_turn", "second turn answer")
+    assert not session.draining
     await client.close()
 
 

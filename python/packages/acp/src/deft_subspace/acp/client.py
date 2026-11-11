@@ -923,6 +923,13 @@ class Session:
         return self._current is not None
 
     @property
+    def draining(self) -> bool:
+        """A turn ended here without the agent's confirmation (`forced`) is still waited for:
+        prompts sent now are queued until the agent confirms it, or for at most twice
+        `cancel_grace_ms`."""
+        return isinstance(self._state, _Draining)
+
+    @property
     def _progress(self) -> _Running | None:
         """The running (or cancelling) turn's progress, if any."""
         return self._state if isinstance(self._state, _Running) else None

@@ -965,6 +965,15 @@ export class Session {
     return this.current !== undefined;
   }
 
+  /**
+   * A turn ended here without the agent's confirmation (`forced`) is still
+   * waited for: prompts sent now are queued until the agent confirms it, or
+   * for at most twice `cancelGraceMs`.
+   */
+  get draining(): boolean {
+    return this.state.phase === 'draining';
+  }
+
   /** The running (or cancelling) turn's progress, if any. */
   private get progress(): Progress | undefined {
     const state = this.state;

@@ -54,10 +54,12 @@ test("v2: a force-ended turn's late updates and idle do not land in the next tur
   const r1 = await first.done;
   assert.equal(r1.forced, true);
   assert.equal(session.busy, false);
+  assert.equal(session.draining, true, 'the queued prompt waits for the confirmation');
   confirm();
   const r2 = await second.done;
   assert.equal(r2.stopReason, 'end_turn');
   assert.equal(r2.text, 'second turn answer');
+  assert.equal(session.draining, false);
   await client.close();
 });
 

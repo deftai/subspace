@@ -147,7 +147,10 @@ export interface TurnResult {
   toolCalls: ToolCall[];
   /** True when the turn was cancelled from this side. */
   cancelled: boolean;
-  /** True when the agent did not confirm a cancel in time and the turn was ended here. */
+  /**
+   * True when the agent did not confirm a cancel in time and the turn was ended
+   * here. Queued prompts then wait for its confirmation (`session.draining`).
+   */
   forced?: boolean;
   /** v2: the error an `error` stop carried. */
   error?: unknown;

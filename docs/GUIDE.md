@@ -150,7 +150,7 @@ setTimeout(() => void turn.cancel(), 500);
 const result = await turn.done; // stopReason 'cancelled'
 ```
 
-`turn.cancel()` sends `session/cancel` and answers open permission questions `cancelled`. If the agent doesn't confirm within `timeouts.cancelGraceMs` (default 10 s), the turn ends here with `forced: true`, and open tool calls are marked failed.
+`turn.cancel()` sends `session/cancel` and answers open permission questions `cancelled`. If the agent doesn't confirm within `timeouts.cancelGraceMs` (default 10 s), the turn ends here with `forced: true`, and open tool calls are marked failed. Prompts queued after it wait until the agent does confirm it, for at most twice `cancelGraceMs`; `session.draining` is true while they wait.
 
 ## Limits
 
