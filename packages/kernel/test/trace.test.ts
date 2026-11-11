@@ -34,3 +34,20 @@ test('parseTrace names a bad line and requires a header', () => {
   assert.throws(() => parseTrace('{"v":1,"kind":"note","t":0,"text":"x"}\n'), /starts with a header/);
   assert.throws(() => parseTrace('{"v":9,"kind":"header"}\n'), /line 1 is not a version 1/);
 });
+
+test('a trace record is a copy: changing the message later does not change it', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  const bytes = new Uint8Array([1, 2]);
+  const message = { jsonrpc: '2.0', method: 'm', params: { list: [{ a: 1 }], nothing: null, bytes, when: new Date(0) } };
+  tap('out', message);
+  message.params.list[0]!.a = 2;
+  message.params.list.push({ a: 3 });
+  bytes[0] = 9;
+  const recorded = (records[1] as { msg: typeof message }).msg;
+  assert.deepEqual(recorded.params.list, [{ a: 1 }]);
+  assert.equal(recorded.params.nothing, null);
+  assert.deepEqual([...recorded.params.bytes], [1, 2]);
+  assert.ok(recorded.params.when instanceof Date);
+  assert.notEqual(recorded.params, message.params);
+});
