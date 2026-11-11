@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import sys
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -152,6 +153,18 @@ class _Pending:
     cleanups: list[Callable[[], None]] = field(default_factory=list)
 
 
+#: Python 3.12+ can start a task eagerly: it runs at once, in its own task, until it first
+#: waits, so a write or a handler that does not wait costs no trip through the event loop.
+_EAGER = sys.version_info >= (3, 12)
+
+
+def _new_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
+    loop = asyncio.get_running_loop()
+    if _EAGER:
+        return asyncio.Task(coroutine, loop=loop, name=name, eager_start=True)  # type: ignore[call-arg]
+    return loop.create_task(coroutine, name=name)
+
+
 def _id_key(value: Any) -> Any:
     # 1 and 1.0 are the same JSON number; "1" is not.
     if isinstance(value, float) and value.is_integer():
@@ -213,10 +226,11 @@ class RpcPeer:
         self._close_listeners: list[Callable[[CloseInfo], None]] = []
         self._read_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
-        # Writes go out in the order they were made, one at a time.
+        # Writes go out in the order they were made, one at a time: a writer task runs while
+        # there is something to write (and closes the channel once the peer has closed).
         self._outbox: deque[tuple[dict[str, Any], asyncio.Future[None]]] = deque()
         self._writer_task: asyncio.Task[None] | None = None
-        self._writer_wake: asyncio.Event | None = None
+        self._writing = False
 
     # ---- state ---------------------------------------------------------------
 
@@ -359,6 +373,8 @@ class RpcPeer:
 
     def _run_outbound(self, call: Call, send: Callable[[Any], Awaitable[Any]]) -> Awaitable[Any]:
         chain = self._outbound_chain
+        if not chain:
+            return send(call.params)
 
         def dispatch(index: int, params: Any) -> Awaitable[Any]:
             if index >= len(chain):
@@ -542,7 +558,14 @@ class RpcPeer:
                     return await _resolve(handler(params, context))
 
                 try:
-                    result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
+                    if self._inbound_chain:
+                        result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
+                    elif handler is None:
+                        raise RpcError.method_not_found(method)
+                    else:
+                        result = handler(params, context)
+                        if inspect.isawaitable(result):
+                            result = await result
                     reply = self._message(id=request_id, result=result)
                 except asyncio.CancelledError:
                     if self._state != "closed":
@@ -569,7 +592,8 @@ class RpcPeer:
                     self._finish(CloseInfo("remote-ended"))
 
         self._running += 1
-        self._spawn(run(), f"{self.name}:{method}")
+        # Started eagerly where it can be: a handler that answers without waiting answers now.
+        self._spawn(run(), f"{self.name}:{method}", eager=True)
 
     def _handle_notification(self, method: str, params: Any) -> None:
         cancel = self._cancel_inbound
@@ -626,10 +650,11 @@ class RpcPeer:
 
     # ---- plumbing ------------------------------------------------------------
 
-    def _spawn(self, coroutine: Any, name: str) -> asyncio.Task[Any]:
-        task = asyncio.get_running_loop().create_task(coroutine, name=name)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+    def _spawn(self, coroutine: Any, name: str, *, eager: bool = False) -> asyncio.Task[Any]:
+        task = _new_task(coroutine, name) if eager else asyncio.get_running_loop().create_task(coroutine, name=name)
+        if not task.done():
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return task
 
     @staticmethod
@@ -666,16 +691,20 @@ class RpcPeer:
         future.add_done_callback(lambda f: f.cancelled() or f.exception())
 
     def _ensure_writer(self) -> None:
-        if self._writer_wake is None:
-            self._writer_wake = asyncio.Event()
-        self._writer_wake.set()
-        if self._writer_task is None or self._writer_task.done():
-            self._writer_task = asyncio.get_running_loop().create_task(self._write_loop(), name=f"{self.name}:write")
+        """Start the writer unless it is running; it writes what is queued (in order), then
+        closes the channel if the peer has closed. Started eagerly where it can be, so a write
+        to a channel that takes it at once is done before this returns."""
+        if self._writing:
+            return
+        self._writing = True
+        try:
+            self._writer_task = _new_task(self._write_loop(), f"{self.name}:write")
+        except BaseException:
+            self._writing = False
+            raise
 
     async def _write_loop(self) -> None:
-        wake = self._writer_wake
-        assert wake is not None
-        while True:
+        try:
             while self._outbox:
                 message, future = self._outbox.popleft()
                 try:
@@ -698,9 +727,8 @@ class RpcPeer:
                     await self._channel.close()
                 except Exception:  # noqa: BLE001
                     pass
-                return
-            wake.clear()
-            await wake.wait()
+        finally:
+            self._writing = False
 
     def _tap(self, direction: Literal["in", "out"], message: Any) -> None:
         if self._tap_fn is None:

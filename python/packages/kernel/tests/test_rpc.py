@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import sys
 from typing import Any
 
 import pytest
@@ -541,3 +542,52 @@ async def test_with_nothing_running_the_other_side_ending_closes_at_once():
     peer = RpcPeer(end.channel).start()
     await end.end()
     assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"
+
+
+async def test_writes_behind_a_slow_write_keep_their_order_and_the_writer_stops_when_idle():
+    left, right = channel_pair()
+    gate = asyncio.Event()
+    sent: list[Any] = []
+
+    class Slow:
+        async def receive(self) -> Any:
+            return await left.receive()
+
+        async def send(self, item: Any) -> None:
+            if item.get("params", {}).get("i") == 2:
+                await gate.wait()
+            sent.append(item["params"]["i"])
+
+        async def close(self) -> None:
+            pass
+
+    peer = RpcPeer(Slow()).start()
+    writes = [asyncio.ensure_future(peer.notify("n", {"i": i})) for i in range(6)]
+    await tick(5)
+    assert sent == [0, 1]
+    gate.set()
+    await asyncio.gather(*writes)
+    assert sent == list(range(6))
+    # Nothing queued: no writer task waits around.
+    assert peer._writer_task is not None and peer._writer_task.done() and not peer._writing
+    await peer.notify("n", {"i": 6})
+    assert sent[-1] == 6
+    await peer.close()
+    del right
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="eager tasks are 3.12+")
+async def test_a_write_to_an_idle_channel_and_a_handler_that_does_not_wait_need_no_trip_through_the_loop():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    peer.on_request("echo", lambda params, _context: params)
+    peer.start()
+    # Handed to the channel before _write returns.
+    written = peer._write({"jsonrpc": "2.0", "method": "n"})
+    assert written.done() and written.exception() is None
+    # A request whose handler does not wait is answered within the read that received it.
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "echo", "params": {"x": 1}})
+    await tick(3)
+    assert {"jsonrpc": "2.0", "id": 1, "result": {"x": 1}} in end.sent
+    assert not peer._tasks
+    await peer.close()
