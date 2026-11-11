@@ -56,6 +56,13 @@ test('a failing scenario lists what failed and leaves a bundle (trace, report, f
   assert.match(missing.error ?? '', /no\/such\/agent/);
 });
 
+test('a scenario with no turns fails: it would check nothing', async () => {
+  const artifacts = await mkdtemp(join(tmpdir(), 'scenario-artifacts-'));
+  const report = await runScenario({ name: 'empty', agent, turns: [] }, { artifacts });
+  assert.equal(report.pass, false);
+  assert.match(report.error ?? '', /no turns/);
+});
+
 test('snapshots: written once, matched after, a change differs until accepted with updateSnapshots', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshots-'));
   const scenario = (prompt: string): Scenario => ({ name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: [{ prompt }] });

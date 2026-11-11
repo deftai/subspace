@@ -97,6 +97,7 @@ export interface Scenario {
   permissions?: ScenarioPermissions;
   /** Per turn, unless the turn sets its own. Default 120 s. */
   timeoutMs?: number;
+  /** At least one: a scenario with none fails. */
   turns: ScenarioTurn[];
   /** A snapshot file (relative to the scenario file) to compare each turn's outcome with. */
   snapshot?: string;
@@ -130,7 +131,7 @@ export interface TurnReport {
 export interface ScenarioReport {
   name: string;
   pass: boolean;
-  /** Set when the scenario could not run (the agent did not start, a turn threw). */
+  /** Set when the scenario could not run (it has no turns, the agent did not start, a turn threw). */
   error?: string;
   turns: TurnReport[];
   /** The temporary workspace; removed after a pass unless `keep`. */
@@ -275,6 +276,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   const env = typeof scenario.agent === 'string' ? undefined : scenario.agent.env;
   let agent: Awaited<ReturnType<typeof start>> | undefined;
   try {
+    // Without turns nothing is checked: that is not a pass.
+    if (!scenario.turns?.length) throw new Error('the scenario has no turns');
     agent = await start(target, {
       cwd: workspace,
       // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace.
