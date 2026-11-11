@@ -24,7 +24,17 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar
 
-from deft_subspace.kernel import AbortController, AbortSignal, Channel, ErrorCode, InboundContext, RpcError, RpcPeer, cancel_request
+from deft_subspace.kernel import (
+    AbortController,
+    AbortSignal,
+    Channel,
+    ErrorCode,
+    InboundContext,
+    LocalError,
+    RpcError,
+    RpcPeer,
+    cancel_request,
+)
 
 from . import schemas
 from .background import SessionWork, Work, base64
@@ -356,6 +366,8 @@ class _TurnWriter:
         self.last_was_text = False
         call_id = id if id is not None else f"call-{_random_uuid()[:8]}"
         cancellable = cancellable and self.protocol == 2 and self.work is not None
+        # One created already finished is neither open nor work.
+        done = _is_final(status)
         fields: dict[str, Any] = {
             "title": title,
             "kind": kind if kind is not None else "other",
@@ -363,10 +375,11 @@ class _TurnWriter:
             "content": content if content is not None else [],
             "locations": locations if locations is not None else [],
             **({"rawInput": raw_input} if raw_input is not None else {}),
-            **({"capabilities": {"cancel": {}}} if cancellable else {}),
+            **({"capabilities": {"cancel": {}}} if cancellable and not done else {}),
         }
-        self.open.add(call_id)
-        work = self.work.add("tool_call", call_id, cancellable, self.signal) if self.work is not None else None
+        if not done:
+            self.open.add(call_id)
+        work = self.work.add("tool_call", call_id, cancellable, self.signal) if self.work is not None and not done else None
         # v1 creates with tool_call; v2 has only the upsert.
         await self.update({"sessionUpdate": "tool_call" if self.protocol == 1 else "tool_call_update", "toolCallId": call_id, **fields})
         return ToolCallHandle(self, call_id, work)
@@ -648,11 +661,18 @@ class AgentTurn:
         w = self._writer
         w.last_was_text = False
         tool_call_id = fields["toolCallId"]
-        if create:
+        final = _is_final(fields.get("status"))
+        # Tracked as tool_call() does: open (and v2 work) from a create until a final status.
+        if create and not final and tool_call_id not in w.open:
             w.open.add(tool_call_id)
-        if _is_final(fields.get("status")):
+            if w.work is not None and w.work.get("tool_call", tool_call_id) is None:
+                w.work.add("tool_call", tool_call_id, False, w.signal)
+        if final:
             w.open.discard(tool_call_id)
         await w.update({**fields, "sessionUpdate": "tool_call" if create and self.protocol == 1 else "tool_call_update"})
+        work = w.work.get("tool_call", tool_call_id) if final and w.work is not None else None
+        if work is not None and w.work is not None:
+            await w.work.finish(work)
 
     async def send_update(self, update: dict[str, Any]) -> None:
         """Send any `session/update` as given. You are responsible for it suiting `protocol`."""
@@ -727,9 +747,10 @@ class AgentTurn:
                 return ElicitAnswer("accept", content if content else None, elicitation_id)
             if action == "decline":
                 return ElicitAnswer("decline", None, elicitation_id)
-        except Exception:  # noqa: BLE001
-            # Aborted with the turn, or an error answer.
-            pass
+        except Exception as error:
+            # Aborted with the turn, or the connection gone: nobody answered. Anything else is the caller's.
+            if not self.signal.aborted and not LocalError.is_(error, "aborted") and not LocalError.is_(error, "closed"):
+                raise
         return ElicitAnswer("cancel", None, elicitation_id)
 
 

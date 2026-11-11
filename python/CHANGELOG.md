@@ -12,3 +12,5 @@
 - `serve_agent(connection_closed=...)`: new optional hook, called with the ids of the sessions still open when the connection closes (`close_session` is still not called for them). `model_agent` uses it to drop those sessions' conversations, which it kept forever before.
 - `serve_agent`: on v1, `capabilities={"sessionCapabilities": ..., "mcpCapabilities": ...}` now merge into the advertised ones (as on v2) instead of replacing them, so `close` and `resume` are no longer dropped.
 - `serve_agent`: a second `initialize` on a connection is now refused with -32600 (Invalid Request); before, it could switch the protocol mid-connection.
+- `AgentTurn.elicit`: an error answer from the client now raises instead of answering `cancel`; only a cancelled turn or a closed connection answers `cancel`.
+- `AgentTurn.tool_call(status="completed"|"failed"|"cancelled")` is no longer tracked as open (it was failed again when the turn was cancelled or raised), and `tool_call_update` now keeps v2 background work in step: a create is tracked, and a final status finishes it (a cancellable call finished this way no longer accepts `tool_call/cancel`).

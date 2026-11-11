@@ -7,6 +7,7 @@ where they don't need the client classes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -680,6 +681,72 @@ async def test_finished_turns_leave_no_listener_on_the_connection(protocol: int)
             await client.idle(n)
     await tick()
     assert len(agent.signal._listeners) == before
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_tool_call_created_already_finished_is_not_left_open(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> None:
+        await turn.tool_call("done already", status="completed")
+        raise ValueError("boom")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    with contextlib.suppress(RpcError):
+        await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    if protocol == 2:
+        await client.idle()
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["completed"]
+    await client.close()
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_elicit_lets_an_error_answer_through_instead_of_answering_cancel(protocol: int) -> None:
+    seen: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        try:
+            seen.append((await turn.elicit("name?")).action)
+        except RpcError as error:
+            seen.append(f"error {error.code}")
+        return "end_turn"
+
+    def broken(params: Any, ctx: Any) -> Any:
+        raise RpcError(-32603, "client broke")
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    client.peer.on_request("elicitation/create", broken)
+    await client.init(protocol, caps={"elicitation": {"form": {}}})
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    if protocol == 2:
+        await client.idle()
+    assert seen == ["error -32603"]
+    await client.close()
+
+
+async def test_v2_a_tool_call_finished_through_tool_call_update_stops_being_cancellable_work() -> None:
+    ids: list[str] = []
+
+    async def prompt(turn: AgentTurn) -> str:
+        call = await turn.tool_call("grep", cancellable=True)
+        ids.append(call.id)
+        await turn.tool_call_update({"toolCallId": call.id, "status": "completed"})
+        await turn.tool_call_update({"toolCallId": "raw-1", "title": "raw", "status": "in_progress"}, create=True)
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[2])
+    await client.init(2)
+    sid = await client.new_session()
+    await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    await client.idle()
+    with pytest.raises(RpcError, match="No running tool call"):
+        await client.peer.request("tool_call/cancel", {"sessionId": sid, "toolCallId": ids[0]})
+    # A raw create is tracked like tool_call(): known, though not cancellable.
+    with pytest.raises(RpcError, match="cannot be cancelled"):
+        await client.peer.request("tool_call/cancel", {"sessionId": sid, "toolCallId": "raw-1"})
     await client.close()
 
 

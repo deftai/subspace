@@ -18,6 +18,7 @@
 import {
   cancelRequest,
   ErrorCode,
+  LocalError,
   RpcError,
   RpcPeer,
   type Channel,
@@ -604,18 +605,18 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         const controller = new AbortController();
         // The session's controller and the connection; not this request's own signal ($/cancel_request does not stop a turn).
         const signal = AbortSignal.any([controller.signal, ctx.peer.signal]);
-        const turn = new TurnWriter(
-          ctx.client,
-          session.id,
+        const turn = new TurnWriter({
+          peer: ctx.client,
+          sessionId: session.id,
           protocol,
-          params.prompt ?? [],
+          prompt: params.prompt ?? [],
           signal,
           clientCapabilities,
-          session.servers,
-          ctx.peek(MCP)?.caller,
-          turns.work,
-          sessions.part<SessionMcpConnections | undefined>(session, 'mcp')
-        );
+          servers: session.servers,
+          mcpCaller: ctx.peek(MCP)?.caller,
+          work: turns.work,
+          connections: sessions.part<SessionMcpConnections | undefined>(session, 'mcp'),
+        });
         // Wait for the turn ahead (if any), in order.
         const ahead = turns.turns.at(-1)?.ended;
         let end!: () => void;
@@ -713,7 +714,16 @@ function extensionsLayer(options: AgentOptions): AgentLayer {
 function agentLayers(options: AgentOptions): AgentLayer<any>[] {
   const replayWriter = (ctx: EndpointContext, sessionId: string): ReplayWriter => {
     const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
-    return new TurnWriter(ctx.client, sessionId, protocol, [], new AbortController().signal, clientCapabilities, [], ctx.peek(MCP)?.caller, undefined, undefined).api;
+    return new TurnWriter({
+      peer: ctx.client,
+      sessionId,
+      protocol,
+      prompt: [],
+      signal: new AbortController().signal,
+      clientCapabilities,
+      servers: [],
+      mcpCaller: ctx.peek(MCP)?.caller,
+    }).api;
   };
   return [negotiateLayer(options, !!options.loadSession), sessionsLayer(options, replayWriter), mcpLayer(options), turnsLayer(options), extensionsLayer(options)];
 }
@@ -733,6 +743,20 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   return endpoint.peer;
 }
 
+/** What a turn's writer works with. A replay writer has no background work and no MCP connections. */
+interface TurnSetup {
+  peer: AgentChannel;
+  sessionId: string;
+  protocol: ProtocolVersion;
+  prompt: ContentBlock[];
+  signal: AbortSignal;
+  clientCapabilities: Record<string, unknown>;
+  servers: McpServer[];
+  mcpCaller: McpCaller | undefined;
+  work?: SessionWork;
+  connections?: SessionMcpConnections | undefined;
+}
+
 class TurnWriter {
   readonly api: AgentTurn;
   private segment = 0;
@@ -747,18 +771,8 @@ class TurnWriter {
   private readonly work: SessionWork | undefined;
   private readonly signal: AbortSignal;
 
-  constructor(
-    peer: AgentChannel,
-    sessionId: string,
-    protocol: ProtocolVersion,
-    prompt: ContentBlock[],
-    signal: AbortSignal,
-    clientCapabilities: Record<string, unknown>,
-    servers: McpServer[],
-    mcpCaller: McpCaller | undefined,
-    work: SessionWork | undefined,
-    connections: SessionMcpConnections | undefined
-  ) {
+  constructor(setup: TurnSetup) {
+    const { peer, sessionId, protocol, prompt, signal, clientCapabilities, servers, mcpCaller, work, connections } = setup;
     this.peer = peer;
     this.sessionId = sessionId;
     this.protocol = protocol;
@@ -833,12 +847,19 @@ class TurnWriter {
       toolCallUpdate: async (fields, options) => {
         this.lastWasText = false;
         const { toolCallId } = fields;
-        if (options?.create) this.open.add(toolCallId);
-        if (isFinal(fields.status)) this.open.delete(toolCallId);
+        const final = isFinal(fields.status);
+        // Tracked as toolCall() does: open (and v2 work) from a create until a final status.
+        if (options?.create && !final && !this.open.has(toolCallId)) {
+          this.open.add(toolCallId);
+          if (!this.work?.get('tool_call', toolCallId)) this.work?.add('tool_call', toolCallId, false, this.signal);
+        }
+        if (final) this.open.delete(toolCallId);
         await this.update({
           ...fields,
           sessionUpdate: options?.create && protocol === 1 ? 'tool_call' : 'tool_call_update',
         });
+        const work = final ? this.work?.get('tool_call', toolCallId) : undefined;
+        if (work) await this.work!.finish(work);
       },
       sendUpdate: (update) => this.update(update),
       request: (method, params, options) => {
@@ -905,8 +926,9 @@ class TurnWriter {
           const answer = await peer.request<{ action?: string; content?: Record<string, unknown> }>('elicitation/create', params, { signal });
           if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}), ...id };
           if (answer?.action === 'decline') return { action: 'decline', ...id };
-        } catch {
-          // Aborted with the turn, or an error answer.
+        } catch (error) {
+          // Aborted with the turn, or the connection gone: nobody answered. Anything else is the caller's.
+          if (!signal.aborted && !LocalError.is(error, 'aborted') && !LocalError.is(error, 'closed')) throw error;
         }
         return { action: 'cancel', ...id };
       },
@@ -962,10 +984,12 @@ class TurnWriter {
       content: init.content ?? [],
       locations: init.locations ?? [],
       ...(init.rawInput !== undefined ? { rawInput: init.rawInput } : {}),
-      ...(cancellable ? { capabilities: { cancel: {} } } : {}),
+      ...(cancellable && !isFinal(init.status) ? { capabilities: { cancel: {} } } : {}),
     };
-    this.open.add(id);
-    const work = this.work?.add('tool_call', id, cancellable, this.signal);
+    // One created already finished is neither open nor work.
+    const done = isFinal(init.status);
+    if (!done) this.open.add(id);
+    const work = done ? undefined : this.work?.add('tool_call', id, cancellable, this.signal);
     // v1 creates with tool_call; v2 has only the upsert.
     await this.update({ sessionUpdate: this.protocol === 1 ? 'tool_call' : 'tool_call_update', toolCallId: id, ...fields });
     return {
