@@ -1,7 +1,7 @@
 /** The scenario runner: expectations, workspaces, permissions, snapshots, bundles, reports and waivers. */
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -74,6 +74,20 @@ test('snapshots: written once, matched after, a change differs until accepted wi
   assert.match(changed.turns[0]!.failures[0]!, /differs from the snapshot/);
   assert.equal((await runScenario(scenario('hello'), { baseDir: dir, updateSnapshots: true })).snapshot, 'written');
   assert.equal((await runScenario(scenario('hello'), { baseDir: dir })).snapshot, 'matched');
+});
+
+test('snapshots are replaced whole, never rewritten in place, so a reader sees the old file or the new one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'scenario-snapshot-atomic-'));
+  const scenario: Scenario = { name: 'greets', agent, snapshot: 'greets.snapshot.json', turns: [{ prompt: 'hi' }] };
+  assert.equal((await runScenario(scenario, { baseDir: dir, requireSnapshots: false })).snapshot, 'written');
+  // A second name for the same file: a write in place would change it too.
+  const before = await readFile(join(dir, 'greets.snapshot.json'), 'utf8');
+  await link(join(dir, 'greets.snapshot.json'), join(dir, 'old.json'));
+  const changed: Scenario = { ...scenario, turns: [{ prompt: 'hello' }] };
+  assert.equal((await runScenario(changed, { baseDir: dir, updateSnapshots: true })).snapshot, 'written');
+  assert.equal(await readFile(join(dir, 'old.json'), 'utf8'), before);
+  assert.notEqual(await readFile(join(dir, 'greets.snapshot.json'), 'utf8'), before);
+  assert.deepEqual((await readdir(dir)).sort(), ['greets.snapshot.json', 'old.json']);
 });
 
 test('snapshots: a differing turn fails in every report, and so does a different number of turns', async () => {

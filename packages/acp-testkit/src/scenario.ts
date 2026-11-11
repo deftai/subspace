@@ -20,7 +20,8 @@
  * runs to it. In CI (`requireSnapshots`, on when the CI variable is set) a
  * missing snapshot fails instead of being written.
  */
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -345,7 +346,15 @@ async function compareSnapshot(path: string, report: ScenarioReport, update: boo
   const outcomes = report.turns.map((t) => t.outcome);
   const write = async () => {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, `${JSON.stringify(outcomes, null, 2)}\n`);
+    // Written beside it, then renamed over it: a run reading it at the same time sees the old file or the new one, never half of one.
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(outcomes, null, 2)}\n`);
+      await rename(temporary, path);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {});
+      throw error;
+    }
     return 'written' as const;
   };
   if (update) return write();
