@@ -226,6 +226,18 @@ def _windows_launch(command: str, args: Sequence[str], env: Mapping[str, str], i
     return _cmd_line(found, args, command)
 
 
+def _cmd_exe(line: str, env: Mapping[str, str]) -> tuple[str, str]:
+    """cmd.exe, and the whole command line to start it with, verbatim, to run `line`.
+
+    No AutoRun commands (/d; they could write to stdout), command extensions on (the `%`
+    escape needs them), no delayed `!` expansion, and only the outer quotes stripped (/s),
+    as the TypeScript port runs it. (`subprocess_shell` would run `COMSPEC /c "line"`.)
+    """
+    system_root = _env_get(env, "SYSTEMROOT") or "C:\\Windows"
+    comspec = _env_get(env, "COMSPEC") or ntpath.join(system_root, "System32", "cmd.exe")
+    return comspec, f'"{comspec}" /d /e:ON /v:OFF /s /c "{line}"'
+
+
 def _not_found_hint(command: str, cwd: object, windows: bool) -> str:
     where = f" (cwd: {cwd})" if cwd else ""
     shims = " On Windows it is looked up with PATHEXT, so .cmd shims such as npx.cmd are found too." if windows else ""
@@ -471,7 +483,14 @@ async def _start(
 
     line = _windows_launch(command, args, env, os.path.isfile) if _WINDOWS else None
     if line is not None:
-        transport, _ = await loop.subprocess_shell(factory, line, env=env, **kwds)  # type: ignore[arg-type]
+        # A str for args is passed to CreateProcess as it is, which neither subprocess_exec (it
+        # quotes each argument) nor subprocess_shell (no /d) allows: make the transport as
+        # subprocess_exec does, from what it would have built.
+        executable, command_line = _cmd_exe(line, env)
+        stdio = [kwds.pop(name) for name in ("stdin", "stdout", "stderr")]
+        transport = await loop._make_subprocess_transport(  # type: ignore[attr-defined]
+            factory(), command_line, False, *stdio, 0, executable=executable, env=env, **kwds
+        )
     else:
         transport, _ = await loop.subprocess_exec(factory, command, *args, env=env, **kwds)  # type: ignore[arg-type]
     assert protocol is not None

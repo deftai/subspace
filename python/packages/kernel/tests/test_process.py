@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import time
+from typing import Any
 
 import pytest
 
@@ -339,6 +340,44 @@ def test_windows_refuses_an_argument_with_cr_lf_or_nul_for_a_cmd_file():
         assert caught.value.command == "npx"
     # Not for a program that runs as given: it gets its arguments without cmd.exe.
     assert _windows_launch("node", ["a\nb"], WIN_ENV, _files(r"C:\nodejs\node.exe")) is None
+
+
+def test_windows_runs_cmd_exe_without_autorun_and_with_the_line_verbatim():
+    from deft_subspace.kernel.process import _cmd_exe
+
+    env = {"ComSpec": r"C:\Windows\system32\cmd.exe"}
+    assert _cmd_exe('"C:\\x\\a.cmd" -y', env) == (
+        r"C:\Windows\system32\cmd.exe",
+        r'"C:\Windows\system32\cmd.exe" /d /e:ON /v:OFF /s /c ""C:\x\a.cmd" -y"',
+    )
+    assert _cmd_exe("x", {"SystemRoot": r"D:\Win"})[0] == r"D:\Win\System32\cmd.exe"
+
+
+async def test_windows_hands_the_cmd_exe_command_line_to_the_loop_as_a_string(monkeypatch: pytest.MonkeyPatch):
+    # The command line must reach CreateProcess as built: a str, with shell=False, so
+    # nothing quotes it again or wraps it in `COMSPEC /c`.
+    from deft_subspace.kernel import process
+
+    seen: list[tuple[Any, ...]] = []
+
+    async def make_transport(protocol, args, shell, stdin, stdout, stderr, bufsize, **kwargs):
+        seen.append((args, shell, stdin, stdout, stderr, bufsize, kwargs))
+        raise OSError(5, "stop here")
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(process, "_WINDOWS", True)
+    monkeypatch.setattr(process, "_windows_launch", lambda *a: '"C:\\n\\npx.cmd" -y')
+    monkeypatch.setattr(loop, "_make_subprocess_transport", make_transport, raising=False)
+    monkeypatch.setitem(os.environ, "COMSPEC", r"C:\cmd.exe")
+    monkeypatch.setattr(process.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    with pytest.raises(SpawnError):
+        await process.spawn_process("npx", args=["-y"])
+    [(args, shell, stdin, stdout, stderr, bufsize, kwargs)] = seen
+    assert args == r'"C:\cmd.exe" /d /e:ON /v:OFF /s /c ""C:\n\npx.cmd" -y"'
+    assert shell is False
+    assert (stdin, stdout, stderr, bufsize) == (asyncio.subprocess.PIPE,) * 3 + (0,)
+    assert kwargs["executable"] == r"C:\cmd.exe"
+    assert kwargs["creationflags"] == 0x200
 
 
 def test_the_not_found_hint_names_cmd_shims_on_windows():
