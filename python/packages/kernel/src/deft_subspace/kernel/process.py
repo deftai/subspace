@@ -6,8 +6,14 @@
 - stop() closes stdin, sends SIGTERM, then SIGKILL after a grace period.
 - The last stderr output is kept for error messages.
 - `ended` settles only after the process has exited *and* its stdout has
-  been read to the end, so a final reply written just before exit is not lost.
+  closed, so a final reply written just before exit is not lost: it is still
+  there to read.
+- `exited`, `ended()` and `stop()` can be cancelled (e.g. by `asyncio.wait_for`)
+  without affecting the process or later calls.
 - A missing program becomes a SpawnError with a hint.
+
+Process groups outlive this process unless it stops them, so the live ones are
+killed at interpreter exit (atexit).
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ import signal as signals
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .channel import ChannelClosed, EndOfChannel
@@ -44,22 +50,31 @@ class SpawnError(Exception):
         self.hint = hint
 
 
+# -- Killing live groups when this process ends --------------------------------------------
+
+#: How to kill each process group that may still be alive.
 _live: set[Callable[[], None]] = set()
-_hook_installed = False
+_atexit_installed = False
 
 
-def _install_exit_hook() -> None:
-    """Children in their own process group outlive us unless we stop them on exit."""
-    global _hook_installed
-    if _hook_installed:
-        return
-    _hook_installed = True
+def _kill_live() -> None:
+    for kill in list(_live):
+        kill()
 
-    def kill_all() -> None:
-        for kill in list(_live):
-            kill()
 
-    atexit.register(kill_all)
+def _track(kill: Callable[[], None]) -> None:
+    global _atexit_installed
+    _live.add(kill)
+    if not _atexit_installed:
+        _atexit_installed = True
+        atexit.register(_kill_live)
+
+
+def _untrack(kill: Callable[[], None]) -> None:
+    _live.discard(kill)
+
+
+# -- The supervised process ----------------------------------------------------------------
 
 
 def _exit_info(returncode: int) -> ExitInfo:
@@ -69,6 +84,27 @@ def _exit_info(returncode: int) -> ExitInfo:
         except ValueError:
             return ExitInfo(None, f"SIG{-returncode}")
     return ExitInfo(returncode, None)
+
+
+class _Protocol(asyncio.subprocess.SubprocessStreamProtocol):
+    """The usual stream protocol, plus a future for "stdout has closed", whoever reads it."""
+
+    def __init__(self, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.stdout_closed: asyncio.Future[None] = loop.create_future()
+
+    def _stdout_gone(self) -> None:
+        if not self.stdout_closed.done():
+            self.stdout_closed.set_result(None)
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        super().pipe_connection_lost(fd, exc)
+        if fd == 1:
+            self._stdout_gone()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        super().connection_lost(exc)
+        self._stdout_gone()
 
 
 class _ProcessChannel:
@@ -82,7 +118,6 @@ class _ProcessChannel:
         assert stdout is not None
         data = await stdout.read(65536)
         if not data:
-            self._process._stdout_done()
             raise EndOfChannel()
         return data
 
@@ -101,10 +136,19 @@ class _ProcessChannel:
 
 
 class SupervisedProcess:
+    """A running child. One supervisor task owns its lifecycle:
+
+    running -> exited (the process has exited) -> ended (and stdout has closed),
+    with "stopping" (stop() was called) on top. Callers only ever get shielded
+    views of the private futures and tasks, so cancelling a wait affects
+    nothing else.
+    """
+
     def __init__(
         self,
         command: str,
         proc: asyncio.subprocess.Process,
+        stdout_closed: Awaitable[None],
         *,
         stderr_tail_bytes: int,
         kill_grace_ms: float,
@@ -118,19 +162,23 @@ class SupervisedProcess:
         self._on_stderr = on_stderr
         self._stderr = ""
         loop = asyncio.get_running_loop()
-        self._stdout_ended: asyncio.Future[None] = loop.create_future()
+        self._exited: asyncio.Future[ExitInfo] = loop.create_future()
+        self._ended: asyncio.Future[ExitInfo] = loop.create_future()
         self._stopping: asyncio.Task[ExitInfo] | None = None
         #: stdin and stdout as a byte channel.
         self.channel = _ProcessChannel(self)
-        self._exited_task = loop.create_task(self._wait_exit(), name=f"{command}:exit")
-        self._stderr_task = loop.create_task(self._read_stderr(), name=f"{command}:stderr") if proc.stderr else None
         self._kill_now = self._kill_group
-        _live.add(self._kill_now)
-        _install_exit_hook()
-        self._exited_task.add_done_callback(lambda _t: self._forget_if_gone())
+        _track(self._kill_now)
+        self._supervisor = loop.create_task(self._supervise(stdout_closed), name=f"{command}:supervise")
+        self._stderr_task = loop.create_task(self._read_stderr(), name=f"{command}:stderr") if proc.stderr else None
 
-    async def _wait_exit(self) -> ExitInfo:
-        return _exit_info(await self._proc.wait())
+    async def _supervise(self, stdout_closed: Awaitable[None]) -> None:
+        info = _exit_info(await self._proc.wait())
+        self._exited.set_result(info)
+        await stdout_closed
+        self._ended.set_result(info)
+        if not self._group_alive():
+            _untrack(self._kill_now)
 
     async def _read_stderr(self) -> None:
         stderr = self._proc.stderr
@@ -148,10 +196,6 @@ class SupervisedProcess:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def _stdout_done(self) -> None:
-        if not self._stdout_ended.done():
-            self._stdout_ended.set_result(None)
-
     def _close_stdin(self) -> None:
         stdin = self._proc.stdin
         if stdin is not None and not stdin.is_closing():
@@ -161,15 +205,13 @@ class SupervisedProcess:
                 pass
 
     @property
-    def exited(self) -> asyncio.Task[ExitInfo]:
-        """Settles when the process exits."""
-        return self._exited_task
+    def exited(self) -> asyncio.Future[ExitInfo]:
+        """Settles when the process exits. Await it; cancelling the wait does not affect the process."""
+        return asyncio.shield(self._exited)
 
     async def ended(self) -> ExitInfo:
-        """Waits until the process has exited and stdout has ended."""
-        info = await asyncio.shield(self._exited_task)
-        await asyncio.shield(self._stdout_ended)
-        return info
+        """Waits until the process has exited and stdout has closed."""
+        return await asyncio.shield(self._ended)
 
     @property
     def returncode(self) -> int | None:
@@ -181,7 +223,7 @@ class SupervisedProcess:
 
     def _signal_group(self, sig: int) -> bool:
         try:
-            if sys.platform != "win32" and self.pid is not None:
+            if not _WINDOWS and self.pid is not None:
                 os.killpg(self.pid, sig)
             elif sig == signals.SIGTERM:
                 self._proc.terminate()
@@ -195,7 +237,7 @@ class SupervisedProcess:
         self._signal_group(getattr(signals, "SIGKILL", signals.SIGTERM))
 
     def _group_alive(self) -> bool:
-        if sys.platform == "win32" or self.pid is None:
+        if _WINDOWS or self.pid is None:
             return self._proc.returncode is None
         try:
             os.killpg(self.pid, 0)
@@ -203,18 +245,14 @@ class SupervisedProcess:
         except (ProcessLookupError, PermissionError, OSError):
             return False
 
-    def _forget_if_gone(self) -> None:
-        if not self._group_alive():
-            _live.discard(self._kill_now)
-
-    def stop(self, grace_ms: float | None = None) -> asyncio.Task[ExitInfo]:
+    def stop(self, grace_ms: float | None = None) -> asyncio.Future[ExitInfo]:
         """Stop the process and its process group: end stdin, SIGTERM, then SIGKILL after `grace_ms`.
 
-        Idempotent: every call returns the same task.
+        Idempotent: every call waits for the same stop. Cancelling the wait does not cancel the stop.
         """
         if self._stopping is None:
             self._stopping = asyncio.get_running_loop().create_task(self._stop(grace_ms), name=f"{self.command}:stop")
-        return self._stopping
+        return asyncio.shield(self._stopping)
 
     async def _stop(self, grace_ms: float | None) -> ExitInfo:
         self._close_stdin()
@@ -226,8 +264,25 @@ class SupervisedProcess:
                 await asyncio.sleep(0.025)
             if self._group_alive():
                 self._kill_group()
-        _live.discard(self._kill_now)
-        return await asyncio.shield(self._exited_task)
+        _untrack(self._kill_now)
+        return await asyncio.shield(self._exited)
+
+
+async def _start(
+    command: str, args: Sequence[str], limit: int, env: Mapping[str, str], **kwds: object
+) -> tuple[asyncio.subprocess.Process, asyncio.Future[None]]:
+    """asyncio.create_subprocess_exec, keeping the protocol to learn when stdout closes."""
+    loop = asyncio.get_running_loop()
+    protocol: _Protocol | None = None
+
+    def factory() -> _Protocol:
+        nonlocal protocol
+        protocol = _Protocol(limit, loop)
+        return protocol
+
+    transport, _ = await loop.subprocess_exec(factory, command, *args, env=env, **kwds)  # type: ignore[arg-type]
+    assert protocol is not None
+    return asyncio.subprocess.Process(transport, protocol, loop), protocol.stdout_closed
 
 
 async def spawn_process(
@@ -248,16 +303,16 @@ async def spawn_process(
     else:
         extra["start_new_session"] = True
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc, stdout_closed = await _start(
             command,
-            *args,
+            args,
+            2**20,
+            full_env,
             cwd=cwd,
-            env=full_env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=2**20,
-            **extra,  # type: ignore[arg-type]
+            **extra,
         )
     except FileNotFoundError as error:
         where = f" (cwd: {cwd})" if cwd else ""
@@ -266,4 +321,6 @@ async def spawn_process(
         raise SpawnError(command, "EACCES", f'"{command}" is not executable.') from error
     except OSError as error:
         raise SpawnError(command, getattr(error, "errno", None) and str(error.errno), str(error)) from error
-    return SupervisedProcess(command, proc, stderr_tail_bytes=stderr_tail_bytes, kill_grace_ms=kill_grace_ms, on_stderr=on_stderr)
+    return SupervisedProcess(
+        command, proc, stdout_closed, stderr_tail_bytes=stderr_tail_bytes, kill_grace_ms=kill_grace_ms, on_stderr=on_stderr
+    )

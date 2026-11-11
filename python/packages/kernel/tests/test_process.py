@@ -75,3 +75,44 @@ async def test_keeps_the_last_stderr_output():
     await asyncio.sleep(0.05)
     assert child.stderr_tail().endswith("fatal: no API key")
     assert len(child.stderr_tail()) <= 64
+
+
+IGNORES_SIGTERM = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM")
+async def test_a_timed_out_stop_still_stops_the_process():
+    child = await spawn_process(PY, args=["-c", IGNORES_SIGTERM], kill_grace_ms=300)
+    await asyncio.sleep(0.2)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(child.stop(), 0.05)
+    info = await asyncio.wait_for(child.stop(), 3)
+    assert info.signal == "SIGKILL"
+    assert (await asyncio.wait_for(child.ended(), 3)).signal == "SIGKILL"
+
+
+async def test_a_timed_out_wait_for_exited_does_not_break_exited_or_ended():
+    child = await spawn_process(PY, args=["-c", "import time; time.sleep(60)"], kill_grace_ms=300)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(child.exited, 0.05)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(child.ended(), 0.05)
+    stopped = await asyncio.wait_for(child.stop(), 3)
+    assert await asyncio.wait_for(child.exited, 1) == stopped
+    assert await asyncio.wait_for(child.ended(), 1) == stopped
+
+
+async def test_ended_settles_after_the_reader_stopped_early():
+    child = await spawn_process(PY, args=["-c", "import time; time.sleep(60)"], kill_grace_ms=300)
+    peer = RpcPeer(ndjson(child.channel)).start()
+    await asyncio.sleep(0.05)
+    await peer.close()
+    stopped = await asyncio.wait_for(child.stop(), 3)
+    assert await asyncio.wait_for(child.ended(), 2) == stopped
+
+
+async def test_ended_settles_with_no_reader_and_the_output_is_still_there():
+    child = await spawn_process(PY, args=["-c", "print('unread')"])
+    assert (await asyncio.wait_for(child.ended(), 3)).code == 0
+    assert await child.channel.receive() == b"unread\n"
+
