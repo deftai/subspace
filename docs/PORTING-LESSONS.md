@@ -151,6 +151,15 @@ optimising, and keep it in the suite.
 - **Interop tests against the official SDK.** Our client against SDK
   agents, our agent against the SDK client, v1 and v2. These are cheap and
   catch wire-format drift.
+- **Benchmark against the official SDKs, every client against every agent**
+  (`bench/`). A 4×4 matrix tells client cost from agent cost: a slow cell in
+  one column is the agent, in one row the client. Benchmark both protocol
+  versions: our own pairs negotiated v2 and hid a v2-only delay until we
+  forced v1 for the comparison.
+- **Check the benchmark before the library.** Two of our "findings" were the
+  benchmark's own bugs: a warm-up sized like the scenario (200 MB pushed
+  through each client before a 50 MB test), and an SDK that starts agents
+  with a trimmed environment, so a variable we relied on never arrived.
 
 ### Reviews
 
@@ -242,6 +251,13 @@ than to JS here; Java and C++ are closer to JS (cooperative), with their own
 interruption rules.
 
 ### Ordering and the event loop
+
+- **`setTimeout(fn, 0)` is not "next tick" in Node.** Node waits at least
+  1 ms for any timer. The TS agent started every v2 turn that way, adding
+  1 ms per turn (775 turns/s instead of 24,449). Use `setImmediate` (or
+  `queueMicrotask` when order allows); Python's `loop.call_soon` has no such
+  floor. Look for the same thing in any port: a "yield to the loop" that is
+  really a timer.
 
 - **Message order is a contract.** Writes go through one writer task fed
   by a queue, so messages leave in the order they were sent, whole, even
@@ -404,3 +420,16 @@ process handling on Windows, memory use and RPC speed; all fixed in both
 ports with tests (python/CHANGELOG.md lists the Python ones). Review bots
 on the fix PR were mostly false positives; four real findings fixed. The
 packages are ready for PyPI as 0.1.0a1, not yet published.
+
+### 2026-11-11: benchmarks against the official SDKs
+
+`bench/` runs every client against every agent across Subspace TS, Subspace
+Python and the official TS and Python SDKs (results in `bench/RESULTS.md`).
+In TypeScript, Subspace and the official SDK are within about a third of
+each other; Subspace streams faster as a client, and the official agent is
+faster at plain request/response. In Python the two are even on turns, and
+Subspace starts twice as fast and answers permissions faster. But the
+Subspace Python agent does not gain from concurrent sessions (about 12,500
+turns/s with one session or twenty, against 8,400 → 40,000 for the official
+agent), the clearest thing to fix next. The run also found the 1 ms
+`setTimeout` delay per v2 turn in the TS agent.

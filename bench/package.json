@@ -1,0 +1,11 @@
+{
+  "name": "@deft-subspace/bench",
+  "private": true,
+  "type": "module",
+  "description": "Performance comparison: Subspace (TS, Python) against the official ACP SDKs (TS, Python).",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  }
+}
