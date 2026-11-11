@@ -36,17 +36,39 @@ def _iso(ms: float) -> str:
     return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z"
 
 
-def _copy_json(value: Any) -> Any:
+#: Past this depth the direct copy gives up (cycles end here, and the stack stays small).
+_MAX_DEPTH = 256
+
+
+class _TooDeep(Exception):
+    pass
+
+
+def _copy_message(value: Any) -> Any:
     """A copy of a message, so later mutation does not change the record. Dicts and lists
     (all JSON has) are copied directly, many times faster than `copy.deepcopy`; anything
-    else goes to `copy.deepcopy`."""
+    else goes to `copy.deepcopy`. A message nested deeper than any real one (a cycle, say)
+    is given to `copy.deepcopy` whole, which keeps cycles; one that cannot be copied at all
+    is recorded as it is. Never raises."""
+    try:
+        return _copy_json(value, 0)
+    except Exception:
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+
+def _copy_json(value: Any, depth: int) -> Any:
     kind = type(value)
-    if kind is dict:
-        return {k: _copy_json(v) for k, v in value.items()}
-    if kind is list:
-        return [_copy_json(v) for v in value]
     if kind is str or kind is int or kind is float or kind is bool or value is None:
         return value
+    if depth > _MAX_DEPTH:
+        raise _TooDeep
+    if kind is dict:
+        return {k: _copy_json(v, depth + 1) for k, v in value.items()}
+    if kind is list:
+        return [_copy_json(v, depth + 1) for v in value]
     return copy.deepcopy(value)
 
 
@@ -80,7 +102,7 @@ class TraceTap:
         if msg is None:
             return
         # Copy, so later mutation of the message does not change the record.
-        self._write({"v": TRACE_VERSION, "kind": "message", "t": self._elapsed(), "dir": direction, "msg": _copy_json(msg)})
+        self._write({"v": TRACE_VERSION, "kind": "message", "t": self._elapsed(), "dir": direction, "msg": _copy_message(msg)})
 
     def note(self, text: str, data: Any = _NO_DATA) -> None:
         """Add a note at the current time. `data=None` is recorded as null; leave it out for no data."""

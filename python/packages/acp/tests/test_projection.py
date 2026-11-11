@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import asdict
+import copy
+import pickle
+from dataclasses import FrozenInstanceError, asdict, replace
 from typing import Any
 
 import pytest
@@ -33,7 +35,7 @@ def test_terminal_output_is_stored_once_and_events_share_it():
             assert isinstance(event, TerminalEvent)
             events.append(event)
     # The event's output is read from the shared store, not a copy per event.
-    assert "_output" in events[0].terminal.__dict__ and not isinstance(events[0].terminal.__dict__["_output"], bytes)
+    assert not isinstance(events[0].terminal.__dict__["output"], bytes)
     # Kept output is capped and stored in a few segments, not one buffer per chunk.
     size, segments, capacity = terminals.storage("T") or (0, 0, 0)
     assert size == cap
@@ -99,6 +101,27 @@ async def test_turn_history_a_number_keeps_the_last_events_none_keeps_none_a_run
         Turn("d", nothing, history=-1)
 
 
+async def test_turn_history_an_iteration_abandoned_mid_turn_stops_holding_events_once_collected():
+    import gc
+
+    async def nothing() -> None:
+        return None
+
+    turn = Turn("a", nothing, history=3)
+    turn.push(UsageEvent(used=0, size=100))
+    # Suspended at a yield, then dropped without aclose(): asyncio closes it once collected,
+    # which runs its `finally` and lets the events go.
+    iterator = turn.__aiter__()
+    await iterator.__anext__()
+    del iterator
+    gc.collect()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    for i in range(1, 100):
+        turn.push(UsageEvent(used=i, size=100))
+    assert len(turn.history) == 3
+
+
 def _text(t: str) -> dict[str, Any]:
     return {"type": "content", "content": {"type": "text", "text": t}}
 
@@ -142,7 +165,7 @@ def test_message_events_read_their_text_from_the_message_without_a_copy_each():
     for i in range(50):
         apply({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"{i} "}})
     # `text` is read from the message's log, not stored on each event.
-    assert not isinstance(events[0].__dict__["_text"], str)
+    assert not isinstance(events[0].__dict__["text"], str)
     assert events[0].text == "0 " and events[2].text == "0 1 2 "
     whole = "".join(f"{i} " for i in range(50))
     assert events[49].text == whole == projection.text
@@ -157,3 +180,68 @@ def test_message_events_read_their_text_from_the_message_without_a_copy_each():
     assert projection.text == f"{whole}\n\nbye"
     apply({"sessionUpdate": "agent_message_chunk", "messageId": "m", "content": {"type": "text", "text": "!"}})
     assert projection.text == f"{whole}\n\nbye!"
+
+
+def test_event_snapshots_own_their_copy_once_read_and_assign_as_on_main():
+    projection = TurnProjection("t")
+    tools: list[ToolCallEvent] = []
+    messages: list[MessageEvent] = []
+    terminals: list[TerminalEvent] = []
+
+    def apply(update: dict[str, Any]) -> None:
+        for e in projection.apply(update)[0]:
+            if isinstance(e, ToolCallEvent):
+                tools.append(e)
+            elif isinstance(e, MessageEvent):
+                messages.append(e)
+            elif isinstance(e, TerminalEvent):
+                terminals.append(e)
+
+    # Two snapshots at the same content length (a status change adds no content).
+    apply({"sessionUpdate": "tool_call_update", "toolCallId": "c", "title": "x", "status": "pending", "content": [_text("a")]})
+    apply({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "in_progress"})
+    one, two = (e.tool_call for e in tools)
+    assert one.content is one.content
+    one.content.append({"mine": True})
+    assert len(two.content) == 1 and len(projection.tool_calls["c"].content) == 1
+    # A snapshot of another tool call in between does not lose the change.
+    apply({"sessionUpdate": "tool_call_update", "toolCallId": "d", "title": "d", "content": [_text("d")]})
+    assert len(tools[-1].tool_call.content) == 1
+    assert len(one.content) == 2
+    apply({"sessionUpdate": "tool_call_update", "toolCallId": "c", "title": "y"})
+    assert len(tools[-1].tool_call.content) == 1
+    # Tool calls are not frozen: assignment works, as on main.
+    two.content = []
+    assert two.content == []
+    # Once read, the field is a plain value in the instance.
+    assert vars(one)["content"] is one.content
+    # Message events are frozen, as on main; a read value is stored plainly.
+    apply({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}})
+    message = messages[0]
+    with pytest.raises(FrozenInstanceError):
+        message.text = "changed"  # type: ignore[misc]
+    assert message.text == "hi" and vars(message)["text"] == "hi"
+    # Terminal output (bytes): snapshots are independent and assignable.
+    apply({"sessionUpdate": "terminal_output_chunk", "terminalId": "term", "data": _b64("abc")})
+    apply({"sessionUpdate": "terminal_update", "terminalId": "term", "command": "ls"})
+    second = terminals[1].terminal
+    second.output = b"x"
+    assert second.output == b"x" and terminals[0].terminal.output == b"abc"
+    live = projection.terminals.get("term")
+    assert live is not None and live.output == b"abc"
+    # Events pickle, deep-copy, compare and convert like plain dataclasses, read or not.
+    other = TurnProjection("u")
+    other.apply({"sessionUpdate": "tool_call_update", "toolCallId": "e", "title": "e", "content": [_text("e")]})
+    other.apply({"sessionUpdate": "terminal_output_chunk", "terminalId": "T", "data": _b64("out")})
+    unread = [*other.apply({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "yo"}})[0]]
+    unread += other.apply({"sessionUpdate": "tool_call_update", "toolCallId": "e", "status": "completed"})[0]
+    unread += other.apply({"sessionUpdate": "terminal_update", "terminalId": "T", "command": "c"})[0]
+    for event in unread:
+        again = pickle.loads(pickle.dumps(event))
+        assert again == event and asdict(again) == asdict(event)
+        assert copy.deepcopy(event) == event
+    assert pickle.loads(pickle.dumps(unread[0])).text == "yo"
+    assert replace(unread[0], delta="x").text == "yo"
+    assert unread[0] == MessageEvent("u:message:1", "yo", "yo")
+    for event in (messages[0], tools[-1], terminals[0]):
+        assert pickle.loads(pickle.dumps(event)) == event and copy.deepcopy(event) == event

@@ -22,7 +22,9 @@ import type { ToolCall, TurnEvent, TurnResult } from './model.ts';
  * `'all'` (the default) keeps every event; a number keeps the last that many;
  * `'none'` keeps none. An event is only dropped once every iterator running
  * at the time (and the turn's handlers) has had it, so a running reader never
- * misses one; an iterator started later begins at the oldest event kept.
+ * misses one; an iterator started later begins at the oldest event kept. An
+ * iterator you stop calling `next()` on without ending it (`break`,
+ * `return()`) holds events back until it is garbage collected.
  * `text`, `toolCalls` and `done` are not affected.
  */
 export type TurnHistory = 'all' | 'none' | number;
@@ -48,8 +50,12 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private dropped = 0;
   /** How many events to keep; undefined keeps all. */
   private readonly keep?: number;
-  /** Where each running iterator is (an absolute event index). */
-  private readonly cursors = new Set<{ index: number }>();
+  /**
+   * Where each running iterator is (an absolute event index). Held weakly: an
+   * iterator dropped while suspended at a yield never runs its `finally`, so
+   * its cursor goes when the iterator is collected instead of pinning history.
+   */
+  private readonly cursors = new Set<WeakRef<{ index: number }>>();
   private readonly waiters = new Set<() => void>();
   private finished?: { ok: true; result: TurnResult } | { ok: false; error: unknown };
   private resolveDone!: (result: TurnResult) => void;
@@ -123,7 +129,8 @@ export class Turn implements AsyncIterable<TurnEvent> {
 
   async *[Symbol.asyncIterator](): AsyncIterator<TurnEvent> {
     const cursor = { index: this.dropped };
-    this.cursors.add(cursor);
+    const ref = new WeakRef(cursor);
+    this.cursors.add(ref);
     try {
       for (;;) {
         while (cursor.index < this.total) {
@@ -140,7 +147,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
         await new Promise<void>((resolve) => this.waiters.add(resolve));
       }
     } finally {
-      this.cursors.delete(cursor);
+      this.cursors.delete(ref);
       this.trim();
     }
   }
@@ -161,7 +168,11 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private trim(): void {
     if (this.keep === undefined) return;
     let until = this.total - this.keep;
-    for (const cursor of this.cursors) until = Math.min(until, cursor.index);
+    for (const ref of this.cursors) {
+      const cursor = ref.deref();
+      if (cursor) until = Math.min(until, cursor.index);
+      else this.cursors.delete(ref);
+    }
     if (until <= this.dropped) return;
     for (let i = this.head; i < this.head + until - this.dropped; i++) this.events[i] = undefined as unknown as TurnEvent;
     this.head += until - this.dropped;

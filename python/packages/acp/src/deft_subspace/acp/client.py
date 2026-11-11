@@ -799,7 +799,8 @@ class _Active:
     prompt_task: asyncio.Task[Any] | None = None
 
 
-# Where a session is. Only `Session._enter()` changes it.
+# Where a session is. Only `Session._enter()` moves it to another phase; the progress flags
+# of a running turn (`started`, `answered`, `idle_seen`) are updated in place.
 
 
 @dataclass
@@ -1427,10 +1428,11 @@ class Session:
             return {"outcome": {"outcome": "cancelled"}}
         active = state.turn
         request = self._permission_request(params, active.projection)
-        combined = AbortSignal.any([signal, active.questions.signal])
-        # What the agent said before asking is shown before the question.
-        await active.turn.caught_up()
-        outcome = await decide(active.permissions if active.permissions is not None else policy, request, combined)
+        # Disposed once answered, so a turn does not keep a listener per permission request.
+        with AbortSignal.any([signal, active.questions.signal]) as combined:
+            # What the agent said before asking is shown before the question.
+            await active.turn.caught_up()
+            outcome = await decide(active.permissions if active.permissions is not None else policy, request, combined)
         if (outcome.outcome == "cancelled" or not outcome.allowed) and not active.questions.signal.aborted:
             active.refused += 1
         active.turn.push(PermissionEvent(request, outcome))

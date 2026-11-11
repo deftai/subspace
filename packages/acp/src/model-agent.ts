@@ -47,11 +47,14 @@ export interface ModelToolResult {
 
 /**
  * What goes to the model next: the user's prompt, or the results of its tool
- * calls. A prompt carries `toolResults` too when tools of the previous turn
- * ran but the model never heard back (the turn hit `maxSteps` or was
- * cancelled); put them before the prompt. A call with no result never ran.
+ * calls. A prompt has `interruptedToolResults` when tools of the previous
+ * turn ran but the model never heard back (the turn hit `maxSteps` or was
+ * cancelled): give them to the model before the prompt. A call with no result
+ * never ran. A conversation that does not know the field still gets the prompt.
  */
-export type ModelInput = { prompt: ContentBlock[]; toolResults?: ModelToolResult[] } | { toolResults: ModelToolResult[] };
+export type ModelInput =
+  | { prompt: ContentBlock[]; interruptedToolResults?: ModelToolResult[] }
+  | { toolResults: ModelToolResult[] };
 
 /** One conversation with a model (one ACP session). It keeps its own history. */
 export interface ModelConversation {
@@ -123,10 +126,11 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
       const conversation = conversationFor(turn);
       const carried = unsent.get(turn.sessionId);
       unsent.delete(turn.sessionId);
-      let input: ModelInput = carried?.length ? { prompt: turn.prompt, toolResults: carried } : { prompt: turn.prompt };
-      // Tools that ran but whose results the model has not had yet: kept for the next prompt if the turn stops here.
+      let input: ModelInput = carried?.length ? { prompt: turn.prompt, interruptedToolResults: carried } : { prompt: turn.prompt };
+      // Tools that ran but whose results the model has not had yet: kept for the next prompt if the turn stops here,
+      // unless the session was forgotten (closed, or its connection closed) while the turn unwound.
       const stopWith = (stop: StopReason, results: ModelToolResult[]): StopReason => {
-        if (results.length) unsent.set(turn.sessionId, results);
+        if (results.length && conversations.get(turn.sessionId) === conversation) unsent.set(turn.sessionId, results);
         return stop;
       };
       for (let step = 0; step < maxSteps; step++) {
@@ -146,7 +150,7 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
         input = { toolResults: results };
       }
       // The last input was never sent.
-      return stopWith('max_turn_requests', input.toolResults ?? []);
+      return stopWith('max_turn_requests', 'toolResults' in input ? input.toolResults : (input.interruptedToolResults ?? []));
     },
   };
 }

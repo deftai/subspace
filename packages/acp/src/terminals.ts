@@ -13,6 +13,7 @@
  * Output is bytes (it may split a UTF-8 character or an escape sequence);
  * `terminalText()` decodes it for a plain transcript.
  */
+import { defineLazy } from './lazy.ts';
 
 export interface TerminalExit {
   exitCode?: number;
@@ -28,10 +29,11 @@ export interface TerminalState {
   size?: { cols: number; rows: number };
   /**
    * Every byte the agent wants shown, so far (the last million by default).
-   * Joined from the stored chunks when read, so an event's snapshot costs
-   * nothing until you look; treat the array as read-only.
+   * An event's snapshot joins it from the stored chunks the first time it is
+   * read, so it costs nothing until you look; after that it is the
+   * snapshot's own array.
    */
-  readonly output: Uint8Array;
+  output: Uint8Array;
   /** Present once the command has exited. */
   exitStatus?: TerminalExit;
   /** The agent lets the client stop it (`session.cancelTerminal()`). */
@@ -84,7 +86,7 @@ class OutputLog {
   private startOffset = 0;
   private length = 0;
   private current?: Span;
-  /** The last span read, and its bytes. */
+  /** The output last read through now(), and its bytes. */
   private cache?: { span: Span; bytes: Uint8Array };
   private readonly maxBytes: number;
 
@@ -156,8 +158,15 @@ class OutputLog {
     return this.current;
   }
 
+  /** The output as it is now: the same array until the output changes. */
+  now(): Uint8Array {
+    const span = this.span();
+    if (this.cache?.span !== span) this.cache = { span, bytes: this.bytes(span) };
+    return this.cache.bytes;
+  }
+
+  /** A new array of the bytes a span covers. */
   bytes(span: Span): Uint8Array {
-    if (this.cache?.span === span) return this.cache.bytes;
     const out = new Uint8Array(span.length);
     let at = 0;
     for (let i = span.start; i < span.end; i++) {
@@ -166,7 +175,6 @@ class OutputLog {
       out.set(span.segments[i]!.subarray(from, to), at);
       at += to - from;
     }
-    this.cache = { span, bytes: out };
     return out;
   }
 
@@ -200,9 +208,17 @@ export function terminalText(terminal: Pick<TerminalState, 'output'>): string {
   return new TextDecoder().decode(terminal.output);
 }
 
-/** A terminal's `output`, read from its log: an own enumerable property, so spreading or JSON sees it. */
-function defineOutput(target: object, read: () => Uint8Array): void {
-  Object.defineProperty(target, 'output', { get: read, enumerable: true, configurable: true });
+/**
+ * A live terminal's `output`: the log as it is now. Assigning replaces what is
+ * kept, as a `terminal_update` with output does.
+ */
+function defineLiveOutput(target: object, log: OutputLog): void {
+  Object.defineProperty(target, 'output', {
+    get: () => log.now(),
+    set: (value: unknown) => log.reset(value instanceof Uint8Array ? value : new Uint8Array()),
+    enumerable: true,
+    configurable: true,
+  });
 }
 
 export class Terminals {
@@ -225,7 +241,7 @@ export class Terminals {
 
   /**
    * The terminal as it is now, unchanged by later updates. Its `output` is
-   * joined when read: a snapshot does not copy the output.
+   * joined the first time it is read: a snapshot nobody reads copies nothing.
    */
   snapshot(id: string): Readonly<TerminalState> | undefined {
     const terminal = this.byId.get(id);
@@ -235,8 +251,9 @@ export class Terminals {
     for (const key of Object.keys(terminal) as Array<keyof TerminalState>) {
       if (key !== 'output') (snapshot as unknown as Record<string, unknown>)[key] = terminal[key];
       else {
+        // Copied the first time it is read; then the snapshot's own array.
         const span = log.span();
-        defineOutput(snapshot, () => log.bytes(span));
+        defineLazy(snapshot, 'output', () => log.bytes(span));
       }
     }
     return snapshot;
@@ -262,7 +279,7 @@ export class Terminals {
       const created = new OutputLog(this.maxBytes);
       log = created;
       terminal = { id } as TerminalState;
-      defineOutput(terminal, () => created.bytes(created.span()));
+      defineLiveOutput(terminal, created);
       this.byId.set(id, terminal);
       this.logs.set(id, log);
     }

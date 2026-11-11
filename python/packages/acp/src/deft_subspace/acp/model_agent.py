@@ -63,9 +63,10 @@ class ToolResult:
 class PromptInput:
     prompt: list[ContentBlock]
     #: Results of the previous turn's tool calls that ran but the model never heard back
-    #: about (the turn hit `max_steps` or was cancelled); put them before the prompt. A
-    #: call with no result never ran.
-    tool_results: list[ToolResult] = field(default_factory=list)
+    #: about (the turn hit `max_steps` or was cancelled): give them to the model before the
+    #: prompt. A call with no result never ran. A conversation that does not know the field
+    #: still gets the prompt.
+    interrupted_tool_results: list[ToolResult] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -167,8 +168,9 @@ def model_agent(
         nxt: ModelInput = PromptInput(list(turn.prompt), unsent.pop(turn.session_id, []))
 
         def stop_with(stop: str, results: list[ToolResult]) -> str:
-            # Tools that ran but whose results the model has not had yet: kept for the next prompt.
-            if results:
+            # Tools that ran but whose results the model has not had yet: kept for the next prompt,
+            # unless the session was forgotten (closed, or its connection closed) while the turn unwound.
+            if results and conversations.get(turn.session_id) is conversation:
                 unsent[turn.session_id] = results
             return stop
 
@@ -187,7 +189,7 @@ def model_agent(
                 return stop_with("cancelled", results)
             nxt = ToolResultsInput(results)
         # The last input was never sent.
-        return stop_with("max_turn_requests", nxt.tool_results)
+        return stop_with("max_turn_requests", nxt.tool_results if isinstance(nxt, ToolResultsInput) else nxt.interrupted_tool_results)
 
     return {
         **agent_options,

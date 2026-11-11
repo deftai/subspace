@@ -73,7 +73,7 @@ class ClaudeConversation implements ModelConversation {
 
   async send(input: ModelInput, stream: { onText(delta: string): unknown; onThinking(delta: string): unknown; signal: AbortSignal }): Promise<ModelReply> {
     // A prompt may carry results too: of tools that ran after the model last heard back.
-    const results = input.toolResults ?? [];
+    const results = 'toolResults' in input ? input.toolResults : (input.interruptedToolResults ?? []);
     const answered = new Set(results.map((r) => r.id));
     // Every tool_use needs a result in the next user message; ones that never ran get an error.
     const unanswered: ContentParam[] = this.pending
