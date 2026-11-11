@@ -67,6 +67,9 @@ export function backgroundOf(update: Record<string, unknown>): BackgroundItem[] 
  * content list only grows by appending (a replacement is a new list), so the
  * snapshot keeps the list and its length and copies that much the first time
  * its `content` is read. From then on `content` is the snapshot's own array.
+ * The items are shared, as in any shallow copy; so is the list until it is
+ * read: change a live tool call's `content` in place (not through updates)
+ * and snapshots not yet read see the change.
  */
 export function snapshotToolCall(call: Readonly<ToolCall>): ToolCall {
   const { content, ...rest } = call;

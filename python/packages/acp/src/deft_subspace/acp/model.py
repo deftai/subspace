@@ -71,7 +71,9 @@ class ToolCall:
 
         Content only grows by appending (a replacement is a new list), so the copy keeps
         the list and its length and copies that much the first time its `content` is read;
-        from then on `content` is the copy's own list.
+        from then on `content` is the copy's own list. The items are shared, as in any
+        shallow copy; so is the list until it is read: change a live tool call's `content`
+        in place (not through updates) and snapshots not yet read see the change.
         """
         source = stored(self, "content")
         snap = ToolCall(
