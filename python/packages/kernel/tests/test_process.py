@@ -137,7 +137,7 @@ async def test_ended_settles_after_the_reader_stopped_early():
 
 
 async def test_ended_settles_with_no_reader_and_the_output_is_still_there():
-    child = await spawn_process(PY, args=["-c", "print('unread')"])
+    child = await spawn_process(PY, args=["-c", "import sys; sys.stdout.buffer.write(b'unread\\n')"])
     assert (await asyncio.wait_for(child.ended(), 3)).code == 0
     assert await child.channel.receive() == b"unread\n"
 
