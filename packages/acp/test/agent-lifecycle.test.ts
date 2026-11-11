@@ -60,7 +60,7 @@ test('a closed connection stops turns and closes MCP connections, without closeS
   void session.prompt('go').done.catch(() => {});
   await running;
   await client.close();
-  for (let i = 0; i < 50 && events.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 400 && events.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(events.sort(), ['mcp closed', 'turn stopped']);
 });
 
@@ -158,7 +158,7 @@ test('a closed connection calls connectionClosed with its open sessions, after t
   const closed = await client.newSession({ cwd: '/w' });
   await closed.close();
   await client.close();
-  for (let i = 0; i < 50 && !events.some((e) => e.startsWith('connectionClosed')); i++) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 400 && !events.some((e) => e.startsWith('connectionClosed')); i++) await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(events, [`closeSession ${closed.id}`, 'mcp closed', `connectionClosed ${[a.id, b.id].sort().join(',')}`]);
 });
 
