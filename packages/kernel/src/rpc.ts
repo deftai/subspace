@@ -1,6 +1,7 @@
 import type { Channel } from './channel.ts';
 import { systemClock, type Clock } from './clock.ts';
 import { ErrorCode, LocalError, RpcError } from './errors.ts';
+import { EncodeError, takeEncodeFailure } from './framing.ts';
 
 /**
  * JSON-RPC ids are opaque. `0` and `""` are as valid as any other id, and
@@ -48,7 +49,8 @@ export interface PeerDiagnostic {
     | 'invalid-message'
     | 'late-response'
     | 'handler-failed'
-    | 'duplicate-request-id';
+    | 'duplicate-request-id'
+    | 'send-failed';
   message: string;
   detail?: unknown;
 }
@@ -350,22 +352,26 @@ export class RpcPeer {
 
     const run = async () => {
       try {
-        const handler = this.requestHandlers.get(method) ?? this.requestHandlers.get('*');
-        const result = await this.runInbound({ kind: 'request', method, params, id }, context, async () => {
-          if (!handler) throw RpcError.methodNotFound(method);
-          return handler(params, context);
-        });
-        await this.write(this.message({ id, result: result === undefined ? null : result }));
-      } catch (error) {
-        if (this.closeInfo) return;
-        if (RpcError.is(error)) {
-          await this.write(this.message({ id, error: error.toJSON() })).catch(() => {});
-        } else if (controller.signal.aborted) {
-          await this.replyError(id, ErrorCode.RequestCancelled, 'Request cancelled');
-        } else {
-          this.diagnose('handler-failed', `Handler for ${method} threw`, error);
-          await this.replyError(id, ErrorCode.InternalError, error instanceof Error ? error.message : String(error));
+        let reply: Record<string, unknown>;
+        try {
+          const handler = this.requestHandlers.get(method) ?? this.requestHandlers.get('*');
+          const result = await this.runInbound({ kind: 'request', method, params, id }, context, async () => {
+            if (!handler) throw RpcError.methodNotFound(method);
+            return handler(params, context);
+          });
+          reply = { id, result: result === undefined ? null : result };
+        } catch (error) {
+          if (this.closeInfo) return;
+          if (RpcError.is(error)) {
+            reply = { id, error: error.toJSON() };
+          } else if (controller.signal.aborted) {
+            reply = { id, error: { code: ErrorCode.RequestCancelled, message: 'Request cancelled' } };
+          } else {
+            this.diagnose('handler-failed', `Handler for ${method} threw`, error);
+            reply = { id, error: { code: ErrorCode.InternalError, message: error instanceof Error ? error.message : String(error) } };
+          }
         }
+        await this.answer(id, method, reply);
       } finally {
         if (this.inbound.get(id) === controller) this.inbound.delete(id);
         this.connectionAbort.signal.removeEventListener('abort', onClose);
@@ -412,6 +418,17 @@ export class RpcPeer {
     return { jsonrpc: '2.0', ...body };
   }
 
+  /** Send the answer to a request. One that cannot be encoded becomes an InternalError. */
+  private async answer(id: JsonRpcId, method: string, reply: Record<string, unknown>): Promise<void> {
+    try {
+      await this.write(this.message(reply));
+    } catch (error) {
+      if (LocalError.is(error, 'closed')) return;
+      this.diagnose('send-failed', `Could not send the answer for ${method}`, error);
+      if (error instanceof EncodeError) await this.replyError(id, ErrorCode.InternalError, `The answer for ${method} could not be encoded`);
+    }
+  }
+
   private replyError(id: JsonRpcId | null, code: number, message: string): Promise<void> {
     return this.write(this.message({ id, error: { code, message } })).catch(() => {});
   }
@@ -420,6 +437,8 @@ export class RpcPeer {
     if (this.closeInfo) throw new LocalError('closed', `${this.name}: connection closed`);
     this.tap('out', message);
     await this.writer.write(message);
+    const failure = takeEncodeFailure(message);
+    if (failure) throw failure;
   }
 
   private tap(direction: 'in' | 'out', message: unknown): void {

@@ -15,7 +15,7 @@ from .channel import (
 )
 from .clock import Clock, SystemClock, system_clock
 from .errors import ErrorCode, LocalError, LocalErrorKind, RpcError
-from .framing import FramingDiagnostic, NdjsonDecoder, NdjsonEncoder, ndjson, ndjson_decoder, ndjson_encoder
+from .framing import EncodeError, FramingDiagnostic, NdjsonDecoder, NdjsonEncoder, ndjson, ndjson_decoder, ndjson_encoder
 from .process import ExitInfo, SpawnError, SupervisedProcess, spawn_process
 from .rpc import (
     NO_ID,
@@ -46,6 +46,7 @@ __all__ = [
     "ChannelClosed",
     "Clock",
     "CloseInfo",
+    "EncodeError",
     "EndOfChannel",
     "ErrorCode",
     "ExitInfo",

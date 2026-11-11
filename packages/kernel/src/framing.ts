@@ -98,19 +98,54 @@ export function ndjsonDecoder(options: NdjsonOptions = {}): TransformStream<Uint
   });
 }
 
+/** A value that has no JSON form (a cycle, a BigInt, `undefined`). */
+export class EncodeError extends Error {
+  constructor(cause: unknown) {
+    super(`Value cannot be encoded as JSON: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'EncodeError';
+  }
+}
+
+// Objects the encoder could not write, and why. A stream cannot fail one
+// write without failing for good, so the writer asks here afterwards.
+const encodeFailures = new WeakMap<object, EncodeError>();
+
+/** The EncodeError for a value an encoder just skipped, if it did. Clears it. */
+export function takeEncodeFailure(value: unknown): EncodeError | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const failure = encodeFailures.get(value);
+  if (failure) encodeFailures.delete(value);
+  return failure;
+}
+
 /**
  * Write JSON values as lines of UTF-8. A value that cannot be serialized
- * (a cycle, a BigInt) is dropped and reported; it never breaks the stream.
+ * (a cycle, a BigInt, `undefined`) is dropped and reported; it never breaks
+ * the stream. An RpcPeer writing through `ndjson()` fails that one write.
  */
 export function ndjsonEncoder(options: { onError?: (error: unknown, value: unknown) => void } = {}): TransformStream<unknown, Uint8Array> {
   const encoder = new TextEncoder();
+  const fail = (cause: unknown, value: unknown) => {
+    const error = new EncodeError(cause);
+    if (typeof value === 'object' && value !== null) encodeFailures.set(value, error);
+    try {
+      options.onError?.(cause, value);
+    } catch {
+      // A broken error hook must not break the stream.
+    }
+  };
   return new TransformStream<unknown, Uint8Array>({
     transform(value, controller) {
-      let text: string;
+      let text: string | undefined;
       try {
         text = JSON.stringify(value);
       } catch (error) {
-        options.onError?.(error, value);
+        fail(error, value);
+        return;
+      }
+      // undefined, functions and symbols have no JSON form.
+      if (text === undefined) {
+        fail(new TypeError(`${typeof value} is not JSON`), value);
         return;
       }
       controller.enqueue(encoder.encode(`${text}\n`));

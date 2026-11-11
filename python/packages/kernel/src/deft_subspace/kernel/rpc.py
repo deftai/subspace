@@ -27,6 +27,7 @@ from .abort import AbortController, AbortSignal
 from .channel import Channel, ChannelClosed, EndOfChannel
 from .clock import Clock, system_clock
 from .errors import ErrorCode, LocalError, RpcError
+from .framing import EncodeError
 
 JsonRpcId = str | int | float | None
 """JSON-RPC ids are opaque. `0` and `""` are as valid as any other id, and
@@ -65,7 +66,7 @@ InboundMiddleware = Callable[[Call, Callable[[], Awaitable[Any]], InboundContext
 OutboundMiddleware = Callable[[Call, Callable[[Any], Awaitable[Any]]], Awaitable[Any]]
 """Wraps outbound calls. `await next(params)` sends; it returns the result (requests) or None (notifications)."""
 
-DiagnosticKind = Literal["invalid-message", "late-response", "handler-failed", "duplicate-request-id"]
+DiagnosticKind = Literal["invalid-message", "late-response", "handler-failed", "duplicate-request-id", "send-failed"]
 
 
 @dataclass(frozen=True)
@@ -483,22 +484,25 @@ class RpcPeer:
                         raise RpcError.method_not_found(method)
                     return await _resolve(handler(params, context))
 
-                result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
-                await self._write(self._message(id=request_id, result=result))
-            except asyncio.CancelledError:
-                if self._close_info is None:
-                    self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
-                raise
-            except Exception as error:  # noqa: BLE001
-                if self._close_info is not None:
-                    return
-                if isinstance(error, RpcError):
-                    self._write_quiet(self._message(id=request_id, error=error.to_json()))
-                elif controller.signal.aborted:
-                    self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
-                else:
-                    self._diagnose("handler-failed", f"Handler for {method} raised", error)
-                    self._reply_error(request_id, ErrorCode.INTERNAL_ERROR, str(error) or type(error).__name__)
+                try:
+                    result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
+                    reply = self._message(id=request_id, result=result)
+                except asyncio.CancelledError:
+                    if self._close_info is None:
+                        self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    if self._close_info is not None:
+                        return
+                    if isinstance(error, RpcError):
+                        reply = self._message(id=request_id, error=error.to_json())
+                    elif controller.signal.aborted:
+                        reply = self._message(id=request_id, error={"code": ErrorCode.REQUEST_CANCELLED, "message": "Request cancelled"})
+                    else:
+                        self._diagnose("handler-failed", f"Handler for {method} raised", error)
+                        message = str(error) or type(error).__name__
+                        reply = self._message(id=request_id, error={"code": ErrorCode.INTERNAL_ERROR, "message": message})
+                await self._answer(request_id, method, reply)
             finally:
                 if self._inbound.get(key) is controller:
                     del self._inbound[key]
@@ -570,6 +574,17 @@ class RpcPeer:
     @staticmethod
     def _message(**body: Any) -> dict[str, Any]:
         return {"jsonrpc": "2.0", **body}
+
+    async def _answer(self, request_id: JsonRpcId, method: str, reply: dict[str, Any]) -> None:
+        """Send the answer to a request. One that cannot be encoded becomes an InternalError."""
+        try:
+            await self._write(reply)
+        except Exception as error:  # noqa: BLE001
+            if isinstance(error, LocalError) and error.kind == "closed":
+                return
+            self._diagnose("send-failed", f"Could not send the answer for {method}", error)
+            if isinstance(error, EncodeError):
+                self._reply_error(request_id, ErrorCode.INTERNAL_ERROR, f"The answer for {method} could not be encoded")
 
     def _reply_error(self, request_id: JsonRpcId, code: int, message: str) -> None:
         self._write_quiet(self._message(id=request_id, error={"code": code, "message": message}))

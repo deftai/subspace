@@ -5,6 +5,7 @@ import {
   channelPair,
   ErrorCode,
   LocalError,
+  ndjson,
   RpcError,
   RpcPeer,
   type Channel,
@@ -213,6 +214,64 @@ test('sendRaw writes a message as given, outside request tracking', async () => 
   await tick();
   assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 'never-received', result: 42 }]);
   assert.equal(peer.pendingCount, 0);
+});
+
+/** Two peers talking NDJSON over bytes, as over stdio. */
+function bytePair(b: RpcPeerOptions = {}) {
+  const aToB = new TransformStream<Uint8Array, Uint8Array>();
+  const bToA = new TransformStream<Uint8Array, Uint8Array>();
+  const client = new RpcPeer(ndjson({ readable: bToA.readable, writable: aToB.writable }), { name: 'client' });
+  const server = new RpcPeer(ndjson({ readable: aToB.readable, writable: bToA.writable }), { name: 'server', ...b });
+  return { client, server, start: () => (client.start(), server.start()) };
+}
+
+test('a request that cannot be encoded fails with send-failed, and the stream keeps working', async () => {
+  const { client, server, start } = bytePair();
+  server.onRequest('echo', (p) => p);
+  start();
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  await assert.rejects(client.request('echo', { n: 1n }), (e) => LocalError.is(e, 'send-failed'));
+  await assert.rejects(client.request('echo', cycle), (e) => LocalError.is(e, 'send-failed'));
+  await assert.rejects(client.notify('echo', { n: 1n }));
+  assert.equal(client.pendingCount, 0);
+  assert.deepEqual(await client.request('echo', { ok: true }), { ok: true });
+});
+
+test('a result that cannot be encoded is answered with InternalError', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const { client, server, start } = bytePair({ onDiagnostic: (d) => diagnostics.push(d) });
+  server.onRequest('big', () => ({ n: 10n }));
+  server.onRequest('bad-error', () => {
+    throw new RpcError(ErrorCode.InvalidParams, 'bad', { n: 1n });
+  });
+  start();
+  await assert.rejects(client.request('big'), (e) => RpcError.is(e) && e.code === ErrorCode.InternalError);
+  await assert.rejects(client.request('bad-error'), (e) => RpcError.is(e) && e.code === ErrorCode.InternalError);
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['send-failed', 'send-failed']);
+});
+
+test('a failed write of an answer is a send failure, with no second answer', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const [left, right] = channelPair<unknown>();
+  const writes: unknown[] = [];
+  const writer = left.writable.getWriter();
+  const channel: Channel<unknown> = {
+    readable: left.readable,
+    writable: new WritableStream({
+      write(message) {
+        writes.push(message);
+        if ('result' in (message as object)) throw new Error('pipe broke');
+        return writer.write(message);
+      },
+    }),
+  };
+  const peer = new RpcPeer(channel, { onDiagnostic: (d) => diagnostics.push(d) });
+  peer.onRequest('x', () => 'answer').start();
+  await right.writable.getWriter().write({ jsonrpc: '2.0', id: 1, method: 'x' });
+  await tick();
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['send-failed']);
+  assert.equal(writes.length, 1);
 });
 
 test('a cancel id extractor that throws is reported, and the connection stays open', async () => {

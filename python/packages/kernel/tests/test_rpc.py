@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from typing import Any
 
 import pytest
@@ -11,8 +12,10 @@ from deft_subspace.kernel import (
     PeerDiagnostic,
     RpcError,
     RpcPeer,
+    ChannelClosed,
     cancel_request,
     channel_pair,
+    ndjson,
 )
 from deft_subspace.kernel.testing import manual_clock, tick
 
@@ -368,3 +371,75 @@ async def test_a_base_exception_in_a_handler_is_not_turned_into_a_reply():
     assert end.sent == []
     for task in list(peer._tasks):
         task.cancel()
+
+
+def byte_pair(b: dict[str, Any] | None = None):
+    """Two peers talking NDJSON over bytes, as over stdio."""
+    left, right = channel_pair()
+    client = RpcPeer(ndjson(left), name="client")
+    server = RpcPeer(ndjson(right), **{"name": "server", **(b or {})})
+
+    def start() -> None:
+        client.start()
+        server.start()
+
+    return client, server, start
+
+
+async def test_a_request_that_cannot_be_encoded_fails_with_send_failed():
+    client, server, start = byte_pair()
+    server.on_request("echo", lambda p, _c: p)
+    start()
+    cycle: dict[str, Any] = {}
+    cycle["self"] = cycle
+    for params in ({"t": datetime.datetime.now()}, cycle):
+        with pytest.raises(LocalError) as info:
+            await asyncio.wait_for(client.request("echo", params), 1)
+        assert info.value.kind == "send-failed"
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(client.notify("echo", {"t": datetime.datetime.now()}), 1)
+    assert client.pending_count == 0
+    assert await client.request("echo", {"ok": True}) == {"ok": True}
+
+
+async def test_a_result_that_cannot_be_encoded_is_answered_with_internal_error():
+    diagnostics: list[PeerDiagnostic] = []
+    client, server, start = byte_pair({"on_diagnostic": diagnostics.append})
+    server.on_request("dt", lambda _p, _c: {"t": datetime.datetime.now()})
+
+    def bad_error(_p, _c):
+        raise RpcError(ErrorCode.INVALID_PARAMS, "bad", {"t": datetime.datetime.now()})
+
+    server.on_request("bad-error", bad_error)
+    start()
+    for method in ("dt", "bad-error"):
+        with pytest.raises(RpcError) as info:
+            await asyncio.wait_for(client.request(method), 1)
+        assert info.value.code == ErrorCode.INTERNAL_ERROR
+    assert [d.kind for d in diagnostics] == ["send-failed", "send-failed"]
+
+
+async def test_a_failed_write_of_an_answer_is_a_send_failure_with_no_second_answer():
+    diagnostics: list[PeerDiagnostic] = []
+    left, right = channel_pair()
+    writes: list[Any] = []
+
+    class Breaks:
+        async def receive(self) -> Any:
+            return await left.receive()
+
+        async def send(self, message: Any) -> None:
+            writes.append(message)
+            if "result" in message:
+                raise ChannelClosed("pipe broke")
+            await left.send(message)
+
+        async def close(self) -> None:
+            await left.close()
+
+    peer = RpcPeer(Breaks(), on_diagnostic=diagnostics.append)
+    peer.on_request("x", lambda _p, _c: "answer").start()
+    await right.send({"jsonrpc": "2.0", "id": 1, "method": "x"})
+    await tick(10)
+    assert [d.kind for d in diagnostics] == ["send-failed"]
+    assert len(writes) == 1

@@ -102,3 +102,39 @@ test('encoder drops an unserializable value instead of breaking the stream', asy
   assert.equal(text, '{"a":1}\n{"b":2}\n');
   assert.equal(errors.length, 1);
 });
+
+test('encoder drops values with no JSON form (undefined, BigInt) instead of writing them', async () => {
+  const errors: unknown[] = [];
+  const out = new ReadableStream({
+    start(controller) {
+      controller.enqueue(undefined);
+      controller.enqueue(1n);
+      controller.enqueue(() => {});
+      controller.enqueue(null);
+      controller.close();
+    },
+  }).pipeThrough(ndjsonEncoder({ onError: (e) => errors.push(e) }));
+  let text = '';
+  for await (const chunk of out) text += new TextDecoder().decode(chunk);
+  assert.equal(text, 'null\n');
+  assert.equal(errors.length, 3);
+});
+
+test('a throwing onError does not break the encoder', async () => {
+  const out = new ReadableStream({
+    start(controller) {
+      controller.enqueue(1n);
+      controller.enqueue(2);
+      controller.close();
+    },
+  }).pipeThrough(
+    ndjsonEncoder({
+      onError: () => {
+        throw new Error('hook broke');
+      },
+    })
+  );
+  let text = '';
+  for await (const chunk of out) text += new TextDecoder().decode(chunk);
+  assert.equal(text, '2\n');
+});
