@@ -35,8 +35,8 @@ folders = [
 - An entry trusts that folder only: a `subspace.toml` in a folder below it needs its own entry. (From a subfolder that has no `subspace.toml` of its own, the trusted folder's file is still the nearest.)
 - Only `agents.toml` is read for `[trust]`; the table is ignored in any other file.
 - An untrusted `subspace.toml` is skipped, with a warning on stderr that names it and shows the line to add. Your `agents.toml`, `$SUBSPACE_AGENTS` and `--agents-file` still load. A file named in `$SUBSPACE_AGENTS` or `--agents-file` is read even if it is a project's `subspace.toml`: naming it is trusting it.
-- `subspace run`, `chat`, `check` and `agents` take `--trust-project` to read it for one run, and `subspace agents --files` marks it `✗` while it is not trusted.
-- A scenario that names an agent reads its project's `subspace.toml` without this check: a scenario file can already run any command, so it is trusted as far as that file is.
+- `subspace run`, `chat`, `test`, `check` and `agents` take `--trust-project` to read it for one run, and `subspace agents --files` marks it `✗` while it is not trusted.
+- A scenario that names an agent goes through the same check, from the scenario file's folder up: an untrusted `subspace.toml` is skipped with the same warning (once per file per run), and the name is looked up without it. Trust the folder, or opt in with `subspace test --trust-project` or `runScenario(scenario, { trustProject: true })`. A scenario whose agent is a command (`{ "command": ... }`) does not read the catalog.
 
 ## The file
 

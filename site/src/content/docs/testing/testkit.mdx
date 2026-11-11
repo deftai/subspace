@@ -54,7 +54,7 @@ Describe what an agent should do, and check it did:
 
 Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "scenarios": [...] }`; also TypeScript modules exporting `defineScenario(...)`), or `runScenario()` from `@deft-subspace/acp-testkit/node`.
 
-- **Agent:** a known name or `{ command, args, env, mode }`; it starts in its ask-first mode unless `mode` says otherwise.
+- **Agent:** a known name or `{ command, args, env, mode }`; it starts in its ask-first mode unless `mode` says otherwise. A name is looked up in the [agent catalog](../../client/agents-file/) from the scenario file's folder up, so a `subspace.toml` there is read only if its folder is trusted; otherwise it is skipped with a warning. `--trust-project` (`trustProject: true`) reads it for one run; `onWarning` receives the warning instead of stderr.
 - **Workspace:** a fresh temporary folder each run, empty or a copy of `workspace.from` (relative to the scenario file).
 - **Permissions:** `allow`, `reject` (the default), `read-only`, or `{ allow: [kinds], reject: [kinds] }`.
 - **Expectations, per turn:** `end` (`completed`, `refused`, `cancelled`, `limit`, `error`), `stopReason`, `text` (`contains`, `notContains`, `matches`), `toolCalls` (`min`, `max`, `titles`, `kinds`, `allCompleted`), `permissions` (`min`, `max`, `titles`), `files` (`exists`, `contains`, `equals`, `matches`), `updates` (`min`, `max`).

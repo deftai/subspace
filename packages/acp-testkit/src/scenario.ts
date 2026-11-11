@@ -34,6 +34,7 @@ import {
   start,
   turnEnd,
   type AgentName,
+  type CatalogOptions,
   type PermissionPolicy,
   type TurnEnd,
   type TurnEvent,
@@ -169,6 +170,14 @@ export interface RunOptions {
   keep?: boolean;
   /** Each event of each turn, for progress output. */
   onEvent?: (event: TurnEvent, scenario: string) => void;
+  /**
+   * Read the nearest subspace.toml (from `baseDir` up) for a named agent even
+   * if its folder is not in your agents.toml's [trust] folders. Default false:
+   * an untrusted one is skipped with a warning, as `loadCatalog()` does.
+   */
+  trustProject?: boolean;
+  /** Told about a subspace.toml skipped because its folder is not trusted. Default: once per file, on stderr. */
+  onWarning?: (message: string) => void;
 }
 
 const list = <T>(value: OneOrMore<T> | undefined): T[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
@@ -281,9 +290,9 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     if (!scenario.turns?.length) throw new Error('the scenario has no turns');
     agent = await start(target, {
       cwd: workspace,
-      // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace.
-      // That subspace.toml is trusted as the scenario file is: a scenario can name any command to run.
-      ...(typeof target === 'string' ? { catalog: loadCatalog({ cwd: baseDir, trustProject: true }) } : {}),
+      // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace,
+      // with the same trust check as everywhere else: an untrusted subspace.toml is skipped with a warning.
+      ...(typeof target === 'string' ? { catalog: loadCatalog(catalogOptions(baseDir, options)) } : {}),
       permissions: permissionPolicy(scenario.permissions),
       trace: tracePath,
       quiet: true,
@@ -336,6 +345,10 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     await rm(dirname(tracePath), { recursive: true, force: true }).catch(() => {});
   }
   return report;
+}
+
+function catalogOptions(baseDir: string, options: RunOptions): CatalogOptions {
+  return { cwd: baseDir, ...(options.trustProject ? { trustProject: true } : {}), ...(options.onWarning ? { onWarning: options.onWarning } : {}) };
 }
 
 function inCI(): boolean {

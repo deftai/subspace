@@ -137,6 +137,8 @@ exporting them). Each scenario runs in a fresh temporary workspace. Exits 1 if a
   --junit <file>         Also write JUnit XML (a test case per turn)
   --artifacts <dir>      Where failure bundles go (default: the temp folder)
   --json                 Print the reports as JSON
+  --trust-project        For a scenario that names an agent, read the nearest subspace.toml
+                         (from the scenario file's folder up) even if its folder is not trusted
 
 The scenario format: the Testing page of the Subspace docs.
 `,
@@ -244,7 +246,7 @@ const SESSION_FLAGS = ['cwd', 'mode', 'yes', 'read-only', 'env', 'trace', 'quiet
 const COMMAND_FLAGS: Record<string, readonly string[]> = {
   run: [...SESSION_FLAGS, 'prompt', 'prompts-file', 'stdin', 'expect-contains', 'expect-not-contains', 'expect-end', 'expect-stop-reason', 'json', 'timeout'],
   chat: SESSION_FLAGS,
-  test: ['update', 'ci', 'keep', 'junit', 'artifacts', 'json'],
+  test: ['update', 'ci', 'keep', 'junit', 'artifacts', 'json', 'trust-project'],
   check: ['only', 'mode', 'cwd', 'strict', 'agents-file', 'trust-project'],
   agents: ['all', 'refresh', 'files', 'json', 'cwd', 'agents-file', 'trust-project'],
   help: [],
@@ -706,6 +708,13 @@ async function testCommand(parsed: Parsed, io: Io): Promise<number> {
   const files = parsed.positional;
   if (!files.length) throw new UsageError('Which scenario files? subspace test <file...>');
   const reports: ScenarioReport[] = [];
+  // Each scenario reads its catalog: a skipped subspace.toml is warned about once, not once per scenario.
+  const warned = new Set<string>();
+  const onWarning = (message: string) => {
+    if (warned.has(message)) return;
+    warned.add(message);
+    io.err(`${message}Or run with --trust-project to use it this once.\n`);
+  };
   for (const file of files) {
     for (const scenario of await loadScenarios(file)) {
       if (!parsed.flags.json) io.err(`running ${scenario.name}...\n`);
@@ -716,6 +725,8 @@ async function testCommand(parsed: Parsed, io: Io): Promise<number> {
           ...(parsed.flags.ci ? { requireSnapshots: true } : {}),
           ...(parsed.flags.keep ? { keep: true } : {}),
           ...(typeof parsed.flags.artifacts === 'string' ? { artifacts: parsed.flags.artifacts } : {}),
+          ...(parsed.flags['trust-project'] === true ? { trustProject: true } : {}),
+          onWarning,
         })
       );
     }

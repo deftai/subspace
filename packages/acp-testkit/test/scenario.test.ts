@@ -1,7 +1,7 @@
 /** The scenario runner: expectations, workspaces, permissions, snapshots, bundles, reports and waivers. */
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { link, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -107,16 +107,71 @@ test('snapshots: a differing turn fails in every report, and so does a different
   assert.match(junit, /name="snapshot"><failure message="1 turns, the snapshot has 2/);
 });
 
-test("a named agent is looked up in the scenario's project, not the temporary workspace", async () => {
+/** A project folder whose subspace.toml defines local-writer, and a config folder of its own (XDG_CONFIG_HOME) for the test. */
+async function project(): Promise<{ dir: string; config: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'scenario-catalog-'));
   const toml = (s: string) => JSON.stringify(s);
   await writeFile(
     join(dir, 'subspace.toml'),
     `[agents.local-writer]\ncommand = ${toml(agent.command)}\nargs = [${agent.args.map(toml).join(', ')}]\n`
   );
-  const report = await runScenario({ name: 'local', agent: 'local-writer' as never, turns: [{ prompt: 'hi' }] }, { baseDir: dir, artifacts: dir });
+  return { dir, config: join(dir, 'config') };
+}
+
+/** Runs `body` with XDG_CONFIG_HOME pointing at `config`, so your own agents.toml is not read. */
+async function withConfig<T>(config: string, body: () => Promise<T>): Promise<T> {
+  const saved = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = config;
+  try {
+    return await body();
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = saved;
+  }
+}
+
+const named = { name: 'local', agent: 'local-writer' as never, turns: [{ prompt: 'hi' }] };
+
+test("a named agent: the scenario's project subspace.toml is skipped with one warning while its folder is not trusted", async () => {
+  const { dir, config } = await project();
+  const warnings: string[] = [];
+  const report = await withConfig(config, () => runScenario(named, { baseDir: dir, artifacts: dir, onWarning: (m) => warnings.push(m) }));
+  assert.equal(report.pass, false);
+  assert.match(report.error ?? '', /local-writer/);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /^subspace: skipped .*subspace\.toml: its folder is not trusted/);
+  assert.ok(warnings[0]!.includes(`  [trust]\n  folders = [${JSON.stringify(dir)}]\n`), warnings[0]);
+});
+
+test("a named agent is looked up in the scenario's trusted project, not the temporary workspace", async () => {
+  const { dir, config } = await project();
+  await mkdir(join(config, 'subspace'), { recursive: true });
+  await writeFile(join(config, 'subspace', 'agents.toml'), `[trust]\nfolders = [${JSON.stringify(dir)}]\n`);
+  const warnings: string[] = [];
+  const report = await withConfig(config, () => runScenario(named, { baseDir: dir, artifacts: dir, onWarning: (m) => warnings.push(m) }));
   assert.equal(report.error, undefined);
   assert.equal(report.pass, true);
+  assert.deepEqual(warnings, []);
+});
+
+test('trustProject reads an untrusted project subspace.toml for one run', async () => {
+  const { dir, config } = await project();
+  const warnings: string[] = [];
+  const report = await withConfig(config, () => runScenario(named, { baseDir: dir, artifacts: dir, trustProject: true, onWarning: (m) => warnings.push(m) }));
+  assert.equal(report.error, undefined);
+  assert.equal(report.pass, true);
+  assert.deepEqual(warnings, []);
+});
+
+test('an agent given as a command does not read the catalog: an untrusted subspace.toml beside it is not warned about', async () => {
+  const { dir, config } = await project();
+  const warnings: string[] = [];
+  const report = await withConfig(config, () =>
+    runScenario({ name: 'command', agent, turns: [{ prompt: 'hi' }] }, { baseDir: dir, artifacts: dir, onWarning: (m) => warnings.push(m) })
+  );
+  assert.equal(report.error, undefined);
+  assert.equal(report.pass, true);
+  assert.deepEqual(warnings, []);
 });
 
 test('loadScenarios reads JSON files; text and JUnit reports', async () => {
