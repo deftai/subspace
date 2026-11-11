@@ -679,25 +679,54 @@ export class AcpClient {
   }
 }
 
+type Timer = ReturnType<typeof setTimeout>;
+
+/** A prompt's turn: what it has seen and counted. Where it is in its life is the session's `SessionState`. */
 interface ActiveTurn {
   turn: Turn;
   projection: TurnProjection;
   /** This turn's own answers (prompt handlers), over the client's. */
   permissions?: PermissionPolicy;
   question?: ElicitationHandler;
-  promptAnswered: boolean;
-  /** An update of this turn's own has arrived (the agent has started it). */
-  started?: boolean;
-  idle?: { stopReason: string; error?: unknown };
-  cancelController: AbortController;
   limits: TurnLimits;
   toolCalls: number;
   exhausted?: Exhaustion;
   /** Permission requests refused while the turn was not being cancelled. */
   refused: number;
-  timers: Array<ReturnType<typeof setTimeout>>;
-  idleTimer?: ReturnType<typeof setTimeout>;
+  /** Aborted on cancel: open permission questions are answered `cancelled`. */
+  questions: AbortController;
+  /** Aborted when the session gives up on the turn: stops waiting for its session/prompt answer. */
+  request: AbortController;
+  timers: Timer[];
+  idleTimer?: Timer;
 }
+
+/** How far the agent has got with a running turn. */
+interface Progress {
+  turn: ActiveTurn;
+  /** session/prompt was answered. */
+  answered: boolean;
+  /** An update of the turn's own has arrived (the agent has started it). */
+  started: boolean;
+  /** v2: the turn's idle, if it came before the prompt answer. */
+  idleSeen?: { stopReason: string; error?: unknown };
+}
+
+/**
+ * Where a session is. Only `enter()` changes it.
+ *
+ * - `idle`: no turn; queued prompts start.
+ * - `running`: a turn the agent is working on.
+ * - `cancelling`: the same, after `session/cancel`; ended here at `deadline` if the agent does not confirm.
+ * - `draining`: a turn was ended here without the agent's confirmation. Queued prompts wait until the
+ *   agent confirms it (v1: its prompt answer; v2: its idle) or `until` passes; its late updates go to
+ *   the session (`onIdleUpdate`, `toolCalls`), not to the next turn.
+ */
+type SessionState =
+  | { phase: 'idle' }
+  | ({ phase: 'running' } & Progress)
+  | ({ phase: 'cancelling'; deadline: Timer } & Progress)
+  | { phase: 'draining'; stale: ActiveTurn; until: Timer };
 
 export class Session {
   readonly id: string;
@@ -714,7 +743,7 @@ export class Session {
    */
   readonly terminals = new Terminals();
 
-  private active?: ActiveTurn;
+  private state: SessionState = { phase: 'idle' };
   /** Prompts waiting for the running turn to end (with `queue`). */
   private readonly queued: Array<{ active: ActiveTurn; blocks: ContentBlock[] }> = [];
   private readonly listeners = new Set<(event: TurnEvent, raw: unknown) => void>();
@@ -758,7 +787,7 @@ export class Session {
    * agent has accepted; it confirms with a final status on the tool call.
    */
   async cancelToolCall(toolCallId: string, options: { timeoutMs?: number } = {}): Promise<void> {
-    const call = this.active?.projection.toolCalls.get(toolCallId) ?? this.idleProjection.toolCalls.get(toolCallId);
+    const call = this.current?.projection.toolCalls.get(toolCallId) ?? this.idleProjection.toolCalls.get(toolCallId);
     if (this.client.protocol !== 2 || !call?.cancellable) throw new CapabilityError(`cancelling tool call ${toolCallId}`, 'agent');
     await this.client.peer.request('tool_call/cancel', { sessionId: this.id, toolCallId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
@@ -812,11 +841,13 @@ export class Session {
   /** @internal Stop queued and running turns and forget the session here, without telling the agent. */
   async shutDown(): Promise<void> {
     for (const queued of this.queued.splice(0)) queued.active.turn.finish(this.notSent());
-    if (this.active) {
-      const turn = this.active.turn;
+    const turn = this.current?.turn;
+    if (turn) {
       await this.cancel();
       await turn.done.catch(() => {});
     }
+    // A turn ended here is not waited for any longer.
+    if (this.state.phase === 'draining') this.enter({ phase: 'idle' });
     this.client.forget(this.id);
   }
 
@@ -914,8 +945,20 @@ export class Session {
     return this.currentConfig.map((o) => (o.id === id ? ({ ...o, currentValue: value } as ConfigOption) : o));
   }
 
+  /** A turn is running (or being cancelled). */
   get busy(): boolean {
-    return this.active !== undefined;
+    return this.current !== undefined;
+  }
+
+  /** The running (or cancelling) turn's progress, if any. */
+  private get progress(): Progress | undefined {
+    const state = this.state;
+    return state.phase === 'running' || state.phase === 'cancelling' ? state : undefined;
+  }
+
+  /** The running (or cancelling) turn, if any. */
+  private get current(): ActiveTurn | undefined {
+    return this.progress?.turn;
   }
 
   /**
@@ -930,42 +973,40 @@ export class Session {
   }
 
   /**
-   * Start a turn. `limits` replace the client's default limits for this turn.
-   * While a turn is running this throws, unless `queue` (or the client's
-   * `queuePrompts`) is set: then the turn starts when the running one ends.
-   * Content the agent cannot take (an image it did not offer to accept, for
-   * example) throws a `CapabilityError`.
-   */
-  /**
    * Send a prompt. Iterate the turn for its events, or pass handlers
    * (`onMessage`, `onToolCall`, `onPermission`, ...; see `TurnHandlers`):
    * `turn.done` then settles after they ran.
+   *
+   * `limits` replace the client's default limits for this turn. While a turn
+   * is running this throws, unless `queue` (or the client's `queuePrompts`)
+   * is set: then the turn starts when the running one ends. Content the agent
+   * cannot take (an image it did not offer to accept, for example) throws a
+   * `CapabilityError`.
    */
   prompt(input: PromptInput, options: PromptOptions = {}): Turn {
-    const given: ContentBlock[] =
-      promptBlocks(input);
-    const blocks = this.fitContent(given);
-    if (this.active && !(options.queue ?? this.client.queuePrompts)) {
+    const blocks = this.fitContent(promptBlocks(input));
+    if (this.busy && !(options.queue ?? this.client.queuePrompts)) {
       throw new Error(`Session ${this.id} already has a turn running (pass { queue: true } to queue it)`);
     }
     const id = this.client.nextTurnId(this.id);
     const projection = new TurnProjection(id, this.terminals);
-    const active = {
+    const turn = new Turn(id, () => this.cancelTurn(active), {
+      text: () => projection.text,
+      toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
+    });
+    const active: ActiveTurn = {
+      turn,
       projection,
-      promptAnswered: false,
-      cancelController: new AbortController(),
       limits: {
         ...(options.limits ?? this.client.defaultLimits ?? {}),
         ...(options.timeoutMs !== undefined ? { maxDurationMs: options.timeoutMs } : {}),
       },
       toolCalls: 0,
       refused: 0,
+      questions: new AbortController(),
+      request: new AbortController(),
       timers: [],
-    } as unknown as ActiveTurn;
-    active.turn = new Turn(id, () => this.cancelTurn(active), {
-      text: () => projection.text,
-      toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
-    });
+    };
     const handlers = mergeHandlers(this.client.defaultHandlers, options);
     if (handlers?.onPermission) active.permissions = handlers.onPermission;
     if (handlers?.onQuestion) active.question = handlers.onQuestion;
@@ -980,14 +1021,15 @@ export class Session {
         void active.turn.done.finally(() => signal.removeEventListener('abort', onAbort)).catch(() => {});
       }
     }
-    if (this.active) this.queued.push({ active, blocks });
+    // After a running turn, one ended here that is still draining, and the prompts already waiting.
+    if (this.state.phase !== 'idle' || this.queued.length) this.queued.push({ active, blocks });
     else this.begin(active, blocks);
     return active.turn;
   }
 
   /** @internal The running turn's onQuestion. */
   get questionHandler(): ElicitationHandler | undefined {
-    return this.active?.question;
+    return this.current?.question;
   }
 
   /** Prompts waiting to start. */
@@ -1016,7 +1058,7 @@ export class Session {
   }
 
   private begin(active: ActiveTurn, blocks: ContentBlock[]): void {
-    this.active = active;
+    this.enter({ phase: 'running', turn: active, answered: false, started: false });
     const { maxDurationMs } = active.limits;
     if (maxDurationMs !== undefined) {
       active.timers.push(
@@ -1025,23 +1067,15 @@ export class Session {
     }
     this.restartIdle(active);
 
-    this.client.peer.request('session/prompt', { sessionId: this.id, prompt: blocks }).then(
-      (result) => {
-        active.promptAnswered = true;
-        if (this.client.protocol === 1) {
-          const stopReason = String((result as v1.PromptResponse | undefined)?.stopReason ?? 'end_turn');
-          this.end(active, stopReason);
-        } else if (active.idle) {
-          this.end(active, active.idle.stopReason, active.idle.error);
-        }
-      },
-      (error) => this.failTurn(active, error)
+    this.client.peer.request('session/prompt', { sessionId: this.id, prompt: blocks }, { signal: active.request.signal }).then(
+      (result) => this.promptAnswered(active, result),
+      (error) => this.promptFailed(active, error)
     );
   }
 
   /** The next queued prompt, once nothing is running. */
   private startNext(): void {
-    if (this.active) return;
+    if (this.state.phase !== 'idle') return;
     const next = this.queued.shift();
     if (next) this.begin(next.active, next.blocks);
   }
@@ -1058,28 +1092,33 @@ export class Session {
       active.turn.finish(this.notSent());
       return Promise.resolve();
     }
-    return this.active === active ? this.cancel() : Promise.resolve();
+    return this.current === active ? this.cancel() : Promise.resolve();
   }
 
   /** Cancel the running turn, if any. */
   async cancel(): Promise<void> {
-    const active = this.active;
-    if (!active || active.cancelController.signal.aborted) return;
+    const state = this.state;
+    if (state.phase !== 'running') return;
+    const active = state.turn;
+    // The deadline is set before anything is written: a write the agent never reads must not keep the turn open.
+    const deadline = setTimeout(() => this.forceEnd(active), this.client.cancelGraceMs);
+    this.enter({ ...state, phase: 'cancelling', deadline });
     // Open permission questions are answered `cancelled`, as the spec requires.
-    active.cancelController.abort();
+    active.questions.abort();
     await this.client.peer.notify('session/cancel', { sessionId: this.id }).catch(() => {});
-    const handle = setTimeout(() => {
-      if (this.active !== active) return;
-      // Background work is not the turn's: session/cancel does not stop it.
-      active.turn.push(...active.projection.failOpenToolCalls((call) => this.isBackground(call)));
-      this.end(active, 'cancelled', undefined, true);
-    }, this.client.cancelGraceMs);
-    void active.turn.done.finally(() => clearTimeout(handle)).catch(() => {});
+  }
+
+  /** The agent did not confirm a cancel in time: end the turn here. */
+  private forceEnd(active: ActiveTurn): void {
+    if (this.current !== active) return;
+    // Background work is not the turn's: session/cancel does not stop it.
+    active.turn.push(...active.projection.failOpenToolCalls((call) => this.isBackground(call)));
+    this.endTurn(active, { stopReason: 'cancelled', forced: true });
   }
 
   /** A limit was reached: record it once, tell the turn, cancel. */
   private exhaust(active: ActiveTurn, exhaustion: Exhaustion): void {
-    if (this.active !== active || active.exhausted) return;
+    if (this.current !== active || active.exhausted) return;
     active.exhausted = exhaustion;
     active.turn.push({ type: 'exhausted', ...exhaustion });
     void this.cancel();
@@ -1100,35 +1139,75 @@ export class Session {
   /** @internal */
   connectionClosed(error: LocalError): void {
     for (const queued of this.queued.splice(0)) queued.active.turn.fail(error);
-    if (this.active) this.failTurn(this.active, error);
+    const current = this.current;
+    if (current) this.endTurn(current, { error, failed: true });
+    else if (this.state.phase === 'draining') this.enter({ phase: 'idle' });
   }
 
   /** @internal */
   receive(update: unknown): void {
     this.trackModes(update);
-    const active = this.active;
+    const state = this.state;
+    if (state.phase === 'draining') {
+      // v2: the idle of the turn ended here is the agent's confirmation, not news.
+      if (this.client.protocol === 2 && isTurnIdle(update)) return this.drained(state.stale);
+      return this.receiveBetweenTurns(update);
+    }
     // Updates to tool calls of earlier turns (background work) are not this turn's, nor is
     // an idle with no stop reason before this turn began: background work finished
     // while the agent had not started the new prompt yet.
-    if (!active || this.ofEarlierTurn(update) || (!active.started && isBackgroundIdle(update))) {
-      const { events } = this.idleProjection.apply(update);
-      for (const event of events) {
-        this.idleHistory.push({ event, raw: update });
-        if (this.idleHistory.length > 50) this.idleHistory.shift();
-        for (const listener of this.listeners) listener(event, update);
-      }
-      return;
+    if (state.phase === 'idle' || this.ofEarlierTurn(update) || (!state.started && isBackgroundIdle(update))) {
+      return this.receiveBetweenTurns(update);
     }
-    active.started = true;
-    const { events, state } = active.projection.apply(update);
+    const active = state.turn;
+    state.started = true;
+    const { events, state: snapshot } = active.projection.apply(update);
     active.turn.push(...events);
     this.restartIdle(active);
     this.checkLimits(active, events);
-    if (state?.state === 'idle') {
-      active.idle = { stopReason: state.stopReason ?? 'end_turn', error: state.error };
+    if (snapshot?.state === 'idle') {
+      state.idleSeen = { stopReason: snapshot.stopReason ?? 'end_turn', error: snapshot.error };
       // v2: the turn ends at idle. The prompt answer normally came first.
-      if (this.client.protocol === 2 && active.promptAnswered) this.end(active, active.idle.stopReason, active.idle.error);
+      if (this.client.protocol === 2 && state.answered) this.endTurn(active, state.idleSeen);
     }
+  }
+
+  /** An update that is no running turn's: kept with the session, for `onIdleUpdate` listeners. */
+  private receiveBetweenTurns(update: unknown): void {
+    const { events } = this.idleProjection.apply(update);
+    for (const event of events) {
+      this.idleHistory.push({ event, raw: update });
+      if (this.idleHistory.length > 50) this.idleHistory.shift();
+      for (const listener of this.listeners) listener(event, update);
+    }
+  }
+
+  private promptAnswered(active: ActiveTurn, result: unknown): void {
+    const state = this.state;
+    if (state.phase === 'draining') {
+      // v1: the answer to a turn ended here is the agent's confirmation.
+      if (this.client.protocol === 1) this.drained(active);
+      return;
+    }
+    const progress = this.progress;
+    if (progress?.turn !== active) return;
+    progress.answered = true;
+    if (this.client.protocol === 1) {
+      this.endTurn(active, { stopReason: String((result as v1.PromptResponse | undefined)?.stopReason ?? 'end_turn') });
+    } else if (progress.idleSeen) {
+      this.endTurn(active, progress.idleSeen);
+    }
+  }
+
+  private promptFailed(active: ActiveTurn, error: unknown): void {
+    // A turn ended here whose prompt then fails (or is given up on): the agent is done with it.
+    if (this.state.phase === 'draining') return this.drained(active);
+    this.endTurn(active, { error, failed: true });
+  }
+
+  /** A turn ended here is confirmed, or no longer waited for. */
+  private drained(stale: ActiveTurn): void {
+    if (this.state.phase === 'draining' && this.state.stale === stale) this.enter({ phase: 'idle' });
   }
 
   private checkLimits(active: ActiveTurn, events: TurnEvent[]): void {
@@ -1154,7 +1233,7 @@ export class Session {
     }
     if (typeof u.toolCallId !== 'string') return false;
     if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update' && u.sessionUpdate !== 'tool_call_content_chunk') return false;
-    return this.idleProjection.toolCalls.has(u.toolCallId) && !this.active?.projection.toolCalls.has(u.toolCallId);
+    return this.idleProjection.toolCalls.has(u.toolCallId) && !this.current?.projection.toolCalls.has(u.toolCallId);
   }
 
   private trackModes(update: unknown): void {
@@ -1178,7 +1257,6 @@ export class Session {
 
   /** @internal */
   async permission(params: Record<string, unknown>, signal: AbortSignal, policy: PermissionPolicy): Promise<v1.RequestPermissionResponse> {
-    const active = this.active;
     // A question about listed background work stands on its own: not tied to a turn or its cancel.
     if (this.aboutBackground(params)) {
       const request = this.permissionRequest(params, this.idleProjection);
@@ -1188,15 +1266,15 @@ export class Session {
       return { outcome: { outcome: 'selected', optionId: outcome.optionId } };
     }
     // No turn is running, or it is being cancelled: nobody asked for this. Fail closed.
-    if (!active || active.cancelController.signal.aborted) return { outcome: { outcome: 'cancelled' } };
-    const projection = active.projection;
-    const request = this.permissionRequest(params, projection);
-    const combined = active ? AbortSignal.any([signal, active.cancelController.signal]) : signal;
+    const active = this.state.phase === 'running' ? this.state.turn : undefined;
+    if (!active) return { outcome: { outcome: 'cancelled' } };
+    const request = this.permissionRequest(params, active.projection);
+    const combined = AbortSignal.any([signal, active.questions.signal]);
     // What the agent said before asking is shown before the question.
     await active.turn.caughtUp();
     const outcome = await decide(active.permissions ?? policy, request, combined);
-    if ((outcome.outcome === 'cancelled' || !outcome.allowed) && !active.cancelController.signal.aborted) active.refused++;
-    active?.turn.push({ type: 'permission', request, outcome });
+    if ((outcome.outcome === 'cancelled' || !outcome.allowed) && !active.questions.signal.aborted) active.refused++;
+    active.turn.push({ type: 'permission', request, outcome });
     if (outcome.outcome === 'cancelled') return { outcome: { outcome: 'cancelled' } };
     return { outcome: { outcome: 'selected', optionId: outcome.optionId } };
   }
@@ -1238,14 +1316,28 @@ export class Session {
     };
   }
 
-  private end(active: ActiveTurn, stopReason: string, error?: unknown, forced?: boolean): void {
-    if (this.active !== active) return;
-    this.active = undefined;
+  /**
+   * End the running (or cancelling) turn, with its result or failed. One
+   * ended here without the agent's confirmation (`forced`) drains; otherwise
+   * the session is idle again.
+   */
+  private endTurn(
+    active: ActiveTurn,
+    outcome: { stopReason: string; error?: unknown; forced?: boolean } | { error: unknown; failed: true }
+  ): void {
+    const state = this.state;
+    if ((state.phase !== 'running' && state.phase !== 'cancelling') || state.turn !== active) return;
+    const cancelled = state.phase === 'cancelling';
+    if ('failed' in outcome) {
+      this.enter({ phase: 'idle' });
+      active.turn.fail(outcome.error);
+      return;
+    }
+    const { stopReason, error, forced } = outcome;
     // Later updates to this turn's tool calls (background work) patch them here.
     for (const [id, call] of active.projection.toolCalls) this.idleProjection.toolCalls.set(id, call);
-    this.stopTimers(active);
-    queueMicrotask(() => this.startNext());
-    const cancelled = active.cancelController.signal.aborted;
+    if (forced) this.enter({ phase: 'draining', stale: active, until: setTimeout(() => this.drained(active), this.client.cancelGraceMs) });
+    else this.enter({ phase: 'idle' });
     active.turn.finish({
       stopReason,
       text: active.projection.text,
@@ -1258,13 +1350,25 @@ export class Session {
     });
   }
 
-  private failTurn(active: ActiveTurn, error: unknown): void {
-    if (this.active !== active) return;
-    this.active = undefined;
-    this.stopTimers(active);
-    queueMicrotask(() => this.startNext());
-    active.turn.fail(error);
+  /** The one place the session's state changes. What the state it leaves held is released here. */
+  private enter(next: SessionState): void {
+    const previous = this.state;
+    if (previous.phase === 'cancelling') clearTimeout(previous.deadline);
+    if ((previous.phase === 'running' || previous.phase === 'cancelling') && next.phase !== 'cancelling') this.stopTimers(previous.turn);
+    if (previous.phase === 'draining') {
+      clearTimeout(previous.until);
+      // No longer waited for: the kernel stops waiting for its prompt answer and tells the agent ($/cancel_request).
+      previous.stale.request.abort();
+    }
+    this.state = next;
+    if (next.phase === 'idle') queueMicrotask(() => this.startNext());
   }
+}
+
+/** A v2 idle state with a stop reason: the end of a turn. */
+function isTurnIdle(update: unknown): boolean {
+  const u = update as { sessionUpdate?: unknown; state?: unknown; stopReason?: unknown } | null;
+  return !!u && u.sessionUpdate === 'state_update' && u.state === 'idle' && u.stopReason !== undefined;
 }
 
 /** A v2 idle state with no stop reason: a snapshot of background work, not the end of a turn. */

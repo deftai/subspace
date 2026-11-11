@@ -18,7 +18,7 @@ import inspect
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, Union
 
 from deft_subspace.kernel import (
@@ -765,24 +765,71 @@ class AcpClient:
 
 @dataclass
 class _Active:
+    """A prompt's turn: what it has seen and counted. Where it is in its life is the session's state."""
+
     turn: Turn
     projection: TurnProjection
     limits: TurnLimits
-    cancel: AbortController
     #: This turn's own answers (prompt handlers), over the client's.
     permissions: PermissionPolicy | None = None
     question: ElicitationHandler | None = None
-    prompt_answered: bool = False
-    #: An update of this turn's own has arrived (the agent has started it).
-    started: bool = False
-    idle: tuple[str, Any] | None = None
     tool_calls: int = 0
     exhausted: Exhaustion | None = None
     #: Permission requests refused while the turn was not being cancelled.
     refused: int = 0
-    timers: list[asyncio.TimerHandle] | None = None
+    #: Aborted on cancel: open permission questions are answered `cancelled`.
+    questions: AbortController = field(default_factory=AbortController)
+    #: Aborted when the session gives up on the turn: stops waiting for its session/prompt answer.
+    request: AbortController = field(default_factory=AbortController)
+    timers: list[asyncio.TimerHandle] = field(default_factory=list)
     idle_timer: asyncio.TimerHandle | None = None
     prompt_task: asyncio.Task[Any] | None = None
+
+
+# Where a session is. Only `Session._enter()` changes it.
+
+
+@dataclass
+class _Idle:
+    """No turn; queued prompts start."""
+
+
+@dataclass
+class _Running:
+    """A turn the agent is working on."""
+
+    turn: _Active
+    #: session/prompt was answered.
+    answered: bool = False
+    #: An update of the turn's own has arrived (the agent has started it).
+    started: bool = False
+    #: v2: the turn's idle `(stop_reason, error)`, if it came before the prompt answer.
+    idle_seen: tuple[str, Any] | None = None
+
+
+@dataclass
+class _Cancelling(_Running):
+    """The same, after `session/cancel`; ended here at `deadline` if the agent does not confirm."""
+
+    deadline: asyncio.TimerHandle | None = None
+
+
+@dataclass
+class _Draining:
+    """A turn was ended here without the agent's confirmation. Queued prompts wait until the agent
+    confirms it (v1: its prompt answer; v2: its idle) or `until` passes; its late updates go to the
+    session (`on_idle_update`, `tool_calls`), not to the next turn."""
+
+    stale: _Active
+    until: asyncio.TimerHandle
+
+
+_SessionState = Union[_Idle, _Running, _Cancelling, _Draining]
+
+
+def _is_turn_idle(update: Any) -> bool:
+    """A v2 idle state with a stop reason: the end of a turn."""
+    return isinstance(update, dict) and update.get("sessionUpdate") == "state_update" and update.get("state") == "idle" and "stopReason" in update
 
 
 def _is_background_idle(update: Any) -> bool:
@@ -809,7 +856,7 @@ class Session:
         #: id. Kept across turns: one may outlive the turn that started it, and its updates may
         #: come before the tool call that shows it.
         self.terminals = Terminals()
-        self._active: _Active | None = None
+        self._state: _SessionState = _Idle()
         #: Prompts waiting for the running turn to end (with `queue`).
         self._queued: list[tuple[_Active, list[ContentBlock]]] = []
         self._listeners: list[Callable[[TurnEvent, Any], None]] = []
@@ -858,7 +905,19 @@ class Session:
 
     @property
     def busy(self) -> bool:
-        return self._active is not None
+        """A turn is running (or being cancelled)."""
+        return self._current is not None
+
+    @property
+    def _progress(self) -> _Running | None:
+        """The running (or cancelling) turn's progress, if any."""
+        return self._state if isinstance(self._state, _Running) else None
+
+    @property
+    def _current(self) -> _Active | None:
+        """The running (or cancelling) turn, if any."""
+        progress = self._progress
+        return progress.turn if progress is not None else None
 
     @property
     def queued_count(self) -> int:
@@ -871,7 +930,7 @@ class Session:
         """v2: stop one tool call (`tool_call/cancel`), without cancelling the turn. Only for a
         tool call that advertises it (`cancellable`). Returns when the agent has accepted; it
         confirms with a final status on the tool call."""
-        active = self._active
+        active = self._current
         call = (active.projection.tool_calls.get(tool_call_id) if active else None) or self._idle_projection.tool_calls.get(tool_call_id)
         if self.client.protocol != 2 or call is None or not call.cancellable:
             raise CapabilityError(f"cancelling tool call {tool_call_id}", "agent")
@@ -999,7 +1058,7 @@ class Session:
         """
         _check_handler_names(handlers)
         blocks = self._fit_content(prompt_blocks(prompt))
-        if self._active is not None and not (queue if queue is not None else self.client._options.queue_prompts):
+        if self.busy and not (queue if queue is not None else self.client._options.queue_prompts):
             raise RuntimeError(f"Session {self.id} already has a turn running (pass queue=True to queue it)")
         turn_id = self.client._next_turn_id(self.id)
         projection = TurnProjection(turn_id, self.terminals)
@@ -1012,7 +1071,7 @@ class Session:
             lambda: self._cancel_turn(holder[0]),
             TurnView(lambda: projection.text, lambda: [c.snapshot() for c in projection.tool_calls.values()]),
         )
-        active = _Active(turn=turn, projection=projection, limits=base, cancel=AbortController(), timers=[])
+        active = _Active(turn=turn, projection=projection, limits=base)
         holder.append(active)
         merged = merge_handlers(self.client._options.handlers, handlers)
         if merged is not None and merged.on_permission is not None:
@@ -1032,7 +1091,8 @@ class Session:
             else:
                 remove = signal.add_listener(on_abort)
                 turn._done.add_done_callback(lambda _f: remove())
-        if self._active is not None:
+        # After a running turn, one ended here that is still draining, and the prompts already waiting.
+        if not isinstance(self._state, _Idle) or self._queued:
             self._queued.append((active, blocks))
         else:
             self._begin(active, blocks)
@@ -1044,25 +1104,32 @@ class Session:
 
     async def cancel(self) -> None:
         """Cancel the running turn, if any."""
-        active = self._active
-        if active is None or active.cancel.signal.aborted:
+        state = self._state
+        if type(state) is not _Running:
             return
+        active = state.turn
+        # The deadline is set before anything is written, and the write is not the caller's: a
+        # write the agent never reads, or a caller cancelled while it waits, must not keep the turn open.
+        deadline = asyncio.get_running_loop().call_later(self.client._options.timeouts.cancel_grace_ms / 1000, lambda: self._force_end(active))
+        self._enter(_Cancelling(state.turn, state.answered, state.started, state.idle_seen, deadline))
         # Open permission questions are answered `cancelled`, as the spec requires.
-        active.cancel.abort()
-        try:
-            await self.client.peer.notify("session/cancel", {"sessionId": self.id})
-        except (LocalError, RpcError):
-            pass
+        active.questions.abort()
 
-        def force() -> None:
-            if self._active is not active:
-                return
-            # Background work is not the turn's: session/cancel does not stop it.
-            active.turn.push(*active.projection.fail_open_tool_calls(self._is_background))
-            self._end(active, "cancelled", None, forced=True)
+        async def tell() -> None:
+            try:
+                await self.client.peer.notify("session/cancel", {"sessionId": self.id})
+            except Exception:  # noqa: BLE001 - the deadline ends the turn regardless
+                pass
 
-        handle = asyncio.get_running_loop().call_later(self.client._options.timeouts.cancel_grace_ms / 1000, force)
-        active.turn._done.add_done_callback(lambda _f: handle.cancel())
+        await asyncio.shield(self._spawn(tell()))
+
+    def _force_end(self, active: _Active) -> None:
+        """The agent did not confirm a cancel in time: end the turn here."""
+        if self._current is not active:
+            return
+        # Background work is not the turn's: session/cancel does not stop it.
+        active.turn.push(*active.projection.fail_open_tool_calls(self._is_background))
+        self._end(active, "cancelled", None, forced=True)
 
     async def __aenter__(self) -> Session:
         return self
@@ -1074,7 +1141,8 @@ class Session:
 
     @property
     def _question_handler(self) -> ElicitationHandler | None:
-        return self._active.question if self._active else None
+        current = self._current
+        return current.question if current else None
 
     def _spawn(self, coroutine: Any) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coroutine)
@@ -1103,13 +1171,16 @@ class Session:
         queued, self._queued = self._queued, []
         for active, _blocks in queued:
             active.turn.finish(self._not_sent())
-        if self._active is not None:
-            turn = self._active.turn
+        current = self._current
+        if current is not None:
             await self.cancel()
             try:
-                await turn.done
+                await current.turn.done
             except Exception:  # noqa: BLE001
                 pass
+        # A turn ended here is not waited for any longer.
+        if isinstance(self._state, _Draining):
+            self._enter(_Idle())
         self.client._forget(self.id)
 
     def _fit_content(self, blocks: list[ContentBlock]) -> list[ContentBlock]:
@@ -1136,34 +1207,28 @@ class Session:
         return out
 
     def _begin(self, active: _Active, blocks: list[ContentBlock]) -> None:
-        self._active = active
+        self._enter(_Running(active))
         loop = asyncio.get_running_loop()
         max_ms = active.limits.max_duration_ms
         if max_ms is not None:
-            assert active.timers is not None
             active.timers.append(loop.call_later(max_ms / 1000, lambda: self._exhaust(active, Exhaustion("duration", max_ms, max_ms))))
         self._restart_idle(active)
 
         async def send() -> None:
             try:
-                result = await self.client.peer.request("session/prompt", {"sessionId": self.id, "prompt": blocks})
+                result = await self.client.peer.request("session/prompt", {"sessionId": self.id, "prompt": blocks}, signal=active.request.signal)
             except asyncio.CancelledError:
                 raise
             except BaseException as error:  # noqa: BLE001
-                self._fail_turn(active, error)
+                self._prompt_failed(active, error)
                 return
-            active.prompt_answered = True
-            if self.client.protocol == 1:
-                stop = result.get("stopReason") if isinstance(result, dict) else None
-                self._end(active, str(stop if stop is not None else "end_turn"))
-            elif active.idle is not None:
-                self._end(active, active.idle[0], active.idle[1])
+            self._prompt_answered(active, result)
 
         active.prompt_task = self._spawn(send())
 
     def _start_next(self) -> None:
         """The next queued prompt, once nothing is running."""
-        if self._active is not None or not self._queued:
+        if not isinstance(self._state, _Idle) or not self._queued:
             return
         active, blocks = self._queued.pop(0)
         self._begin(active, blocks)
@@ -1179,12 +1244,12 @@ class Session:
                 del self._queued[index]
                 active.turn.finish(self._not_sent())
                 return
-        if self._active is active:
+        if self._current is active:
             await self.cancel()
 
     def _exhaust(self, active: _Active, exhaustion: Exhaustion) -> None:
         """A limit was reached: record it once, tell the turn, cancel."""
-        if self._active is not active or active.exhausted is not None:
+        if self._current is not active or active.exhausted is not None:
             return
         active.exhausted = exhaustion
         active.turn.push(ExhaustedEvent(exhaustion.limit, exhaustion.max, exhaustion.value))
@@ -1200,7 +1265,7 @@ class Session:
 
     @staticmethod
     def _stop_timers(active: _Active) -> None:
-        for handle in active.timers or []:
+        for handle in active.timers:
             handle.cancel()
         if active.idle_timer is not None:
             active.idle_timer.cancel()
@@ -1209,34 +1274,77 @@ class Session:
         queued, self._queued = self._queued, []
         for active, _blocks in queued:
             active.turn.fail(error)
-        if self._active is not None:
-            self._fail_turn(self._active, error)
+        current = self._current
+        if current is not None:
+            self._fail_turn(current, error)
+        elif isinstance(self._state, _Draining):
+            self._enter(_Idle())
 
     def _receive(self, update: Any) -> None:
         self._track(update)
-        active = self._active
+        state = self._state
+        if isinstance(state, _Draining):
+            # v2: the idle of the turn ended here is the agent's confirmation, not news.
+            if self.client.protocol == 2 and _is_turn_idle(update):
+                self._drained(state.stale)
+                return
+            self._receive_between_turns(update)
+            return
         # Updates to tool calls of earlier turns (background work) are not this turn's, nor is an
         # idle with no stop reason before this turn began: background work finished while the
         # agent had not started the new prompt yet.
-        if active is None or self._of_earlier_turn(update) or (not active.started and _is_background_idle(update)):
-            events, _state = self._idle_projection.apply(update)
-            for event in events:
-                self._idle_history.append((event, update))
-                if len(self._idle_history) > 50:
-                    self._idle_history.pop(0)
-                for listener in list(self._listeners):
-                    listener(event, update)
+        if not isinstance(state, _Running) or self._of_earlier_turn(update) or (not state.started and _is_background_idle(update)):
+            self._receive_between_turns(update)
             return
-        active.started = True
-        events, state = active.projection.apply(update)
+        active = state.turn
+        state.started = True
+        events, snapshot = active.projection.apply(update)
         active.turn.push(*events)
         self._restart_idle(active)
         self._check_limits(active, events)
-        if state is not None and state.state == "idle":
-            active.idle = (state.stop_reason or "end_turn", state.error)
+        if snapshot is not None and snapshot.state == "idle":
+            state.idle_seen = (snapshot.stop_reason or "end_turn", snapshot.error)
             # v2: the turn ends at idle. The prompt answer normally came first.
-            if self.client.protocol == 2 and active.prompt_answered:
-                self._end(active, active.idle[0], active.idle[1])
+            if self.client.protocol == 2 and state.answered:
+                self._end(active, *state.idle_seen)
+
+    def _receive_between_turns(self, update: Any) -> None:
+        """An update that is no running turn's: kept with the session, for `on_idle_update` listeners."""
+        events, _state = self._idle_projection.apply(update)
+        for event in events:
+            self._idle_history.append((event, update))
+            if len(self._idle_history) > 50:
+                self._idle_history.pop(0)
+            for listener in list(self._listeners):
+                listener(event, update)
+
+    def _prompt_answered(self, active: _Active, result: Any) -> None:
+        if isinstance(self._state, _Draining):
+            # v1: the answer to a turn ended here is the agent's confirmation.
+            if self.client.protocol == 1:
+                self._drained(active)
+            return
+        progress = self._progress
+        if progress is None or progress.turn is not active:
+            return
+        progress.answered = True
+        if self.client.protocol == 1:
+            stop = result.get("stopReason") if isinstance(result, dict) else None
+            self._end(active, str(stop if stop is not None else "end_turn"))
+        elif progress.idle_seen is not None:
+            self._end(active, *progress.idle_seen)
+
+    def _prompt_failed(self, active: _Active, error: BaseException) -> None:
+        # A turn ended here whose prompt then fails (or is given up on): the agent is done with it.
+        if isinstance(self._state, _Draining):
+            self._drained(active)
+            return
+        self._fail_turn(active, error)
+
+    def _drained(self, stale: _Active) -> None:
+        """A turn ended here is confirmed, or no longer waited for."""
+        if isinstance(self._state, _Draining) and self._state.stale is stale:
+            self._enter(_Idle())
 
     def _check_limits(self, active: _Active, events: list[TurnEvent]) -> None:
         max_calls, max_usage = active.limits.max_tool_calls, active.limits.max_usage
@@ -1258,7 +1366,7 @@ class Session:
         call_id = update.get("toolCallId")
         if not isinstance(call_id, str) or kind not in ("tool_call", "tool_call_update", "tool_call_content_chunk"):
             return False
-        active = self._active
+        active = self._current
         return call_id in self._idle_projection.tool_calls and not (active is not None and call_id in active.projection.tool_calls)
 
     def _track(self, update: Any) -> None:
@@ -1284,7 +1392,6 @@ class Session:
                 self._config = config
 
     async def _permission(self, params: dict[str, Any], signal: AbortSignal, policy: PermissionPolicy) -> dict[str, Any]:
-        active = self._active
         # A question about listed background work stands on its own: not tied to a turn or its cancel.
         if self._about_background(params):
             request = self._permission_request(params, self._idle_projection)
@@ -1293,14 +1400,16 @@ class Session:
                 listener(PermissionEvent(request, outcome), params)
             return _answer(outcome)
         # No turn is running, or it is being cancelled: nobody asked for this. Fail closed.
-        if active is None or active.cancel.signal.aborted:
+        state = self._state
+        if type(state) is not _Running:
             return {"outcome": {"outcome": "cancelled"}}
+        active = state.turn
         request = self._permission_request(params, active.projection)
-        combined = AbortSignal.any([signal, active.cancel.signal])
+        combined = AbortSignal.any([signal, active.questions.signal])
         # What the agent said before asking is shown before the question.
         await active.turn.caught_up()
         outcome = await decide(active.permissions if active.permissions is not None else policy, request, combined)
-        if (outcome.outcome == "cancelled" or not outcome.allowed) and not active.cancel.signal.aborted:
+        if (outcome.outcome == "cancelled" or not outcome.allowed) and not active.questions.signal.aborted:
             active.refused += 1
         active.turn.push(PermissionEvent(request, outcome))
         return _answer(outcome)
@@ -1342,19 +1451,25 @@ class Session:
         )
 
     def _end(self, active: _Active, stop_reason: str, error: Any = None, forced: bool = False) -> None:
-        if self._active is not active:
+        """End the running (or cancelling) turn with its result. One ended here without the agent's
+        confirmation (`forced`) drains; otherwise the session is idle again."""
+        state = self._state
+        if not isinstance(state, _Running) or state.turn is not active:
             return
-        self._active = None
+        cancelled = isinstance(state, _Cancelling)
         # Later updates to this turn's tool calls (background work) patch them here.
         self._idle_projection.tool_calls.update(active.projection.tool_calls)
-        self._stop_timers(active)
-        asyncio.get_running_loop().call_soon(self._start_next)
+        if forced:
+            loop = asyncio.get_running_loop()
+            self._enter(_Draining(active, loop.call_later(self.client._options.timeouts.cancel_grace_ms / 1000, lambda: self._drained(active))))
+        else:
+            self._enter(_Idle())
         active.turn.finish(
             TurnResult(
                 stop_reason=stop_reason,
                 text=active.projection.text,
                 tool_calls=[c.snapshot() for c in active.projection.tool_calls.values()],
-                cancelled=active.cancel.signal.aborted,
+                cancelled=cancelled,
                 forced=forced,
                 error=error,
                 exhausted=active.exhausted,
@@ -1363,12 +1478,26 @@ class Session:
         )
 
     def _fail_turn(self, active: _Active, error: BaseException) -> None:
-        if self._active is not active:
+        state = self._state
+        if not isinstance(state, _Running) or state.turn is not active:
             return
-        self._active = None
-        self._stop_timers(active)
-        asyncio.get_running_loop().call_soon(self._start_next)
+        self._enter(_Idle())
         active.turn.fail(error)
+
+    def _enter(self, next_state: _SessionState) -> None:
+        """The one place the session's state changes. What the state it leaves held is released here."""
+        previous = self._state
+        if isinstance(previous, _Cancelling) and previous.deadline is not None:
+            previous.deadline.cancel()
+        if isinstance(previous, _Running) and not isinstance(next_state, _Cancelling):
+            self._stop_timers(previous.turn)
+        if isinstance(previous, _Draining):
+            previous.until.cancel()
+            # No longer waited for: the kernel stops waiting for its prompt answer and tells the agent ($/cancel_request).
+            previous.stale.request.abort()
+        self._state = next_state
+        if isinstance(next_state, _Idle):
+            asyncio.get_running_loop().call_soon(self._start_next)
 
 
 def _local_name(uri: str) -> str:
