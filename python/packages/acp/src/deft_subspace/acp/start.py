@@ -541,7 +541,11 @@ class _StdioChannel:
             pass
 
     async def abort(self) -> None:
-        """Stop sending without waiting for a write that does not finish (stdout nobody reads)."""
+        """Stop sending, and return at once instead of waiting for what was already sent.
+
+        Nothing is interrupted: the (daemon) writer thread still writes what was queued, and on
+        a stdout nobody reads it stays blocked there. Interpreter shutdown can then still hang
+        flushing stdout; only something reading the pipe, or closing it, ends that."""
         self._closed = True
         if self._writing:
             self._writes.put(None)
