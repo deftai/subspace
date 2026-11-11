@@ -3,7 +3,7 @@
 Layers, lowest first: the ACP registry (the bundled snapshot, or a newer
 cached copy from `refresh_registry()`), the built-in agents, then
   - $XDG_CONFIG_HOME/subspace/agents.toml (default ~/.config/subspace/agents.toml),
-  - the nearest subspace.toml, from cwd up,
+  - the nearest subspace.toml, from cwd up, if its folder is trusted,
   - each file in $SUBSPACE_AGENTS (path-separated) and `files`.
 
     [agents.claude]                # change one field of a built-in agent
@@ -19,6 +19,15 @@ cached copy from `refresh_registry()`), the built-in agents, then
     fix = "Nothing to do; just wait"
 
 Keys may be snake_case or camelCase; definitions use snake_case.
+
+A project's subspace.toml can choose the commands agents run, so it is only
+read when your own agents.toml trusts its folder (that folder only, not the
+ones below it; ~/ and symlinks are resolved):
+
+    [trust]
+    folders = ["~/work/my-project"]
+
+An untrusted one is skipped with a warning (see `on_warning`).
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import inspect
 import json
 import os
 import re
+import sys
 import tomllib
 import urllib.error
 import urllib.request
@@ -181,33 +191,115 @@ def parse_agent_table(table: Any, source: str, at: str = "agents") -> CatalogLay
 
 
 class AgentFile(NamedTuple):
+    """An agents file `load_catalog()` may read. `trusted` is False for a subspace.toml whose folder is not trusted: it is skipped."""
+
     path: str
     exists: bool
+    trusted: bool = True
 
 
 def _environ(env: Env | None) -> Env:
     return os.environ if env is None else env
 
 
-def agent_files(*, cwd: str | None = None, files: Sequence[str] | None = None, env: Env | None = None) -> list[AgentFile]:
-    """The files `load_catalog()` reads, in order, and whether each exists."""
+def agent_files(
+    *, cwd: str | None = None, files: Sequence[str] | None = None, env: Env | None = None, trust_project: bool = False
+) -> list[AgentFile]:
+    """The files `load_catalog()` reads, in order, whether each exists, and whether it is trusted."""
     environ = _environ(env)
-    paths: list[str] = [os.path.join(environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "subspace", "agents.toml")]
+    first = os.path.join(environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "subspace", "agents.toml")
+    last = [os.path.abspath(item) for item in (environ.get("SUBSPACE_AGENTS") or "").split(os.pathsep) if item]
+    last += [os.path.abspath(item) for item in files or []]
+    out = [AgentFile(first, os.path.exists(first))]
     folder = os.path.abspath(cwd if cwd is not None else os.getcwd())
     while True:
         candidate = os.path.join(folder, "subspace.toml")
         if os.path.exists(candidate):
-            paths.append(candidate)
+            trusted = trust_project or candidate in last
+            if not trusted:
+                try:
+                    with open(first, encoding="utf-8") as f:
+                        text: str | None = f.read()
+                except OSError:
+                    text = None  # Missing or unreadable: nothing is trusted.
+                trusted = _is_trusted(candidate, _trusted_folders(text, first, strict=False))
+            out.append(AgentFile(candidate, True, trusted))
             break
         if os.path.dirname(folder) == folder:
             break
         folder = os.path.dirname(folder)
-    for item in (environ.get("SUBSPACE_AGENTS") or "").split(os.pathsep):
-        if item:
-            paths.append(os.path.abspath(item))
-    for item in files or []:
-        paths.append(os.path.abspath(item))
-    return [AgentFile(path, os.path.exists(path)) for path in paths]
+    out += [AgentFile(path, os.path.exists(path)) for path in last]
+    return out
+
+
+def _trusted_folders(text: str | None, source: str, *, strict: bool) -> list[str]:
+    """The trusted folders in the user's agents.toml text ([trust] folders), with ~/ expanded.
+
+    With `strict`, a bad [trust] table raises AgentFileError; without, it trusts
+    nothing (load_catalog reports the error when it reads the file).
+    """
+    if text is None:
+        return []
+    try:
+        try:
+            raw = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            raise AgentFileError(f"{source}: {error}") from error
+        trust = raw.get("trust")
+        if trust is None:
+            return []
+        if not _is_record(trust):
+            raise AgentFileError(f"{source}: trust should be a table ([trust])")
+        for key in trust:
+            if key != "folders":
+                raise _unknown_key(source, "trust", key, ["folders"])
+        folders = [] if trust.get("folders") is None else _check(source, "trust.folders", trust["folders"], "strings")
+        out: list[str] = []
+        for folder in folders:
+            if folder == "~" or folder.startswith("~/"):
+                out.append(os.path.abspath(os.path.join(os.path.expanduser("~"), folder[2:])))
+            elif os.path.isabs(folder):
+                out.append(os.path.abspath(folder))
+            else:
+                raise AgentFileError(f"{source}: trust.folders should hold absolute paths or ~/ paths, not {_json(folder)}")
+        return out
+    except AgentFileError:
+        if strict:
+            raise
+        return []
+
+
+def _is_trusted(file: str, folders: Sequence[str]) -> bool:
+    """Whether a subspace.toml's folder is one of `folders` (that folder itself, after resolving symlinks)."""
+
+    def canonical(path: str) -> str:
+        try:
+            path = os.path.realpath(path)
+        except (OSError, ValueError):
+            pass
+        return os.path.normcase(path)
+
+    folder = canonical(os.path.dirname(file))
+    return any(canonical(f) == folder for f in folders)
+
+
+def _untrusted_warning(file: str, user_file: str) -> str:
+    """The warning for a skipped subspace.toml: where it is and how to trust it."""
+    return (
+        f"subspace: skipped {file}: its folder is not trusted, and a subspace.toml can choose the commands agents run.\n"
+        f"To trust this folder (only this one, not the folders below it), add it to [trust] folders in {user_file}:\n\n"
+        f"  [trust]\n  folders = [{_json(os.path.dirname(file))}]\n"
+    )
+
+
+_warned: set[str] = set()
+
+
+def _warn_once(message: str, path: str) -> None:
+    if path in _warned:
+        return
+    _warned.add(path)
+    sys.stderr.write(message)
 
 
 def registry_cache_path(env: Env | None = None) -> str:
@@ -277,14 +369,28 @@ async def refresh_registry(
 
 
 async def load_catalog_async(
-    *, cwd: str | None = None, files: Sequence[str] | None = None, builtin_only: bool = False, env: Mapping[str, str | None] | None = None
+    *,
+    cwd: str | None = None,
+    files: Sequence[str] | None = None,
+    builtin_only: bool = False,
+    env: Mapping[str, str | None] | None = None,
+    trust_project: bool = False,
+    on_warning: Callable[[str], None] | None = None,
 ) -> AgentCatalog:
     """`load_catalog()` without blocking the event loop: the files are read in a thread."""
-    return await asyncio.to_thread(load_catalog, cwd=cwd, files=files, builtin_only=builtin_only, env=env)
+    return await asyncio.to_thread(
+        load_catalog, cwd=cwd, files=files, builtin_only=builtin_only, env=env, trust_project=trust_project, on_warning=on_warning
+    )
 
 
 def load_catalog(
-    *, cwd: str | None = None, files: Sequence[str] | None = None, builtin_only: bool = False, env: Mapping[str, str | None] | None = None
+    *,
+    cwd: str | None = None,
+    files: Sequence[str] | None = None,
+    builtin_only: bool = False,
+    env: Mapping[str, str | None] | None = None,
+    trust_project: bool = False,
+    on_warning: Callable[[str], None] | None = None,
 ) -> AgentCatalog:
     """The agent catalog: registry, built-ins, then agent files. Raises AgentFileError for a bad file.
 
@@ -293,6 +399,10 @@ def load_catalog(
     - `builtin_only`: skip ~/.config/subspace/agents.toml, subspace.toml and $SUBSPACE_AGENTS
       (built-ins and registry only).
     - `env`: environment to read ($XDG_CONFIG_HOME, $XDG_CACHE_HOME, $SUBSPACE_AGENTS). Default `os.environ`.
+    - `trust_project`: read the nearest subspace.toml even if its folder is not in your
+      agents.toml's [trust] folders.
+    - `on_warning`: told about a subspace.toml skipped because its folder is not trusted.
+      Default: once per file, on stderr.
     """
     registry, source = load_registry(env)
     catalog = builtin_catalog(registry, source)
@@ -300,11 +410,22 @@ def load_catalog(
     if builtin_only:
         return catalog
     wanted = [os.path.abspath(f) for f in files or []]
-    for path, exists in agent_files(cwd=cwd, files=files, env=env):
+    found = agent_files(cwd=cwd, files=files, env=env, trust_project=trust_project)
+    for i, (path, exists, trusted) in enumerate(found):
         if not exists:
             if path in wanted:
                 raise AgentFileError(f"{path}: no such file")
             continue
+        if not trusted:
+            message = _untrusted_warning(path, found[0].path)
+            if on_warning is not None:
+                on_warning(message)
+            else:
+                _warn_once(message, path)
+            continue
         with open(path, encoding="utf-8") as f:
-            catalog.layers.append(parse_agent_file(f.read(), path))
+            text = f.read()
+        if i == 0:
+            _trusted_folders(text, path, strict=True)
+        catalog.layers.append(parse_agent_file(text, path))
     return catalog

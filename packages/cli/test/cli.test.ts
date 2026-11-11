@@ -143,15 +143,30 @@ test('help: --help, -h and help exit 0; a command has its own help; --version; u
 });
 
 test('agents: an agent of your own in subspace.toml, details with quirks, waivers in check, bad files exit 2', async () => {
-  const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
+  const { mkdir, mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
   const dir = await mk(join(tmpdir(), 'subspace-cli-agents-'));
   const fixture = fileURLToPath(new URL('./fixtures/tidy-agent.ts', import.meta.url));
   await wf(
     join(dir, 'subspace.toml'),
     `[agents.tidy]\ndescription = "The test agent"\ncommand = "node"\nargs = ["--conditions=subspace-source", ${JSON.stringify(fixture)}]\n\n[agents.tidy.quirks.made-up]\nsummary = "A quirk for the test"\nfix = "Nothing"\nwaives = ["session.unknown"]\n`
   );
+  // Not trusted yet: skipped, with a warning that says how to trust it.
+  const saved = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = join(dir, 'config');
+  try {
+    const skipped = await cli('agents', 'tidy', '--cwd', dir);
+    assert.equal(skipped.code, 2);
+    assert.equal(skipped.err.match(/skipped .*subspace\.toml: its folder is not trusted/g)?.length, 1, skipped.err);
+    assert.match(skipped.err, /add it to \[trust\] folders in .*agents\.toml:\n\n {2}\[trust\]\n {2}folders = \[".*"\]\nOr run with --trust-project to use it this once\.\n/);
+    assert.match((await cli('agents', '--files', '--cwd', dir)).out, /✗ .*subspace\.toml {3}\(not trusted: skipped\)/);
+    // One run with --trust-project.
+    assert.equal((await cli('agents', 'tidy', '--cwd', dir, '--trust-project')).code, 0);
+    // Trusted in agents.toml.
+    await mkdir(join(dir, 'config', 'subspace'), { recursive: true });
+    await wf(join(dir, 'config', 'subspace', 'agents.toml'), `[trust]\nfolders = [${JSON.stringify(dir)}]\n`);
   const list = await cli('agents', '--cwd', dir);
   assert.equal(list.code, 0, list.err);
+  assert.doesNotMatch(list.err, /not trusted/);
   assert.match(list.out, /✓ tidy +The test agent {2}\[1 quirk\]/);
   const one = await cli('agents', 'tidy', '--cwd', dir);
   assert.match(one.out, /command {3}node --conditions=subspace-source/);
@@ -165,6 +180,10 @@ test('agents: an agent of your own in subspace.toml, details with quirks, waiver
   const bad = await cli('agents', '--cwd', dir);
   assert.equal(bad.code, 2);
   assert.match(bad.err, /subspace\.toml: agents\.tidy\.comand is not a known field/);
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = saved;
+  }
 });
 
 test('run: a turn that ends with an error says why on stderr and exits 1', async () => {

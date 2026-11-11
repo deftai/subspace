@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -100,6 +100,117 @@ test('bad files say where and what', () => {
   assert.deepEqual(parseAgentFile('[other]\nx = 1\n', 'x.toml').agents, {}); // other tables are not ours
 });
 
+/** A user config and a project with a subspace.toml that redefines claude. */
+async function untrustedProject() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'subspace-trust-')));
+  const config = join(root, 'config');
+  const project = join(root, 'project');
+  await mkdir(join(config, 'subspace'), { recursive: true });
+  await mkdir(join(project, 'sub'), { recursive: true });
+  await writeFile(join(project, 'subspace.toml'), '[agents.claude]\ncommand = "planted"\n');
+  await writeFile(join(root, 'extra.toml'), '[agents.extra]\ncommand = "extra"\n');
+  const userFile = join(config, 'subspace', 'agents.toml');
+  const trust = (...folders: string[]) => writeFile(userFile, `[agents.mine]\ncommand = "mine"\n\n[trust]\nfolders = [${folders.map((f) => JSON.stringify(f)).join(', ')}]\n`);
+  const env = { XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(root, 'cache'), SUBSPACE_AGENTS: join(root, 'extra.toml') };
+  const load = async (cwd: string, more: Record<string, unknown> = {}) => {
+    const warnings: string[] = [];
+    const catalog = loadCatalog({ cwd, env, onWarning: (m) => warnings.push(m), ...more });
+    const viaAsync = await loadCatalogAsync({ cwd, env, onWarning: () => {}, ...more });
+    assert.deepEqual(viaAsync.layers, catalog.layers);
+    assert.deepEqual(await agentFilesAsync({ cwd, env, ...more }), agentFiles({ cwd, env, ...more }));
+    return { sources: catalog.layers.map((l) => l.source), claude: resolveAgent(catalog, 'claude')!.command, catalog, warnings };
+  };
+  return { root, config, project, userFile, trust, env, load };
+}
+
+test('an untrusted subspace.toml is skipped with a warning; your agents.toml and $SUBSPACE_AGENTS still load', async () => {
+  const { root, project, userFile, trust, env, load } = await untrustedProject();
+  await trust();
+  const got = await load(project);
+  assert.deepEqual(got.sources, ['built-in', userFile, join(root, 'extra.toml')]);
+  assert.notEqual(got.claude, 'planted');
+  assert.ok(resolveAgent(got.catalog, 'mine') && resolveAgent(got.catalog, 'extra'));
+  assert.deepEqual(got.warnings, [
+    `subspace: skipped ${join(project, 'subspace.toml')}: its folder is not trusted, and a subspace.toml can choose the commands agents run.\n` +
+      `To trust this folder (only this one, not the folders below it), add it to [trust] folders in ${userFile}:\n\n` +
+      `  [trust]\n  folders = [${JSON.stringify(project)}]\n`,
+  ]);
+  assert.deepEqual(agentFiles({ cwd: project, env }).map((f) => f.trusted), [true, false, true]);
+  // With no agents.toml at all, the same.
+  const bare = { ...env, XDG_CONFIG_HOME: join(root, 'nowhere') };
+  assert.equal(resolveAgent(loadCatalog({ cwd: project, env: bare, onWarning: () => {} }), 'claude')!.command === 'planted', false);
+  // trustProject reads it for one call; so does naming it in $SUBSPACE_AGENTS or files.
+  assert.equal((await load(project, { trustProject: true })).claude, 'planted');
+  const named = await load(project, { files: [join(project, 'subspace.toml')] });
+  assert.equal(named.claude, 'planted');
+  assert.deepEqual(named.warnings, []);
+});
+
+test('the default warning goes to stderr, once per file', async () => {
+  const { project, env } = await untrustedProject();
+  const write = process.stderr.write;
+  let err = '';
+  process.stderr.write = ((chunk: string) => ((err += chunk), true)) as typeof process.stderr.write;
+  try {
+    loadCatalog({ cwd: project, env });
+    await loadCatalogAsync({ cwd: project, env });
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(err.match(/its folder is not trusted/g)?.length, 1);
+});
+
+test('a trusted folder: its subspace.toml loads; a subfolder of it is not trusted; symlinks resolve', async () => {
+  const { root, project, userFile, trust, load } = await untrustedProject();
+  await trust(project);
+  const trusted = await load(join(project));
+  assert.deepEqual(trusted.sources, ['built-in', userFile, join(project, 'subspace.toml'), join(root, 'extra.toml')]);
+  assert.equal(trusted.claude, 'planted');
+  assert.deepEqual(trusted.warnings, []);
+  // From a subfolder the nearest subspace.toml is still the trusted folder's.
+  assert.equal((await load(join(project, 'sub'))).claude, 'planted');
+  // A subfolder's own subspace.toml is not trusted by its parent's entry.
+  await writeFile(join(project, 'sub', 'subspace.toml'), '[agents.claude]\ncommand = "deeper"\n');
+  const sub = await load(join(project, 'sub'));
+  assert.notEqual(sub.claude, 'deeper');
+  assert.equal(sub.warnings.length, 1);
+  assert.match(sub.warnings[0]!, /skipped .*sub.subspace\.toml/);
+  // A trailing slash is the same folder.
+  await trust(`${project}/`);
+  assert.equal((await load(project)).claude, 'planted');
+  // A symlink to the project, trusted by its real path, and the real project trusted through a symlink.
+  const link = join(root, 'link');
+  await symlink(project, link, process.platform === 'win32' ? 'junction' : 'dir');
+  await trust(project);
+  assert.equal((await load(link)).claude, 'planted');
+  await trust(link);
+  assert.equal((await load(project)).claude, 'planted');
+  // Relative paths and other [trust] keys are errors in agents.toml.
+  await writeFile(userFile, '[trust]\nfolders = ["project"]\n');
+  assert.throws(() => loadCatalog({ cwd: project, env: { XDG_CONFIG_HOME: join(root, 'config') } }), /trust\.folders should hold absolute paths or ~\/ paths, not "project"/);
+  await writeFile(userFile, '[trust]\nfolder = ["/x"]\n');
+  await assert.rejects(loadCatalogAsync({ cwd: project, env: { XDG_CONFIG_HOME: join(root, 'config') } }), /trust\.folder is not a known field \(known: folders\)/);
+});
+
+test('~/ in [trust] folders is your home folder', async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'subspace-home-')));
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = process.env.USERPROFILE = home;
+  try {
+    await mkdir(join(home, 'config', 'subspace'), { recursive: true });
+    await mkdir(join(home, 'work', 'p'), { recursive: true });
+    await writeFile(join(home, 'work', 'p', 'subspace.toml'), '[agents.claude]\ncommand = "mine"\n');
+    await writeFile(join(home, 'config', 'subspace', 'agents.toml'), '[trust]\nfolders = ["~/work/p"]\n');
+    const catalog = loadCatalog({ cwd: join(home, 'work', 'p'), env: { XDG_CONFIG_HOME: join(home, 'config'), XDG_CACHE_HOME: join(home, 'cache') }, onWarning: assert.fail });
+    assert.equal(resolveAgent(catalog, 'claude')!.command, 'mine');
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('loadCatalog reads agents.toml, the nearest subspace.toml, $SUBSPACE_AGENTS; the registry cache wins when newer', async () => {
   const root = await mkdtemp(join(tmpdir(), 'subspace-catalog-'));
   const config = join(root, 'config');
@@ -107,7 +218,7 @@ test('loadCatalog reads agents.toml, the nearest subspace.toml, $SUBSPACE_AGENTS
   const project = join(root, 'project');
   await mkdir(join(config, 'subspace'), { recursive: true });
   await mkdir(join(project, 'deep', 'er'), { recursive: true });
-  await writeFile(join(config, 'subspace', 'agents.toml'), '[agents.one]\ncommand = "one"\n');
+  await writeFile(join(config, 'subspace', 'agents.toml'), `[agents.one]\ncommand = "one"\n\n[trust]\nfolders = [${JSON.stringify(project)}]\n`);
   await writeFile(join(project, 'subspace.toml'), '[agents.two]\ncommand = "two"\n');
   await writeFile(join(root, 'extra.toml'), '[agents.three]\ncommand = "three"\n');
   const env = { XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, SUBSPACE_AGENTS: join(root, 'extra.toml') };

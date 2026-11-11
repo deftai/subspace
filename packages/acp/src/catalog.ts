@@ -4,7 +4,7 @@
  * Layers, lowest first: the ACP registry (the bundled snapshot, or a newer
  * cached copy from `refreshRegistry()`), the built-in agents, then
  *   - $XDG_CONFIG_HOME/subspace/agents.toml (default ~/.config/subspace/agents.toml),
- *   - the nearest subspace.toml, from cwd up,
+ *   - the nearest subspace.toml, from cwd up, if its folder is trusted,
  *   - each file in $SUBSPACE_AGENTS (path-separated) and `files`.
  *
  *   [agents.claude]                # change one field of a built-in agent
@@ -18,11 +18,20 @@
  *   [agents.mine.quirks.slow-start]
  *   summary = "Takes 20 s to answer initialize"
  *   fix = "Nothing to do; just wait"
+ *
+ * A project's subspace.toml can choose the commands agents run, so it is only
+ * read when your own agents.toml trusts its folder (that folder only, not the
+ * ones below it; ~/ and symlinks are resolved):
+ *
+ *   [trust]
+ *   folders = ["~/work/my-project"]
+ *
+ * An untrusted one is skipped with a warning (see `onWarning`).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { access, readFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { builtinCatalog, type AgentCatalog, type AgentDefinition, type CatalogLayer, type Quirk } from './agents.ts';
 import { installedBinaries, installedBinariesAsync } from './install.ts';
@@ -155,32 +164,60 @@ export interface CatalogOptions {
   builtinOnly?: boolean;
   /** Environment to read ($XDG_CONFIG_HOME, $XDG_CACHE_HOME, $SUBSPACE_AGENTS). Default `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Read the nearest subspace.toml even if its folder is not in your agents.toml's [trust] folders. */
+  trustProject?: boolean;
+  /** Told about a subspace.toml skipped because its folder is not trusted. Default: once per file, on stderr. */
+  onWarning?: (message: string) => void;
 }
 
-/** The files loadCatalog() reads, in order, and whether each exists. */
-export function agentFiles(options: CatalogOptions = {}): Array<{ path: string; exists: boolean }> {
+/** An agents file loadCatalog() may read. `trusted` is false for a subspace.toml whose folder is not trusted: it is skipped. */
+export interface AgentFile {
+  path: string;
+  exists: boolean;
+  trusted: boolean;
+}
+
+/** The files loadCatalog() reads, in order, whether each exists, and whether it is trusted. */
+export function agentFiles(options: CatalogOptions = {}): AgentFile[] {
   const { first, folders, last } = agentFilePlaces(options);
-  const paths = [first];
+  const files: AgentFile[] = [{ path: first, exists: existsSync(first), trusted: true }];
   const found = folders.find((candidate) => existsSync(candidate));
-  if (found) paths.push(found);
-  paths.push(...last);
-  return paths.map((path) => ({ path, exists: existsSync(path) }));
+  if (found) {
+    let text: string | undefined;
+    try {
+      text = files[0]!.exists ? readFileSync(first, 'utf8') : undefined;
+    } catch {
+      // Unreadable: nothing is trusted.
+    }
+    const trusted = options.trustProject || last.includes(found) || isTrusted(found, trustedFolders(text, first, false), (p) => realpathSync.native(p));
+    files.push({ path: found, exists: true, trusted });
+  }
+  for (const path of last) files.push({ path, exists: existsSync(path), trusted: true });
+  return files;
 }
 
 const fileExists = (path: string): Promise<boolean> => access(path).then(() => true, () => false);
 
 /** `agentFiles()` without blocking the event loop. */
-export async function agentFilesAsync(options: CatalogOptions = {}): Promise<Array<{ path: string; exists: boolean }>> {
+export async function agentFilesAsync(options: CatalogOptions = {}): Promise<AgentFile[]> {
   const { first, folders, last } = agentFilePlaces(options);
-  const paths = [first];
+  const files: AgentFile[] = [{ path: first, exists: await fileExists(first), trusted: true }];
   for (const candidate of folders) {
     if (await fileExists(candidate)) {
-      paths.push(candidate);
+      const text = files[0]!.exists ? await readFile(first, 'utf8').catch(() => undefined) : undefined;
+      let trusted = options.trustProject || last.includes(candidate);
+      if (!trusted) {
+        const folders = trustedFolders(text, first, false);
+        const real = new Map<string, string>();
+        for (const p of [dirname(candidate), ...folders]) real.set(p, await realpath(p).catch(() => p));
+        trusted = isTrusted(candidate, folders, (p) => real.get(p) ?? p);
+      }
+      files.push({ path: candidate, exists: true, trusted });
       break;
     }
   }
-  paths.push(...last);
-  return Promise.all(paths.map(async (path) => ({ path, exists: await fileExists(path) })));
+  for (const path of last) files.push({ path, exists: await fileExists(path), trusted: true });
+  return files;
 }
 
 /** Where agent files may be: the user's file, each folder's subspace.toml from cwd up (the first that exists counts), then the rest. */
@@ -193,6 +230,67 @@ function agentFilePlaces(options: CatalogOptions): { first: string; folders: str
   }
   const last = [...(env.SUBSPACE_AGENTS ?? '').split(delimiter).filter(Boolean), ...(options.files ?? [])].map((file) => resolve(file));
   return { first: join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'subspace', 'agents.toml'), folders, last };
+}
+
+/**
+ * The trusted folders in the user's agents.toml text ([trust] folders), with
+ * ~/ expanded. With `strict`, a bad [trust] table is an AgentFileError;
+ * without, it trusts nothing (loadCatalog reports the error when it reads the file).
+ */
+function trustedFolders(text: string | undefined, source: string, strict: boolean): string[] {
+  if (text === undefined) return [];
+  try {
+    let raw: Record<string, unknown>;
+    try {
+      raw = parseToml(text) as Record<string, unknown>;
+    } catch (error) {
+      throw new AgentFileError(`${source}: ${(error as Error).message}`);
+    }
+    const trust = raw.trust;
+    if (trust === undefined) return [];
+    if (!isRecord(trust)) throw new AgentFileError(`${source}: trust should be a table ([trust])`);
+    for (const key of Object.keys(trust)) if (key !== 'folders') unknownKey(source, 'trust', key, ['folders']);
+    const folders = trust.folders === undefined ? [] : (check(source, 'trust.folders', trust.folders, 'strings') as string[]);
+    return folders.map((folder) => {
+      if (folder === '~' || folder.startsWith('~/')) return resolve(homedir(), folder.slice(2));
+      if (!isAbsolute(folder)) throw new AgentFileError(`${source}: trust.folders should hold absolute paths or ~/ paths, not ${JSON.stringify(folder)}`);
+      return resolve(folder);
+    });
+  } catch (error) {
+    if (strict) throw error;
+    return [];
+  }
+}
+
+/** Whether a subspace.toml's folder is one of `folders` (that folder itself, after resolving symlinks). */
+function isTrusted(file: string, folders: string[], real: (path: string) => string): boolean {
+  const canonical = (path: string) => {
+    let out: string;
+    try {
+      out = real(path);
+    } catch {
+      out = path;
+    }
+    return process.platform === 'win32' ? out.toLowerCase() : out;
+  };
+  const folder = canonical(dirname(file));
+  return folders.some((f) => canonical(f) === folder);
+}
+
+/** The warning for a skipped subspace.toml: where it is and how to trust it. */
+function untrustedWarning(file: string, userFile: string): string {
+  return (
+    `subspace: skipped ${file}: its folder is not trusted, and a subspace.toml can choose the commands agents run.\n` +
+    `To trust this folder (only this one, not the folders below it), add it to [trust] folders in ${userFile}:\n\n` +
+    `  [trust]\n  folders = [${JSON.stringify(dirname(file))}]\n`
+  );
+}
+
+const warned = new Set<string>();
+function warnOnce(message: string, path: string): void {
+  if (warned.has(path)) return;
+  warned.add(path);
+  process.stderr.write(message);
 }
 
 export function registryCachePath(env: Record<string, string | undefined> = process.env): string {
@@ -248,12 +346,12 @@ export function loadCatalog(options: CatalogOptions = {}): AgentCatalog {
   const catalog = builtinCatalog(registry, source);
   catalog.binaries = installedBinaries(options.env);
   if (options.builtinOnly) return catalog;
-  for (const { path, exists } of agentFiles(options)) {
-    if (!exists) {
-      if ((options.files ?? []).map((f) => resolve(f)).includes(path)) throw new AgentFileError(`${path}: no such file`);
-      continue;
-    }
-    catalog.layers.push(parseAgentFile(readFileSync(path, 'utf8'), path));
+  const files = agentFiles(options);
+  for (const file of files) {
+    if (!includeFile(file, files[0]!.path, options)) continue;
+    const text = readFileSync(file.path, 'utf8');
+    if (file === files[0]) trustedFolders(text, file.path, true);
+    catalog.layers.push(parseAgentFile(text, file.path));
   }
   return catalog;
 }
@@ -264,12 +362,27 @@ export async function loadCatalogAsync(options: CatalogOptions = {}): Promise<Ag
   const catalog = builtinCatalog(registry, source);
   catalog.binaries = await installedBinariesAsync(options.env);
   if (options.builtinOnly) return catalog;
-  for (const { path, exists } of await agentFilesAsync(options)) {
-    if (!exists) {
-      if ((options.files ?? []).map((f) => resolve(f)).includes(path)) throw new AgentFileError(`${path}: no such file`);
-      continue;
-    }
-    catalog.layers.push(parseAgentFile(await readFile(path, 'utf8'), path));
+  const files = await agentFilesAsync(options);
+  for (const file of files) {
+    if (!includeFile(file, files[0]!.path, options)) continue;
+    const text = await readFile(file.path, 'utf8');
+    if (file === files[0]) trustedFolders(text, file.path, true);
+    catalog.layers.push(parseAgentFile(text, file.path));
   }
   return catalog;
+}
+
+/** Whether loadCatalog reads a file: it exists (a missing --agents-file is an error) and is trusted (else a warning). */
+function includeFile(file: AgentFile, userFile: string, options: CatalogOptions): boolean {
+  if (!file.exists) {
+    if ((options.files ?? []).map((f) => resolve(f)).includes(file.path)) throw new AgentFileError(`${file.path}: no such file`);
+    return false;
+  }
+  if (!file.trusted) {
+    const message = untrustedWarning(file.path, userFile);
+    if (options.onWarning) options.onWarning(message);
+    else warnOnce(message, file.path);
+    return false;
+  }
+  return true;
 }

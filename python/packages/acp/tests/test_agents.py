@@ -149,13 +149,128 @@ def test_other_tables_are_not_ours():
     assert parse_agent_file("[other]\nx = 1\n", "x.toml").agents == {}
 
 
+class _Untrusted:
+    """A user config and a project with a subspace.toml that redefines claude."""
+
+    def __init__(self, tmp_path: Path):
+        self.root = Path(os.path.realpath(tmp_path))
+        self.config = self.root / "config"
+        self.project = self.root / "project"
+        (self.config / "subspace").mkdir(parents=True)
+        (self.project / "sub").mkdir(parents=True)
+        (self.project / "subspace.toml").write_text('[agents.claude]\ncommand = "planted"\n')
+        (self.root / "extra.toml").write_text('[agents.extra]\ncommand = "extra"\n')
+        self.user_file = self.config / "subspace" / "agents.toml"
+        self.env = {"XDG_CONFIG_HOME": str(self.config), "XDG_CACHE_HOME": str(self.root / "cache"), "SUBSPACE_AGENTS": str(self.root / "extra.toml")}
+
+    def trust(self, *folders: str) -> None:
+        listed = ", ".join(json.dumps(f) for f in folders)
+        self.user_file.write_text(f'[agents.mine]\ncommand = "mine"\n\n[trust]\nfolders = [{listed}]\n')
+
+    def load(self, cwd: Path, **more):
+        warnings: list[str] = []
+        catalog = load_catalog(cwd=str(cwd), env=self.env, on_warning=warnings.append, **more)
+        claude = resolve_agent(catalog, "claude")
+        assert claude is not None
+        return [layer.source for layer in catalog.layers], claude.command, catalog, warnings
+
+
+def test_an_untrusted_subspace_toml_is_skipped_with_a_warning_your_agents_toml_and_subspace_agents_still_load(tmp_path):
+    t = _Untrusted(tmp_path)
+    t.trust()
+    sources, claude, catalog, warnings = t.load(t.project)
+    assert sources == ["built-in", str(t.user_file), str(t.root / "extra.toml")]
+    assert claude != "planted"
+    assert resolve_agent(catalog, "mine") is not None and resolve_agent(catalog, "extra") is not None
+    assert warnings == [
+        (
+            f"subspace: skipped {t.project / 'subspace.toml'}: its folder is not trusted, and a subspace.toml can choose the commands agents run.\n"
+            f"To trust this folder (only this one, not the folders below it), add it to [trust] folders in {t.user_file}:\n\n"
+            f"  [trust]\n  folders = [{json.dumps(str(t.project))}]\n"
+        )
+    ]
+    assert [f.trusted for f in agent_files(cwd=str(t.project), env=t.env)] == [True, False, True]
+    # With no agents.toml at all, the same.
+    bare = {**t.env, "XDG_CONFIG_HOME": str(t.root / "nowhere")}
+    claude_bare = resolve_agent(load_catalog(cwd=str(t.project), env=bare, on_warning=lambda _m: None), "claude")
+    assert claude_bare is not None and claude_bare.command != "planted"
+    # trust_project reads it for one call; so does naming it in $SUBSPACE_AGENTS or files.
+    assert t.load(t.project, trust_project=True)[1] == "planted"
+    named = t.load(t.project, files=[str(t.project / "subspace.toml")])
+    assert named[1] == "planted" and named[3] == []
+
+
+def test_the_default_warning_goes_to_stderr_once_per_file(tmp_path, capsys):
+    t = _Untrusted(tmp_path)
+    load_catalog(cwd=str(t.project), env=t.env)
+    load_catalog(cwd=str(t.project), env=t.env)
+    err = capsys.readouterr().err
+    assert err.count("its folder is not trusted") == 1
+
+
+async def test_a_trusted_folder_loads_a_subfolder_of_it_is_not_trusted_symlinks_resolve(tmp_path):
+    from deft_subspace.acp.catalog import load_catalog_async
+
+    t = _Untrusted(tmp_path)
+    t.trust(str(t.project))
+    sources, claude, _catalog, warnings = t.load(t.project)
+    assert sources == ["built-in", str(t.user_file), str(t.project / "subspace.toml"), str(t.root / "extra.toml")]
+    assert claude == "planted" and warnings == []
+    threaded = await load_catalog_async(cwd=str(t.project), env=t.env)
+    assert resolve_agent(threaded, "claude").command == "planted"  # type: ignore[union-attr]
+    # From a subfolder the nearest subspace.toml is still the trusted folder's.
+    assert t.load(t.project / "sub")[1] == "planted"
+    # A subfolder's own subspace.toml is not trusted by its parent's entry.
+    (t.project / "sub" / "subspace.toml").write_text('[agents.claude]\ncommand = "deeper"\n')
+    sub = t.load(t.project / "sub")
+    assert sub[1] != "deeper"
+    assert len(sub[3]) == 1 and re.search(r"skipped .*sub.subspace\.toml", sub[3][0])
+    # A trailing slash is the same folder.
+    t.trust(str(t.project) + "/")
+    assert t.load(t.project)[1] == "planted"
+    # Relative paths and other [trust] keys are errors in agents.toml.
+    t.user_file.write_text('[trust]\nfolders = ["project"]\n')
+    with pytest.raises(AgentFileError, match=r'trust\.folders should hold absolute paths or ~/ paths, not "project"'):
+        load_catalog(cwd=str(t.project), env={"XDG_CONFIG_HOME": str(t.config)})
+    t.user_file.write_text('[trust]\nfolder = ["/x"]\n')
+    with pytest.raises(AgentFileError, match=r"trust\.folder is not a known field \(known: folders\)"):
+        await load_catalog_async(cwd=str(t.project), env={"XDG_CONFIG_HOME": str(t.config)})
+    # A symlink to the project, trusted by its real path, and the real project trusted through a symlink.
+    link = t.root / "link"
+    try:
+        os.symlink(t.project, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+    t.trust(str(t.project))
+    assert t.load(link)[1] == "planted"
+    t.trust(str(link))
+    assert t.load(t.project)[1] == "planted"
+
+
+def test_tilde_in_trust_folders_is_your_home_folder(tmp_path, monkeypatch):
+    home = Path(os.path.realpath(tmp_path))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    (home / "config" / "subspace").mkdir(parents=True)
+    (home / "work" / "p").mkdir(parents=True)
+    (home / "work" / "p" / "subspace.toml").write_text('[agents.claude]\ncommand = "mine"\n')
+    (home / "config" / "subspace" / "agents.toml").write_text('[trust]\nfolders = ["~/work/p"]\n')
+
+    def fail(message: str) -> None:
+        raise AssertionError(message)
+
+    catalog = load_catalog(cwd=str(home / "work" / "p"), env={"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache")}, on_warning=fail)
+    claude = resolve_agent(catalog, "claude")
+    assert claude is not None and claude.command == "mine"
+
+
 async def test_load_catalog_reads_agents_toml_the_nearest_subspace_toml_and_subspace_agents_and_a_newer_cache_wins(tmp_path):
     config = tmp_path / "config"
     cache = tmp_path / "cache"
     project = tmp_path / "project"
     (config / "subspace").mkdir(parents=True)
     (project / "deep" / "er").mkdir(parents=True)
-    (config / "subspace" / "agents.toml").write_text('[agents.one]\ncommand = "one"\n')
+    (config / "subspace" / "agents.toml").write_text(f'[agents.one]\ncommand = "one"\n\n[trust]\nfolders = [{json.dumps(str(project))}]\n')
     (project / "subspace.toml").write_text('[agents.two]\ncommand = "two"\n')
     (tmp_path / "extra.toml").write_text('[agents.three]\ncommand = "three"\n')
     env = {"XDG_CONFIG_HOME": str(config), "XDG_CACHE_HOME": str(cache), "SUBSPACE_AGENTS": str(tmp_path / "extra.toml")}
@@ -273,7 +388,7 @@ async def test_load_catalog_async_reads_the_same_catalog(tmp_path):
 
     (tmp_path / "subspace.toml").write_text('[agents.mine]\ncommand = "my-agent"\n')
     env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg"), "XDG_CACHE_HOME": str(tmp_path / "cache")}
-    sync = load_catalog(cwd=str(tmp_path), env=env)
-    threaded = await load_catalog_async(cwd=str(tmp_path), env=env)
+    sync = load_catalog(cwd=str(tmp_path), env=env, trust_project=True)
+    threaded = await load_catalog_async(cwd=str(tmp_path), env=env, trust_project=True)
     assert [layer.agents for layer in threaded.layers] == [layer.agents for layer in sync.layers]
     assert "mine" in threaded.layers[-1].agents
