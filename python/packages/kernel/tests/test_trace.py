@@ -59,3 +59,25 @@ def test_a_trace_record_is_a_copy_changing_the_message_later_does_not_change_it(
     assert recorded["list"] == [{"a": 1}]
     assert recorded["raw"] == bytearray(b"ab") and recorded["raw"] is not raw
     assert (recorded["n"], recorded["f"], recorded["t"], recorded["when"]) == (None, 1.5, True, datetime.date(2026, 1, 1))
+
+
+def test_a_trace_tap_records_a_cyclic_or_uncopyable_message_instead_of_raising():
+    import threading
+
+    records: list = []
+    tap = trace_tap(records.append, peer="a")
+    cyclic: dict = {"jsonrpc": "2.0", "method": "m", "params": {"list": []}}
+    cyclic["params"]["list"].append(cyclic)
+    tap("out", cyclic)
+    recorded = records[1]["msg"]
+    assert recorded is not cyclic and recorded["params"]["list"][0] is recorded
+    # Deeply nested, but not cyclic: recorded all the same.
+    deep: dict = {"leaf": True}
+    for _ in range(5000):
+        deep = {"next": deep}
+    tap("out", deep)
+    assert len(records) == 3
+    # Not copyable at all: recorded as it is.
+    uncopyable = {"method": "m", "params": {"lock": threading.Lock()}}
+    tap("in", uncopyable)
+    assert records[3]["msg"] is uncopyable

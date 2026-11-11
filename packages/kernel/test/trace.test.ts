@@ -51,3 +51,23 @@ test('a trace record is a copy: changing the message later does not change it', 
   assert.ok(recorded.params.when instanceof Date);
   assert.notEqual(recorded.params, message.params);
 });
+
+test('a trace tap records a cyclic or uncloneable message instead of throwing', () => {
+  const records: TraceRecord[] = [];
+  const tap = traceTap((r) => records.push(r), { peer: 'a' });
+  const cyclic: Record<string, unknown> = { jsonrpc: '2.0', method: 'm', params: { list: [] as unknown[] } };
+  (cyclic.params as { list: unknown[] }).list.push(cyclic);
+  tap('out', cyclic);
+  const recorded = (records[1] as { msg: typeof cyclic }).msg;
+  assert.notEqual(recorded, cyclic);
+  assert.equal((recorded.params as { list: unknown[] }).list[0], recorded);
+  // Deeply nested, but not cyclic: copied all the same.
+  let deep: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 20_000; i++) deep = { next: deep };
+  tap('out', deep);
+  assert.equal(records.length, 3);
+  // Not cloneable at all: recorded as it is.
+  const withFunction = { method: 'm', params: new (class Params { f = () => {} })() };
+  tap('in', withFunction);
+  assert.equal((records[3] as { msg: unknown }).msg, withFunction);
+});

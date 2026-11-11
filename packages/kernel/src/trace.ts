@@ -64,18 +64,37 @@ export interface TraceTap {
  * A copy of a message, so later mutation does not change the record. Plain
  * objects and arrays (all JSON has) are copied directly, which is several
  * times faster than `structuredClone`; anything else goes to `structuredClone`.
+ * A message nested deeper than any real one (a cycle, say) is given to
+ * `structuredClone` whole, which keeps cycles; one that cannot be cloned at
+ * all is recorded as it is. Never throws.
  */
-function copyJson(value: unknown): unknown {
+function copyMessage(value: unknown): unknown {
+  try {
+    return copyJson(value, 0);
+  } catch {
+    try {
+      return structuredClone(value);
+    } catch {
+      return value;
+    }
+  }
+}
+
+/** Past this depth the direct copy gives up (cycles end here, and the stack stays small). */
+const MAX_DEPTH = 256;
+
+function copyJson(value: unknown, depth: number): unknown {
   if (typeof value !== 'object' || value === null) return value;
+  if (depth > MAX_DEPTH) throw new RangeError('too deep to copy directly');
   if (Array.isArray(value)) {
     const out = new Array<unknown>(value.length);
-    for (let i = 0; i < value.length; i++) out[i] = copyJson(value[i]);
+    for (let i = 0; i < value.length; i++) out[i] = copyJson(value[i], depth + 1);
     return out;
   }
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return structuredClone(value);
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) out[key] = copyJson((value as Record<string, unknown>)[key]);
+  for (const key of Object.keys(value)) out[key] = copyJson((value as Record<string, unknown>)[key], depth + 1);
   return out;
 }
 
@@ -95,7 +114,7 @@ export function traceTap(write: (record: TraceRecord) => void, options: TraceTap
     const msg = options.redact ? options.redact(message, direction) : message;
     if (msg === undefined) return;
     // Copy, so later mutation of the message does not change the record.
-    write({ v: TRACE_VERSION, kind: 'message', t: clock.now() - start, dir: direction, msg: copyJson(msg) });
+    write({ v: TRACE_VERSION, kind: 'message', t: clock.now() - start, dir: direction, msg: copyMessage(msg) });
   }) as TraceTap;
   tap.note = (text, data) =>
     write({ v: TRACE_VERSION, kind: 'note', t: clock.now() - start, text, ...(data === undefined ? {} : { data }) });
