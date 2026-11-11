@@ -165,6 +165,12 @@ def _new_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
     return loop.create_task(coroutine, name=name)
 
 
+def _being_cancelled() -> bool:
+    """Whether the running task has been asked to cancel (and has not uncancelled)."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 def _id_key(value: Any) -> Any:
     # 1 and 1.0 are the same JSON number; "1" is not.
     if isinstance(value, float) and value.is_integer():
@@ -339,6 +345,9 @@ class RpcPeer:
             task.cancel()
             try:
                 await task
+            except asyncio.CancelledError:
+                if _being_cancelled():
+                    raise  # our caller's cancellation, not the reader's
             except BaseException:  # noqa: BLE001
                 pass
         writer = self._writer_task
@@ -350,6 +359,9 @@ class RpcPeer:
                 writer.cancel()
                 try:
                     await writer
+                except asyncio.CancelledError:
+                    if _being_cancelled():
+                        raise  # our caller's cancellation, not the writer's
                 except BaseException:  # noqa: BLE001
                     pass
                 await self._abort_channel()
