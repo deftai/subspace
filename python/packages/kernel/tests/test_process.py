@@ -166,12 +166,13 @@ async def test_a_group_is_forgotten_once_its_last_member_is_gone(tmp_path):
 
 # A program that starts a supervised child (which starts a grandchild), prints both pids, and waits.
 SUPERVISOR = """
-import asyncio, signal, sys
+import asyncio, os, signal, sys
 from deft_subspace.kernel import spawn_process
 
 async def main():
     if sys.argv[1] == "own-handler":
-        signal.signal(signal.SIGTERM, lambda *_: print("handled", flush=True))
+        # os.write, not print: the signal can arrive while print() of the pid line is still flushing.
+        signal.signal(signal.SIGTERM, lambda *_: os.write(1, b"handled\\n"))
     if sys.argv[1] == "loop-handler":
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: print("handled", flush=True))
     child = await spawn_process(sys.executable, args=["-c", (
