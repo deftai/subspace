@@ -380,6 +380,32 @@ async def test_windows_hands_the_cmd_exe_command_line_to_the_loop_as_a_string(mo
     assert kwargs["creationflags"] == 0x200
 
 
+def test_windows_taskkill_ends_the_whole_tree_politely_or_forced():
+    from deft_subspace.kernel.process import _taskkill_command
+
+    assert _taskkill_command(1234, False, {"SystemRoot": r"C:\WINDOWS"}) == [r"C:\WINDOWS\System32\taskkill.exe", "/pid", "1234", "/T"]
+    assert _taskkill_command(1234, True, {}) == [r"C:\Windows\System32\taskkill.exe", "/pid", "1234", "/T", "/F"]
+
+
+async def test_windows_stop_runs_taskkill_without_then_with_f_and_falls_back_to_kill(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    # Stands in for taskkill: records its arguments and fails, as when the tree cannot be ended.
+    from deft_subspace.kernel import process
+
+    log = tmp_path / "taskkill.log"
+    record = f"import sys; open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n'); sys.exit(1)"
+    child = await spawn_process(PY, args=["-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(process, "_WINDOWS", True)
+        monkeypatch.setattr(process, "_taskkill_command", lambda pid, force, env: [PY, "-c", record, str(pid), *(["/F"] if force else [])])
+        await asyncio.wait_for(child.stop(100), 10)
+        assert child.returncode is not None  # killed by the fallback
+        assert log.read_text().splitlines() == [str(child.pid), f"{child.pid} /F"]
+    finally:
+        monkeypatch.undo()
+        await child.stop(0)
+        await child.ended()
+
+
 def test_the_not_found_hint_names_cmd_shims_on_windows():
     from deft_subspace.kernel.process import _not_found_hint
 

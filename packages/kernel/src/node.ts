@@ -17,6 +17,11 @@
  *   cmd.exe nor a shim that hands `%*` to cmd.exe again can be made to run
  *   anything else. An argument containing CR, LF or NUL cannot be passed safely
  *   and is refused with a SpawnError (code `EINVAL`).
+ * - On Windows, which has no process groups to signal, stop() ends the child
+ *   and every process it started with `taskkill /T` (run directly, no shell):
+ *   without /F first, then with /F after the grace period; if taskkill cannot
+ *   run, the child alone is killed. This matters for `.cmd` launches, where the
+ *   program is a child of cmd.exe and would otherwise keep stdout open.
  *
  * Process groups outlive this process unless it stops them, so the live ones
  * are killed when it exits: on 'exit', and, on POSIX, on SIGINT, SIGTERM and
@@ -242,6 +247,15 @@ export function windowsLaunch(
   return cmdLine(found, args, command);
 }
 
+/**
+ * @internal The taskkill.exe command that ends process `pid` and every process it started
+ * (/T): asking them to close, or forcing it (/F). Run directly, not through a shell.
+ */
+export function taskkillCommand(pid: number, force: boolean, env: Record<string, string | undefined>): [string, string[]] {
+  const root = envGet(env, 'SYSTEMROOT') || 'C:\\Windows';
+  return [path.win32.join(root, 'System32', 'taskkill.exe'), ['/pid', String(pid), '/T', ...(force ? ['/F'] : [])]];
+}
+
 /** @internal */
 export function notFoundHint(command: string, cwd: string | undefined, windows: boolean): string {
   const where = cwd ? ` (cwd: ${cwd})` : '';
@@ -339,7 +353,31 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     }
   };
 
-  const killNow = () => signalGroup('SIGKILL');
+  // Windows has no process groups to signal, and killing cmd.exe would leave the program a
+  // .cmd file started (and its hold on stdout) running: end the tree with taskkill instead.
+  const treeKill = windows && pid !== undefined;
+  const killTree = (force: boolean): Promise<void> =>
+    new Promise((resolve) => {
+      // When taskkill cannot run or fails, a forced kill at least ends the child itself.
+      const fallback = (): void => {
+        if (force) signalGroup('SIGKILL');
+        resolve();
+      };
+      const [file, killArgs] = taskkillCommand(pid!, force, env);
+      let killer: ChildProcess;
+      try {
+        killer = spawn(file, killArgs, { stdio: 'ignore', windowsHide: true });
+      } catch {
+        return fallback();
+      }
+      killer.once('error', fallback);
+      killer.once('exit', (code) => (code === 0 ? resolve() : fallback()));
+    });
+
+  const killNow = (): void => {
+    if (treeKill) void killTree(true);
+    else signalGroup('SIGKILL');
+  };
   track(killNow);
   // Once the leader has exited, drop the group as soon as its last member is gone, so
   // the exit-time kill never hits a group id the system has since given to someone else.
@@ -359,13 +397,17 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     stopping ??= (async () => {
       child.stdin!.end();
       if (groupAlive()) {
-        signalGroup('SIGTERM');
+        if (treeKill) await killTree(false);
+        else signalGroup('SIGTERM');
         const grace = graceMs ?? options.killGraceMs ?? 2000;
         const deadline = Date.now() + grace;
         while (groupAlive() && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        if (groupAlive()) signalGroup('SIGKILL');
+        if (groupAlive()) {
+          if (treeKill) await killTree(true);
+          else signalGroup('SIGKILL');
+        }
       }
       untrack(killNow);
       return exited;

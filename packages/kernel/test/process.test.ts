@@ -3,7 +3,7 @@ import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
-import { cmdExeArgs, cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
+import { cmdExeArgs, cmdLine, notFoundHint, spawnProcess, SpawnError, taskkillCommand, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
 
 const node = process.execPath;
 
@@ -301,6 +301,14 @@ test('Windows: an argument with CR, LF or NUL is refused for a .cmd file', () =>
   }
   // Not for a program that runs as given: it gets its arguments without cmd.exe.
   assert.equal(windowsLaunch('node', ['a\nb'], winEnv, files('C:\\nodejs\\node.exe')), undefined);
+});
+
+test('Windows: stop() ends the whole tree with taskkill, politely, then forced', () => {
+  assert.deepEqual(taskkillCommand(1234, false, { SystemRoot: 'C:\\WINDOWS' }), [
+    'C:\\WINDOWS\\System32\\taskkill.exe',
+    ['/pid', '1234', '/T'],
+  ]);
+  assert.deepEqual(taskkillCommand(1234, true, {}), ['C:\\Windows\\System32\\taskkill.exe', ['/pid', '1234', '/T', '/F']]);
 });
 
 test('the not-found hint names .cmd shims on Windows', () => {

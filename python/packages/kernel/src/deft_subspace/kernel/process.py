@@ -2,7 +2,11 @@
 
 - On POSIX the child gets its own process group (a new session), so stopping
   it also stops whatever it started (`npx foo` runs `foo` as a grandchild).
-  On Windows it gets its own process group, and stop() terminates the child.
+  On Windows, which has no process groups to signal, stop() ends the child and
+  every process it started with `taskkill /T` (run directly, no shell): without
+  /F first, then with /F after the grace period; if taskkill cannot run, the
+  child alone is killed. This matters for `.cmd` launches, where the program is
+  a child of cmd.exe and would otherwise keep stdout open.
 - stop() closes stdin, sends SIGTERM, then SIGKILL after a grace period.
 - The last stderr output is kept for error messages.
 - `ended` settles only after the process has exited *and* its stdout has
@@ -238,6 +242,13 @@ def _cmd_exe(line: str, env: Mapping[str, str]) -> tuple[str, str]:
     return comspec, f'"{comspec}" /d /e:ON /v:OFF /s /c "{line}"'
 
 
+def _taskkill_command(pid: int, force: bool, env: Mapping[str, str]) -> list[str]:
+    """The taskkill.exe command that ends process `pid` and every process it started (/T):
+    asking them to close, or forcing it (/F). Run directly, not through a shell."""
+    system_root = _env_get(env, "SYSTEMROOT") or "C:\\Windows"
+    return [ntpath.join(system_root, "System32", "taskkill.exe"), "/pid", str(pid), "/T", *(["/F"] if force else [])]
+
+
 def _not_found_hint(command: str, cwd: object, windows: bool) -> str:
     where = f" (cwd: {cwd})" if cwd else ""
     shims = " On Windows it is looked up with PATHEXT, so .cmd shims such as npx.cmd are found too." if windows else ""
@@ -435,7 +446,57 @@ class SupervisedProcess:
             return False  # already gone
 
     def _kill_group(self) -> None:
+        if self._tree_kill:
+            self._kill_tree_now()
+        else:
+            self._force_kill()
+
+    def _force_kill(self) -> None:
         self._signal_group(getattr(signals, "SIGKILL", signals.SIGTERM))
+
+    # Windows has no process groups to signal, and killing cmd.exe would leave the program a
+    # .cmd file started (and its hold on stdout) running: the tree is ended with taskkill.
+
+    @property
+    def _tree_kill(self) -> bool:
+        return _WINDOWS and self.pid is not None
+
+    def _kill_tree_now(self) -> None:
+        """taskkill /T /F, waiting for it (at exit); the child alone if taskkill cannot run or fails."""
+        assert self.pid is not None
+        try:
+            done = subprocess.run(
+                _taskkill_command(self.pid, True, os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5,
+                check=False,
+            )
+            if done.returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+        self._force_kill()
+
+    async def _kill_tree(self, force: bool) -> None:
+        """taskkill /T, with /F if `force`; when that cannot run or fails, a forced kill ends the child alone."""
+        assert self.pid is not None
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                *_taskkill_command(self.pid, force, os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if await killer.wait() == 0:
+                return
+        except OSError:
+            pass
+        if force:
+            self._force_kill()
 
     def _group_alive(self) -> bool:
         if _WINDOWS or self.pid is None:
@@ -458,13 +519,19 @@ class SupervisedProcess:
     async def _stop(self, grace_ms: float | None) -> ExitInfo:
         self._close_stdin()
         if self._group_alive():
-            self._signal_group(signals.SIGTERM)
+            if self._tree_kill:
+                await self._kill_tree(False)
+            else:
+                self._signal_group(signals.SIGTERM)
             grace = (self._grace_ms if grace_ms is None else grace_ms) / 1000
             deadline = time.monotonic() + grace
             while self._group_alive() and time.monotonic() < deadline:
                 await asyncio.sleep(0.025)
             if self._group_alive():
-                self._kill_group()
+                if self._tree_kill:
+                    await self._kill_tree(True)
+                else:
+                    self._force_kill()
         _untrack(self._kill_now)
         return await asyncio.shield(self._exited)
 
