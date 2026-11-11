@@ -43,7 +43,7 @@ import type { PermissionPolicy } from './permissions.ts';
 import { connectAgent, type ConnectAgentOptions, type ConnectedAgent } from './node.ts';
 import type { Turn } from './turn.ts';
 import { listAgents, resolveAgent, type AgentCatalog, type BuiltinAgentName, type ResolvedAgent } from './agents.ts';
-import { loadCatalog } from './catalog.ts';
+import { loadCatalogAsync } from './catalog.ts';
 
 /** An agent given by its command (not by name). */
 export interface AgentCommand {
@@ -67,7 +67,7 @@ export interface StartOptions extends Omit<ConnectAgentOptions, 'cwd' | 'workspa
   cwd?: string;
   /** Serve the agent's file requests from `cwd` (v1). Default true. */
   files?: ConnectAgentOptions['files'] | false;
-  /** Where names are looked up. Default: loadCatalog({ cwd }) (built-ins, the ACP registry, agents files). */
+  /** Where names are looked up. Default: loadCatalogAsync({ cwd }) (built-ins, the ACP registry, agents files). */
   catalog?: AgentCatalog;
   /** Arguments added after the agent's. */
   extraArgs?: string[];
@@ -115,7 +115,7 @@ export function agentByName(name: string, catalog: AgentCatalog): ResolvedAgent 
 
 /** Start a known agent (by name) or `{ command, args }`, and open a session. */
 export async function start(agent: AgentName | AgentCommand, options: StartOptions): Promise<StartedAgent> {
-  const resolved = typeof agent === 'string' ? agentByName(agent, options.catalog ?? loadCatalog({ cwd: options.cwd ?? process.cwd() })) : undefined;
+  const resolved = typeof agent === 'string' ? agentByName(agent, options.catalog ?? (await loadCatalogAsync({ cwd: options.cwd ?? process.cwd() }))) : undefined;
   const preset: AgentCommand & { args: readonly string[] } = resolved ?? { ...agent as AgentCommand, args: (agent as AgentCommand).args ?? [] };
   const handlers = mergeHandlers(options.handlers, options);
   requirePermissionAnswer(options, 'start()');

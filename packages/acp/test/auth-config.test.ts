@@ -231,3 +231,26 @@ test('v2 config options: configId, type id for selects', async () => {
   assert.deepEqual(session.configOptions.map((o) => o.currentValue), ['gpt-5-mini', false]);
   await client.close();
 });
+
+test('overlapping config changes apply in the order they were made', async () => {
+  const link = byteLink();
+  let calls = 0;
+  let current: Record<string, string | boolean> = { model: 'sonnet', effort: 'low', fast: false };
+  const options = (model: string) => v1Options.map((o) => ({ ...o, currentValue: o.id === 'model' ? model : current[o.id] })) as officialV1.SessionConfigOption[];
+  officialV1
+    .agent({ name: 'config-order' })
+    .onRequest('initialize', () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }))
+    .onRequest('session/new', () => ({ sessionId: 's', configOptions: options('sonnet') }))
+    .onRequest('session/set_config_option', async ({ params }) => {
+      // The first change is answered slowly, the second at once.
+      if (calls++ === 0) await new Promise((resolve) => setTimeout(resolve, 50));
+      current = { ...current, [params.configId]: params.value };
+      return { configOptions: options(String(params.value)) };
+    })
+    .connect(officialV1.ndJsonStream(link.b.writable, link.b.readable));
+  const client = await AcpClient.connect(link.client);
+  const session = await client.newSession({ cwd: '/tmp' });
+  await Promise.all([session.setModel('opus'), session.setModel('sonnet')]);
+  assert.equal(session.model?.currentValue, 'sonnet', 'the later change wins');
+  await client.close();
+});
