@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from deft_subspace.kernel import ChannelClosed, EndOfChannel, ErrorCode, RpcError, RpcPeer, SpawnError, ndjson, trace_tap
 
 from .agents import AgentCatalog, ResolvedAgent, list_agents, resolve_agent
-from .catalog import load_catalog
+from .catalog import load_catalog_async
 from .client import PromptInput, Session, SessionMcpServers
 from .conveniences import SessionConveniences
 from .handlers import HANDLER_KEYS, TurnHandlers, merge_handlers
@@ -246,7 +246,7 @@ async def start(
 
     - `cwd`: the agent's folder, the workspace its file requests stay in, and the session's cwd. Default `os.getcwd()`.
     - `files`: serve the agent's file requests (v1). Default: from `cwd`; False: none.
-    - `catalog`: where names are looked up. Default: `load_catalog(cwd=cwd)` (built-ins, the ACP registry, agents files).
+    - `catalog`: where names are looked up. Default: `load_catalog_async(cwd=cwd)` (built-ins, the ACP registry, agents files).
     - `extra_args`: arguments added after the agent's.
     - `mode`: the session mode to switch to. Default: the preset's ask-first mode. False: the agent's own.
     - `permissions`: a fixed answer to every permission question; or use `on_permission`. One of the two is required.
@@ -259,7 +259,7 @@ async def start(
     """
     from .node import connect_agent
 
-    resolved = agent_by_name(agent, catalog if catalog is not None else load_catalog(cwd=cwd or os.getcwd())) if isinstance(agent, str) else None
+    resolved = agent_by_name(agent, catalog if catalog is not None else await load_catalog_async(cwd=cwd or os.getcwd())) if isinstance(agent, str) else None
     preset = _Preset(resolved if resolved is not None else agent)  # type: ignore[arg-type]
     merged = merge_handlers(handlers, options)
     require_permission_answer({**options, "permissions": permissions, "handlers": handlers}, "start()")

@@ -266,3 +266,14 @@ def test_a_name_that_is_not_a_string_is_an_agent_file_error():
 
     with _pytest.raises(AgentFileError):
         parse_agent_table({1: {"command": "x"}}, "test")
+
+
+async def test_load_catalog_async_reads_the_same_catalog(tmp_path):
+    from deft_subspace.acp.catalog import load_catalog, load_catalog_async
+
+    (tmp_path / "subspace.toml").write_text('[agents.mine]\ncommand = "my-agent"\n')
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg"), "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    sync = load_catalog(cwd=str(tmp_path), env=env)
+    threaded = await load_catalog_async(cwd=str(tmp_path), env=env)
+    assert [layer.agents for layer in threaded.layers] == [layer.agents for layer in sync.layers]
+    assert "mine" in threaded.layers[-1].agents

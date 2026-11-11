@@ -276,6 +276,13 @@ async def refresh_registry(
     return RefreshedRegistry(len(registry["agents"]), path)
 
 
+async def load_catalog_async(
+    *, cwd: str | None = None, files: Sequence[str] | None = None, builtin_only: bool = False, env: Mapping[str, str | None] | None = None
+) -> AgentCatalog:
+    """`load_catalog()` without blocking the event loop: the files are read in a thread."""
+    return await asyncio.to_thread(load_catalog, cwd=cwd, files=files, builtin_only=builtin_only, env=env)
+
+
 def load_catalog(
     *, cwd: str | None = None, files: Sequence[str] | None = None, builtin_only: bool = False, env: Mapping[str, str | None] | None = None
 ) -> AgentCatalog:

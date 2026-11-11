@@ -821,6 +821,8 @@ class Session:
         self._idle_projection = TurnProjection(f"{session_id}#idle", self.terminals)
         self._background: list[BackgroundItem] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
+        #: Mode and config changes, one at a time, so a later change is never overwritten by an earlier answer.
+        self._config_lock = asyncio.Lock()
 
     # ---- state ---------------------------------------------------------------------
 
@@ -898,6 +900,13 @@ class Session:
 
     async def set_mode(self, mode_id: str, *, timeout_ms: float | None = None) -> None:
         """Switch mode, through `session/set_mode` or `session/set_config_option` as the agent
+        requires. Raises ValueError if the agent offers no such mode. Mode and config changes
+        run one at a time, in the order they were made."""
+        async with self._config_lock:
+            await self._set_mode(mode_id, timeout_ms)
+
+    async def _set_mode(self, mode_id: str, timeout_ms: float | None) -> None:
+        """Switch mode, through `session/set_mode` or `session/set_config_option` as the agent
         requires. Raises ValueError if the agent offers no such mode."""
         modes = self._modes
         if modes is None:
@@ -920,6 +929,13 @@ class Session:
         self._config = config_options_from(options) or self._with_value(modes.config_id or "", mode_id)
 
     async def set_config_option(self, option_id: str, value: str | bool, *, timeout_ms: float | None = None) -> None:
+        """Set a config option (`session/set_config_option`): a choice's value for a select option,
+        True or False for an on/off one. Raises ValueError, without asking the agent, for an option
+        or value it did not offer. Mode and config changes run one at a time, in the order they were made."""
+        async with self._config_lock:
+            await self._set_config_option(option_id, value, timeout_ms)
+
+    async def _set_config_option(self, option_id: str, value: str | bool, timeout_ms: float | None) -> None:
         """Set a config option (`session/set_config_option`): a choice's value for a select option,
         True or False for an on/off one. Raises ValueError, without asking the agent, for an option
         or value it did not offer."""

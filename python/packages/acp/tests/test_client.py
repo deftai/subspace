@@ -262,3 +262,40 @@ async def test_elicitation_on_question(protocol):
     bad = await session.prompt("go", on_question=lambda _r, _s: {"action": "accept", "content": {"name": 3}})
     assert bad.text == "decline None"
     await client.close()
+
+
+async def test_overlapping_config_changes_apply_in_order():
+    """The first change's answer comes last; the second change must still win."""
+    import itertools
+
+    delays = itertools.count()
+    options = lambda current: [  # noqa: E731
+        {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": current,
+            "options": [{"value": "a", "name": "A"}, {"value": "b", "name": "B"}],
+        }
+    ]
+
+    async def set_config(params, _ctx):
+        # The first request is answered slowly, the second at once.
+        await asyncio.sleep(0.05 if next(delays) == 0 else 0)
+        return {"configOptions": options(params["value"])}
+
+    client = await connect(
+        {
+            "prompt": scripted,
+            "protocols": [1],
+            "methods": {"session/set_config_option": set_config},
+        }
+    )
+    session = await client.new_session("/tmp")
+    from deft_subspace.acp.config import config_options_from
+
+    session._config = config_options_from(options("a")) or []
+    await asyncio.gather(session.set_model("b"), session.set_model("a"))
+    assert session.model is not None and session.model.current_value == "a", "the later change wins"
+    await client.close()
