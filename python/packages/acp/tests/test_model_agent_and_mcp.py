@@ -97,15 +97,16 @@ async def test_results_of_tools_that_ran_when_the_turn_ended_go_with_the_next_pr
     # max_steps: the tool ran, but the model never heard back.
     assert (await session.prompt("one")).stop_reason == "max_turn_requests"
     assert (await session.prompt("two")).stop_reason == "end_turn"
-    assert isinstance(sent[1], PromptInput)
-    assert [(r.id, r.content) for r in sent[1].tool_results] == [("a", "3")]
+    # The prompt keeps its own shape (a conversation that checks for `tool_results` still sees a prompt).
+    assert isinstance(sent[1], PromptInput) and not hasattr(sent[1], "tool_results")
+    assert [(r.id, r.content) for r in sent[1].interrupted_tool_results] == [("a", "3")]
     # A cancel while the first of two tools runs: its result is kept, the second never ran.
     three = session.prompt("three")
     cancel_next.append(three.cancel)
     assert (await three).stop_reason == "cancelled"
     cancel_next.clear()
     await session.prompt("four")
-    assert [(r.id, r.content) for r in sent[3].tool_results] == [("b", "slow done")]
+    assert [(r.id, r.content) for r in sent[3].interrupted_tool_results] == [("b", "slow done")]
     await client.close()
 
 

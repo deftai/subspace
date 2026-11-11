@@ -119,7 +119,7 @@ test('a prompt that carries results of tools that ran: real results first, "Not 
   const conversation = claude({ client }).conversation({ tools: [], cwd: '/' });
   const s = { onText: () => {}, onThinking: () => {}, signal: new AbortController().signal };
   await conversation.send({ prompt: [{ type: 'text', text: 'go' }] }, s);
-  await conversation.send({ prompt: [{ type: 'text', text: 'next' }], toolResults: [{ id: 'r1', content: 'a.ts' }] }, s);
+  await conversation.send({ prompt: [{ type: 'text', text: 'next' }], interruptedToolResults: [{ id: 'r1', content: 'a.ts' }] }, s);
   assert.deepEqual(requests[1]!.params.messages.at(-1).content, [
     { type: 'tool_result', tool_use_id: 'r2', is_error: true, content: 'Not run: the turn ended first.' },
     { type: 'tool_result', tool_use_id: 'r1', content: 'a.ts' },

@@ -130,14 +130,16 @@ test('modelAgent: results of tools that ran when maxSteps or a cancel ended the 
   // maxSteps: the tool ran, but the model never heard back.
   assert.equal((await session.prompt('one').done).stopReason, 'max_turn_requests');
   assert.equal((await session.prompt('two').done).stopReason, 'end_turn');
-  assert.deepEqual(sent[1], { prompt: [{ type: 'text', text: 'two' }], toolResults: [{ id: 'a', content: JSON.stringify(['x/a.ts', 'x/b.ts'], null, 2) }] });
+  // The prompt keeps its own shape (a conversation that checks for `toolResults` still sees a prompt).
+  assert.deepEqual(sent[1], { prompt: [{ type: 'text', text: 'two' }], interruptedToolResults: [{ id: 'a', content: JSON.stringify(['x/a.ts', 'x/b.ts'], null, 2) }] });
+  assert.ok(!('toolResults' in sent[1]!));
   // A cancel while the first of two tools runs: its result is kept, the second never ran (no result: the adapter says so).
   const three = session.prompt('three');
   cancelNext = () => void three.cancel();
   assert.equal((await three.done).stopReason, 'cancelled');
   cancelNext = undefined;
   await session.prompt('four').done;
-  assert.deepEqual(sent[3], { prompt: [{ type: 'text', text: 'four' }], toolResults: [{ id: 'b', content: 'slow done' }] });
+  assert.deepEqual(sent[3], { prompt: [{ type: 'text', text: 'four' }], interruptedToolResults: [{ id: 'b', content: 'slow done' }] });
   await client.close();
 });
 
