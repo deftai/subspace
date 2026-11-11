@@ -319,9 +319,10 @@ export class AcpClient {
         };
         if (!(options.elicitationModes ?? ['form', 'url']).includes(request.mode as 'form')) return { action: 'decline' };
         try {
-          // The running turn's onQuestion, if it has one, else the client's.
+          // The running turn's onQuestion, if it has one; else the client's (also between turns, or
+          // for a question that names no session); else `elicitation`.
           const perTurn = request.sessionId ? client?.questionHandlerFor(request.sessionId) : undefined;
-          const answer = await (perTurn ?? handler)(request, context.signal);
+          const answer = await (perTurn ?? handlers?.onQuestion ?? handler)(request, context.signal);
           if (answer?.action === 'accept') {
             // A form answer must fit the form; one that does not is not sent.
             if (request.mode === 'form' && validateElicitation(request.requestedSchema, answer.content).length) return { action: 'decline' };

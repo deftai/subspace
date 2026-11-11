@@ -164,3 +164,17 @@ async def test_a_tool_call_id_the_agent_reuses_in_a_later_turn_belongs_to_that_t
     assert [len(r1.tool_calls), len(r2.tool_calls)] == [1, 1]
     assert (r2.tool_calls[0].title, r2.tool_calls[0].status) == ("turn 2", "completed")
     await client.close()
+
+
+async def test_the_clients_on_question_answers_questions_outside_a_turn():
+    async def on_prompt(_agent: RpcPeer, _params: Any, _n: int) -> Any:
+        return {}
+
+    client, agent = await Fake(2, on_prompt).start(on_question=lambda _r, _s: {"action": "accept", "content": {"name": "Ada"}})
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+    no_session = await agent.request("elicitation/create", {"mode": "form", "message": "Name?", "requestedSchema": schema})
+    assert no_session == {"action": "accept", "content": {"name": "Ada"}}
+    await client.new_session("/")
+    between = await agent.request("elicitation/create", {"sessionId": "s1", "mode": "form", "message": "Name?", "requestedSchema": schema})
+    assert between == {"action": "accept", "content": {"name": "Ada"}}
+    await client.close()

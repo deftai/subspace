@@ -371,6 +371,7 @@ class AcpClient:
         modes = options.elicitation_modes if options.elicitation_modes is not None else ["form", "url"]
         if elicitation is not None:
             default_handler = elicitation
+            client_question = merged.on_question if merged is not None else None
 
             async def on_elicit(params: Any, context: Any) -> Any:
                 p = params if isinstance(params, dict) else {}
@@ -387,9 +388,10 @@ class AcpClient:
                 if request.mode not in modes:
                     return {"action": "decline"}
                 try:
-                    # The running turn's on_question, if it has one, else the client's.
+                    # The running turn's on_question, if it has one; else the client's (also between turns,
+                    # or for a question that names no session); else `elicitation`.
                     per_turn = holder[0]._question_handler_for(request.session_id) if holder and request.session_id else None
-                    answer = await _resolve((per_turn or default_handler)(request, context.signal))
+                    answer = await _resolve((per_turn or client_question or default_handler)(request, context.signal))
                     action = answer.get("action") if isinstance(answer, dict) else None
                     if action == "accept":
                         content = answer.get("content")

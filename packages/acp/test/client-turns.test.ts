@@ -140,3 +140,16 @@ test('a tool call id the agent reuses in a later turn belongs to that turn', asy
   assert.equal(r2.toolCalls[0]?.status, 'completed');
   await client.close();
 });
+
+test("the client's onQuestion answers questions outside a turn", async () => {
+  const { client, agent } = await fakeAgent(2, () => ({}), {
+    onQuestion: () => ({ action: 'accept', content: { name: 'Ada' } }),
+  });
+  const schema = { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] };
+  const noSession = await agent.request('elicitation/create', { mode: 'form', message: 'Name?', requestedSchema: schema });
+  assert.deepEqual(noSession, { action: 'accept', content: { name: 'Ada' } });
+  await client.newSession({ cwd: '/' });
+  const betweenTurns = await agent.request('elicitation/create', { sessionId: 's1', mode: 'form', message: 'Name?', requestedSchema: schema });
+  assert.deepEqual(betweenTurns, { action: 'accept', content: { name: 'Ada' } });
+  await client.close();
+});
