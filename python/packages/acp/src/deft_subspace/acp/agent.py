@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import uuid
 from collections import deque
@@ -1068,6 +1069,12 @@ def _abort_turns(turns: _TurnsPart, reason: BaseException) -> None:
         turn.controller.abort(reason)
 
 
+def _cancelling() -> bool:
+    """Whether the current task itself is being cancelled (not just something it awaited)."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 def _turns_layer(options: _Options) -> AgentLayer[None]:
     """`session/prompt` and the ways to stop work: the v1 and v2 turn lifecycles."""
 
@@ -1151,6 +1158,14 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
                         await writer.state("running")
                     result = await _resolve(options.prompt(turn))
                     stop = result if result is not None else "end_turn"
+            except asyncio.CancelledError:
+                if not signal.aborted or _cancelling():
+                    # This task itself was cancelled: end the turn, then let the cancel go on.
+                    with contextlib.suppress(Exception):
+                        await finish()
+                    raise
+                # The handler cancelled its own work when the signal fired (task.cancel()).
+                stop = "cancelled"
             except Exception as error:  # noqa: BLE001 - every handler error ends the turn
                 if signal.aborted:
                     stop = "cancelled"

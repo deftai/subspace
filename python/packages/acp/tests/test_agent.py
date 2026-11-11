@@ -710,6 +710,34 @@ async def test_v2_a_turn_whose_running_state_fails_to_send_still_frees_the_sessi
     await client.close()
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_handler_cancelled_through_a_task_ends_the_turn_cancelled(protocol: int) -> None:
+    async def prompt(turn: AgentTurn) -> str:
+        async def work() -> None:
+            await turn.tool_call("grep")
+            await asyncio.sleep(30)
+
+        task = asyncio.ensure_future(work())
+        turn.signal.add_listener(lambda _reason: task.cancel())
+        await task  # raises CancelledError on session/cancel
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[protocol])
+    await client.init(protocol)
+    sid = await client.new_session()
+    answer = asyncio.ensure_future(client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}))
+    await until(lambda: any(u["sessionUpdate"] in ("tool_call", "tool_call_update") for u in client.updates()))
+    await client.peer.notify("session/cancel", {"sessionId": sid})
+    if protocol == 1:
+        assert await answer == {"stopReason": "cancelled"}
+    else:
+        await answer
+        assert (await client.idle())["stopReason"] == "cancelled"
+    statuses = [u["status"] for u in client.updates() if u["sessionUpdate"] in ("tool_call", "tool_call_update")]
+    assert statuses == ["pending", "failed"]
+    await client.close()
+
+
 # ---- permissions and tools -------------------------------------------------------
 
 
