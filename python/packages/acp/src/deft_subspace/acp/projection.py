@@ -131,13 +131,12 @@ class _TextLog:
         return self._joined if length is None or length == len(self._joined) else self._joined[:length]
 
     def at_now(self) -> TextAt:
-        length = self.length
-        return TextAt(lambda: self.text(length))
+        return TextAt(self, self.length)
 
 
 def _text_event(kind: TextKind, message_id: str, delta: str, log: _TextLog) -> TurnEvent:
     event = _TEXT_EVENTS[kind](message_id, delta, "")
-    event.__dict__["_text"] = log.at_now()
+    event.__dict__["text"] = log.at_now()
     return event
 
 

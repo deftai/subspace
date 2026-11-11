@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Union
+
+from .lazy import Lazy, LazyField, stored
 
 if TYPE_CHECKING:
     from acp import schema as v1
@@ -69,9 +70,10 @@ class ToolCall:
         """A copy that later updates do not change.
 
         Content only grows by appending (a replacement is a new list), so the copy keeps
-        the list and its length and copies that much when its `content` is read.
+        the list and its length and copies that much the first time its `content` is read;
+        from then on `content` is the copy's own list.
         """
-        source = self.__dict__.get("_content")
+        source = stored(self, "content")
         snap = ToolCall(
             id=self.id,
             title=self.title,
@@ -83,18 +85,11 @@ class ToolCall:
             raw_output=self.raw_output,
             cancellable=self.cancellable,
         )
-        if isinstance(source, _ContentAt):
-            snap.__dict__["_content"] = source
-        elif isinstance(source, list):
-            snap.__dict__["_content"] = _ContentAt(source, len(source))
+        snap.__dict__["content"] = source if isinstance(source, _ContentAt) else _ContentAt(source, len(source))
         return snap
 
 
-#: The last content copy made: (list, length, copy). Reading a snapshot twice gives the same list.
-_last_content: list[Any] = [None, 0, None]
-
-
-class _ContentAt:
+class _ContentAt(Lazy):
     """A tool call's content list as it was: the list and its length at the time."""
 
     __slots__ = ("items", "length")
@@ -104,55 +99,29 @@ class _ContentAt:
         self.length = length
 
     def read(self) -> list[Any]:
-        if _last_content[0] is self.items and _last_content[1] == self.length:
-            return _last_content[2]
-        out = self.items[: self.length]
-        _last_content[:] = [self.items, self.length, out]
-        return out
+        return self.items[: self.length]
 
 
-class _ContentField:
-    """`ToolCall.content`: a list, or a snapshot's view of one, copied when read."""
-
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
-        if obj is None:
-            return self
-        value = obj.__dict__.get("_content")
-        return value.read() if isinstance(value, _ContentAt) else value
-
-    def __set__(self, obj: Any, value: Any) -> None:
-        obj.__dict__["_content"] = value
+# Read through the descriptor: a snapshot's content is copied the first time it is read.
+setattr(ToolCall, "content", LazyField("content", None))
 
 
-setattr(ToolCall, "content", _ContentField())
+class TextAt(Lazy):
+    """A message's text as it was: its log and the length it had, read when looked at."""
 
+    __slots__ = ("log", "length")
 
-class TextAt:
-    """A message's text as it was: read from its log when looked at (see `TextField`)."""
+    def __init__(self, log: Any, length: int) -> None:
+        self.log = log
+        self.length = length
 
-    __slots__ = ("read",)
-
-    def __init__(self, read: Callable[[], str]) -> None:
-        self.read = read
-
-
-class TextField:
-    """The `text` of a text event: a str, or a `TextAt` read when looked at, so a turn's
-    events do not each keep a copy of the message so far."""
-
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
-        if obj is None:
-            return self
-        value = obj.__dict__.get("_text", "")
-        return value.read() if isinstance(value, TextAt) else value
-
-    def __set__(self, obj: Any, value: Any) -> None:
-        obj.__dict__["_text"] = value
+    def read(self) -> str:
+        return self.log.text(self.length)
 
 
 def text_source(event: Any) -> Any:
     """@internal The stored `text` of an event: a str or a `TextAt`, without reading it."""
-    return event.__dict__.get("_text", "")
+    return stored(event, "text", "")
 
 
 # ---- background work (v2) ----------------------------------------------------
@@ -288,8 +257,10 @@ class UserMessageEvent:
     type: Literal["user_message"] = field(default="user_message", init=False)
 
 
+# A text event's text may be a `TextAt`, read the first time it is looked at, so a turn's
+# events do not each keep a copy of the message so far.
 for _cls in (MessageEvent, ThoughtEvent, UserMessageEvent):
-    setattr(_cls, "text", TextField())
+    setattr(_cls, "text", LazyField("text", ""))
 
 
 @dataclass(frozen=True)

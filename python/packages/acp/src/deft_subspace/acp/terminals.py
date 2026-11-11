@@ -20,6 +20,8 @@ import binascii
 from dataclasses import dataclass
 from typing import Any
 
+from .lazy import Lazy, LazyField, stored
+
 
 @dataclass(frozen=True)
 class TerminalExit:
@@ -155,31 +157,37 @@ class _OutputLog:
             self._start = 0
 
 
-class _LazyOutput:
+class _LazyOutput(Lazy):
     """A terminal's output, read from its log when asked for."""
 
     __slots__ = ("log", "span")
 
     def __init__(self, log: _OutputLog, span: _Span | None) -> None:
         self.log = log
-        #: None: the output as it is now.
+        #: None: the output as it is now (a live terminal's, read each time).
         self.span = span
+
+    @property
+    def once(self) -> bool:  # type: ignore[override]
+        return self.span is not None
 
     def read(self) -> bytes:
         return self.log.read(self.span)
 
 
-class _OutputField:
-    """`TerminalState.output`: bytes, or read from the terminal's log when looked at."""
+class _OutputField(LazyField):
+    """`TerminalState.output`: bytes, or read from the terminal's log when looked at.
 
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
-        if obj is None:
-            return b""
-        value = obj.__dict__.get("_output", b"")
-        return value.read() if isinstance(value, _LazyOutput) else value
+    Assigning to a live terminal's output replaces what is kept, as a `terminal_update`
+    with output does; on a snapshot it sets the snapshot's own bytes.
+    """
 
     def __set__(self, obj: Any, value: Any) -> None:
-        obj.__dict__["_output"] = value
+        current = obj.__dict__.get("output")
+        if isinstance(current, _LazyOutput) and current.span is None:
+            current.log.reset(bytes(value))
+        else:
+            obj.__dict__["output"] = value
 
 
 @dataclass
@@ -202,15 +210,15 @@ class TerminalState:
     def snapshot(self) -> TerminalState:
         """A copy that later updates do not change. Output kept in a log is not copied."""
         copy = TerminalState(self.id, b"", self.command, self.cwd, self.size, self.exit_status, self.cancellable)
-        source = self.__dict__.get("_output", b"")
+        source = stored(self, "output", b"")
         if isinstance(source, _LazyOutput):
             source = _LazyOutput(source.log, source.span if source.span is not None else source.log.span())
-        copy.__dict__["_output"] = source
+        copy.__dict__["output"] = source
         return copy
 
 
 # The dataclass keeps `output` as an init argument and field; reads go through the log.
-setattr(TerminalState, "output", _OutputField())
+setattr(TerminalState, "output", _OutputField("output", b""))
 
 
 def _bytes(data: Any) -> bytes:
@@ -274,7 +282,7 @@ class Terminals:
         if terminal is None or log is None:
             log = _OutputLog(self._max)
             terminal = TerminalState(id=terminal_id)
-            terminal.__dict__["_output"] = _LazyOutput(log, None)
+            terminal.__dict__["output"] = _LazyOutput(log, None)
             self._by_id[terminal_id] = terminal
             self._logs[terminal_id] = log
         if update.get("sessionUpdate") == "terminal_output_chunk":

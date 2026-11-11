@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
 from typing import Any, cast
 
+from .lazy import LazyField
 from .model import (
     ExhaustedEvent,
     MessageEndEvent,
@@ -38,7 +39,6 @@ from .model import (
     TurnEvent,
     UsageEvent,
     TextAt,
-    TextField,
     UserMessageEndEvent,
     UserMessageEvent,
     text_source,
@@ -62,7 +62,7 @@ class TextInfo:
 
 
 # Read from the message when looked at, as on the event.
-setattr(TextInfo, "text", TextField())
+setattr(TextInfo, "text", LazyField("text", ""))
 
 
 @dataclass(frozen=True)
