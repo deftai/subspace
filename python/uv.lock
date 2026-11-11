@@ -245,7 +245,7 @@ wheels = [
 
 [[package]]
 name = "deft-subspace-acp"
-version = "0.0.0.dev0"
+version = "0.1.0a1"
 source = { editable = "packages/acp" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -271,7 +271,7 @@ provides-extras = ["otel", "mcp"]
 
 [[package]]
 name = "deft-subspace-kernel"
-version = "0.0.0.dev0"
+version = "0.1.0a1"
 source = { editable = "packages/kernel" }
 
 [[package]]

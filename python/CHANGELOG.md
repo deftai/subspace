@@ -2,9 +2,9 @@
 
 Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
 
-## Unreleased
+## 0.1.0a1
 
-First release: a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.
+First release, an alpha (the API may still change): a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.
 
 - Kernel: channels, NDJSON framing, the JSON-RPC peer, abort signals, traces (the same format as the TypeScript packages), supervised processes.
 - ACP client: `AcpClient`, `Session`, `Turn`; v1 and v2; permissions and permission rules; turn limits; modes and config options; login; elicitation; MCP-over-ACP serving; extensions.
