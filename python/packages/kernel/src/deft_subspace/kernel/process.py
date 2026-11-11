@@ -159,11 +159,14 @@ def _env_get(env: Mapping[str, str], name: str) -> str | None:
 def _windows_find(command: str, env: Mapping[str, str], is_file: Callable[[str], bool]) -> str | None:
     """Where Windows would find `command`, trying each PATHEXT extension, or None.
 
-    A bare name is looked up in PATH; a name with a directory is used as is.
+    A bare name is looked up in PATH; a name with a directory is used as is. A name that
+    already ends in a PATHEXT extension, or in one of the default ones (`tool.cmd` with a
+    PATHEXT that leaves out .CMD), is looked for as it is.
     """
     exts = [e for e in (_env_get(env, "PATHEXT") or _DEFAULT_PATHEXT).split(";") if e]
     _, ext = ntpath.splitext(command)
-    names = [command] if ext and ext.upper() in (e.upper() for e in exts) else [command + e for e in exts]
+    known = ext.upper() in (e.upper() for e in [*exts, *_DEFAULT_PATHEXT.split(";")])
+    names = [command] if ext and known else [command + e for e in exts]
     has_dir = any(c in command for c in "\\/:")
     dirs = [""] if has_dir else [d.strip('"') for d in (_env_get(env, "PATH") or "").split(";") if d]
     for directory in dirs:

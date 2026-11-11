@@ -259,6 +259,14 @@ test('Windows: PATH order, then PATHEXT order', () => {
   assert.equal(windowsFind('tool', { PATH: 'C:\\bin' }, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD'); // default PATHEXT
 });
 
+test('Windows: a .cmd or .bat named with its extension runs via cmd.exe even when PATHEXT leaves it out', () => {
+  const env = { PATH: 'C:\\bin', PATHEXT: '.COM;.EXE' };
+  assert.equal(windowsFind('tool.cmd', env, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.cmd');
+  assert.equal(windowsLaunch('D:\\x\\run.bat', ['a b'], env, files('D:\\x\\run.bat')), '"D:\\x\\run.bat" "a b"');
+  // Any other extension is still a name to append PATHEXT to.
+  assert.equal(windowsFind('tool.v2', env, files('C:\\bin\\tool.v2', 'C:\\bin\\tool.v2.exe')), 'C:\\bin\\tool.v2.EXE');
+});
+
 test('Windows: cmd.exe metacharacters in arguments are quoted', () => {
   assert.equal(
     cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\', '', 'plain-1.0/x:y@z', 'a\\"b']),

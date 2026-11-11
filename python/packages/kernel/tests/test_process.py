@@ -293,6 +293,16 @@ def test_windows_follows_path_order_then_pathext_order():
     assert _windows_find("tool", {"PATH": r"C:\bin"}, _files(r"C:\bin\tool.cmd")) == r"C:\bin\tool.CMD"  # default PATHEXT
 
 
+def test_windows_runs_a_cmd_or_bat_named_with_its_extension_via_cmd_exe_even_when_pathext_leaves_it_out():
+    from deft_subspace.kernel.process import _windows_find, _windows_launch
+
+    env = {"PATH": r"C:\bin", "PATHEXT": ".COM;.EXE"}
+    assert _windows_find("tool.cmd", env, _files(r"C:\bin\tool.cmd")) == r"C:\bin\tool.cmd"
+    assert _windows_launch(r"D:\x\run.bat", ["a b"], env, _files(r"D:\x\run.bat")) == r'"D:\x\run.bat" "a b"'
+    # Any other extension is still a name to append PATHEXT to.
+    assert _windows_find("tool.v2", env, _files(r"C:\bin\tool.v2", r"C:\bin\tool.v2.exe")) == r"C:\bin\tool.v2.EXE"
+
+
 def test_windows_quotes_cmd_metacharacters_in_arguments():
     from deft_subspace.kernel.process import _cmd_line
 

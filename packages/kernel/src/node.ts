@@ -154,7 +154,9 @@ function envGet(env: Record<string, string | undefined>, name: string): string |
 
 /**
  * @internal Where Windows would find `command`, trying each PATHEXT extension.
- * A bare name is looked up in PATH; a name with a directory is used as is.
+ * A bare name is looked up in PATH; a name with a directory is used as is. A
+ * name that already ends in a PATHEXT extension, or in one of the default ones
+ * (`tool.cmd` with a PATHEXT that leaves out .CMD), is looked for as it is.
  */
 export function windowsFind(
   command: string,
@@ -164,7 +166,8 @@ export function windowsFind(
   const win = path.win32;
   const exts = (envGet(env, 'PATHEXT') || defaultPathext).split(';').filter(Boolean);
   const ext = win.extname(command).toUpperCase();
-  const names = ext && exts.some((e) => e.toUpperCase() === ext) ? [command] : exts.map((e) => command + e);
+  const known = [...exts, ...defaultPathext.split(';')].some((e) => e.toUpperCase() === ext);
+  const names = ext && known ? [command] : exts.map((e) => command + e);
   const hasDir = /[\\/:]/.test(command);
   const pathDirs = (envGet(env, 'PATH') ?? '').split(';').filter(Boolean);
   const dirs = hasDir ? [''] : pathDirs.map((d) => d.replace(/^"|"$/g, ''));
