@@ -111,7 +111,7 @@ export function mcpConnector(options: McpConnectorOptions = {}): McpConnector {
             : new sdk.SSEClientTransport(url, requestInit ? { requestInit } : {});
       }
       try {
-        await client.connect(transport, { timeout: options.connectTimeoutMs ?? 60_000 });
+        await client.connect(transport, { timeout: options.connectTimeoutMs ?? 60_000, ...(context.signal ? { signal: context.signal } : {}) });
       } catch (error) {
         // Don't leave a half-started server behind.
         await client.close().catch(() => {});

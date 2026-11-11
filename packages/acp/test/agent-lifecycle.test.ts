@@ -64,6 +64,39 @@ test('a closed connection stops turns and closes MCP connections, without closeS
   assert.deepEqual(events.sort(), ['mcp closed', 'turn stopped']);
 });
 
+test('session/close aborts an MCP connect still in flight instead of waiting for it', async () => {
+  const events: string[] = [];
+  let connecting!: () => void;
+  const started = new Promise<void>((resolve) => (connecting = resolve));
+  const connector: McpConnector = {
+    transports: ['stdio'],
+    connect: (_server, context) =>
+      new Promise((_resolve, reject) => {
+        connecting();
+        context.signal?.addEventListener('abort', () => (events.push('connect aborted'), reject(context.signal!.reason)), { once: true });
+      }),
+  };
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, {
+    name: 'slow-mcp',
+    protocols: [1],
+    mcpConnector: connector,
+    async prompt(turn) {
+      await turn.mcp('files').listTools().catch(() => {});
+      return 'cancelled';
+    },
+  });
+  const client = await AcpClient.connect(clientEnd);
+  const session = await client.newSession({ cwd: '/w', mcpServers: [server] });
+  const turn = session.prompt('go');
+  await started;
+  const closed = await Promise.race([session.close().then(() => 'closed'), new Promise((r) => setTimeout(() => r('still waiting'), 1000))]);
+  assert.equal(closed, 'closed');
+  assert.deepEqual(events, ['connect aborted']);
+  await turn.done.catch(() => {});
+  await client.close();
+});
+
 test('v1 capabilities merge into sessionCapabilities and mcpCapabilities', async () => {
   const [agentEnd, clientEnd] = channelPair<unknown>();
   serveAgent(agentEnd, {

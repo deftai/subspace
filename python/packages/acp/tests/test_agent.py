@@ -1391,6 +1391,38 @@ async def test_a_closed_connection_stops_turns_and_closes_mcp_without_close_sess
     assert sorted(events) == ["mcp closed", "turn stopped"]
 
 
+async def test_session_close_aborts_an_mcp_connect_still_in_flight_instead_of_waiting_for_it() -> None:
+    events: list[str] = []
+    started = asyncio.Event()
+
+    class SlowConnector:
+        @property
+        def transports(self) -> list[str]:
+            return ["stdio"]
+
+        async def connect(self, server: Any, context: McpConnectContext) -> Any:
+            started.set()
+            assert context.signal is not None
+            await context.signal.wait()
+            events.append("connect aborted")
+            context.signal.throw_if_aborted()
+
+    async def prompt(turn: AgentTurn) -> str:
+        with contextlib.suppress(Exception):
+            await turn.mcp("files").list_tools()
+        return "cancelled"
+
+    client = serve(prompt=prompt, protocols=[1], mcp_connector=SlowConnector())
+    await client.init(1)
+    sid = await client.new_session(mcpServers=[SERVER])
+    turn = asyncio.ensure_future(client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}))
+    await started.wait()
+    assert await asyncio.wait_for(client.peer.request("session/close", {"sessionId": sid}), 1) == {}
+    assert events == ["connect aborted"]
+    await turn
+    await client.close()
+
+
 async def test_a_closed_connection_calls_connection_closed_with_its_open_sessions_after_their_teardown() -> None:
     events: list[str] = []
 

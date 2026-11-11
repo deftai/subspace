@@ -14,3 +14,4 @@
 - `serve_agent`: a second `initialize` on a connection is now refused with -32600 (Invalid Request); before, it could switch the protocol mid-connection.
 - `AgentTurn.elicit`: an error answer from the client now raises instead of answering `cancel`; only a cancelled turn or a closed connection answers `cancel`.
 - `AgentTurn.tool_call(status="completed"|"failed"|"cancelled")` is no longer tracked as open (it was failed again when the turn was cancelled or raised), and `tool_call_update` now keeps v2 background work in step: a create is tracked, and a final status finishes it (a cancellable call finished this way no longer accepts `tool_call/cancel`).
+- MCP connections of a session: `session/close`, new servers from load or resume, and a closed connection now abort an MCP connect still in flight (through `McpConnectContext.signal`) instead of waiting for it, up to the connect timeout.
