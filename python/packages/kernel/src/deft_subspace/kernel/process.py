@@ -258,6 +258,17 @@ class _ProcessChannel:
     async def close(self) -> None:
         self._process._close_stdin()
 
+    async def abort(self) -> None:
+        """Close stdin at once, dropping what is not yet written (a child that stopped reading):
+        a write stuck waiting for the pipe to drain ends instead of waiting forever."""
+        stdin = self._process._proc.stdin
+        if stdin is None:
+            return
+        try:
+            stdin.transport.abort()
+        except (OSError, RuntimeError, AttributeError):
+            self._process._close_stdin()
+
 
 #: How often to check whether an exited leader's group is gone: from this, doubling, up to the max.
 _POLL_FIRST = 0.05
