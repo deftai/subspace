@@ -1,6 +1,6 @@
 [project]
 name = "deft-subspace-kernel"
-version = "0.0.0.dev0"
+version = "0.1.0a1"
 description = "Protocol-neutral kernel: channels, NDJSON framing, a JSON-RPC peer with one owner for every request's lifecycle, and supervised agent processes. No dependencies."
 keywords = ["json-rpc", "ndjson", "asyncio", "agent-client-protocol", "acp"]
 readme = "README.md"

@@ -1,6 +1,6 @@
 [project]
 name = "deft-subspace-acp"
-version = "0.0.0.dev0"
+version = "0.1.0a1"
 description = "ACP for apps: one model over protocol v1 and v2, turns you can await, cancellation that works, permissions that fail closed. Types come from the official agent-client-protocol SDK."
 keywords = ["agent-client-protocol", "acp", "agents", "llm", "asyncio", "mcp"]
 readme = "README.md"
@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 # The kernel is released with acp, at the same version.
-dependencies = ["deft-subspace-kernel==0.0.0.dev0", "agent-client-protocol>=1.0,<2"]
+dependencies = ["deft-subspace-kernel==0.1.0a1", "agent-client-protocol>=1.0,<2"]
 
 [project.urls]
 Homepage = "https://github.com/deftai/subspace/tree/main/python"
