@@ -62,7 +62,8 @@ class _Pipe(Generic[T]):
     def __init__(self) -> None:
         self.items: deque[T] = deque()
         self.ended = False
-        self.waiter: asyncio.Future[None] | None = None
+        # Every receive() waiting for an item. All are woken; each takes one or waits again.
+        self.waiters: list[asyncio.Future[None]] = []
 
     def put(self, item: T) -> None:
         if self.ended:
@@ -75,18 +76,22 @@ class _Pipe(Generic[T]):
         self._wake()
 
     def _wake(self) -> None:
-        if self.waiter is not None and not self.waiter.done():
-            self.waiter.set_result(None)
+        waiters, self.waiters = self.waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     async def get(self) -> T:
         while not self.items:
             if self.ended:
                 raise EndOfChannel()
-            self.waiter = asyncio.get_running_loop().create_future()
+            waiter = asyncio.get_running_loop().create_future()
+            self.waiters.append(waiter)
             try:
-                await self.waiter
+                await waiter
             finally:
-                self.waiter = None
+                if waiter in self.waiters:
+                    self.waiters.remove(waiter)
         return self.items.popleft()
 
 
