@@ -167,6 +167,57 @@ test("modelAgent: a closed connection drops its sessions' conversations", async 
   await second.close();
 });
 
+test('modelAgent: a turn still unwinding when its connection closes keeps no tool results for the dead session', { timeout: 5000 }, async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const running = new Promise<void>((r) => (started = r));
+  const blocking = tool({
+    description: 'Waits',
+    run: async () => {
+      started();
+      await new Promise<void>((r) => (release = r));
+      return 'late';
+    },
+  });
+  const { model, sent } = scripted([
+    (input) => ('prompt' in input && JSON.stringify(input.prompt).includes('one') ? { stopReason: 'tool_use', toolCalls: [{ id: 'a', name: 'blocking', input: {} }] } : { stopReason: 'end_turn', toolCalls: [] }),
+    () => ({ stopReason: 'end_turn', toolCalls: [] }),
+  ]);
+  const closed: string[][] = [];
+  let unwound!: () => void;
+  const done = new Promise<void>((r) => (unwound = r));
+  const options = modelAgent({ name: 'unwinding', model, tools: { blocking }, loadSession: () => {}, connectionClosed: (ids) => void closed.push([...ids]) });
+  const prompt = options.prompt;
+  options.prompt = async (turn) => {
+    try {
+      return await prompt(turn);
+    } finally {
+      unwound();
+    }
+  };
+  const [a1, c1] = channelPair<unknown>();
+  serveAgent(a1, options);
+  const first = await AcpClient.connect(c1, { onPermission: 'allow' });
+  const session = await first.newSession({ cwd: '/' });
+  void session.prompt('one').done.catch(() => {});
+  await running;
+  const closing = first.close();
+  for (let i = 0; i < 50 && !closed.length; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(closed, [[session.id]]);
+  // The tool finishes after the connection's sessions were forgotten.
+  release();
+  await done;
+  await closing;
+
+  const [a2, c2] = channelPair<unknown>();
+  serveAgent(a2, options);
+  const second = await AcpClient.connect(c2);
+  const resumed = await second.resumeSession({ sessionId: session.id, cwd: '/' });
+  await resumed.prompt('two').done;
+  assert.deepEqual(sent.at(-1), { prompt: [{ type: 'text', text: 'two' }] });
+  await second.close();
+});
+
 test('turn.useTool() runs a defined tool as a step; client.serveTools() serves tools without an MCP handler', async () => {
   const [agentEnd, clientEnd] = channelPair<unknown>();
   const seen: unknown[] = [];

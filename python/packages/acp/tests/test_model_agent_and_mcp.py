@@ -128,6 +128,61 @@ async def test_a_closed_connection_drops_its_sessions_conversations():
     assert len(model.setups) == 2, "a new conversation: the old one was dropped with its connection"
 
 
+async def test_a_turn_unwinding_when_its_connection_closes_keeps_no_tool_results_for_the_dead_session():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    unwound = asyncio.Event()
+
+    async def blocking_run(_args, _ctx):
+        started.set()
+        await release.wait()
+        return "late"
+
+    blocking = tool(description="Waits", run=blocking_run)
+    sent = []
+
+    class Model:
+        def conversation(self, setup):
+            class Conversation:
+                async def send(self, value, stream):
+                    sent.append(value)
+                    if isinstance(value, PromptInput) and "one" in str(value.prompt):
+                        return ModelReply("tool_use", [ModelToolCall("a", "blocking", {})])
+                    return ModelReply("end_turn")
+
+            return Conversation()
+
+    closed_sessions = []
+    options = model_agent(model=Model(), tools={"blocking": blocking}, load_session=lambda request: None, connection_closed=closed_sessions.append)
+    inner = options["prompt"]
+
+    async def prompt(turn):
+        try:
+            return await inner(turn)
+        finally:
+            unwound.set()
+
+    options["prompt"] = prompt
+    first = await connect(options, permissions="allow")
+    session = await first.new_session("/work")
+    one = asyncio.ensure_future(session.prompt("one"))
+    await started.wait()
+    closing = asyncio.ensure_future(first.close())
+    await until_true(lambda: closed_sessions)
+    assert closed_sessions == [[session.id]]
+    # The tool finishes after the connection's sessions were forgotten.
+    release.set()
+    await asyncio.wait_for(unwound.wait(), 2)
+    await closing
+    one.cancel()
+    await asyncio.gather(one, return_exceptions=True)
+    second = await connect(options)
+    resumed = await second.resume_session(session.id, "/work")
+    await resumed.prompt("two")
+    await second.close()
+    assert isinstance(sent[-1], PromptInput) and sent[-1].interrupted_tool_results == []
+
+
 async def until_true(check, ms=2000):
     for _ in range(ms // 5):
         if check():

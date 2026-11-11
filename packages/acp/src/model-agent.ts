@@ -127,9 +127,10 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
       const carried = unsent.get(turn.sessionId);
       unsent.delete(turn.sessionId);
       let input: ModelInput = carried?.length ? { prompt: turn.prompt, interruptedToolResults: carried } : { prompt: turn.prompt };
-      // Tools that ran but whose results the model has not had yet: kept for the next prompt if the turn stops here.
+      // Tools that ran but whose results the model has not had yet: kept for the next prompt if the turn stops here,
+      // unless the session was forgotten (closed, or its connection closed) while the turn unwound.
       const stopWith = (stop: StopReason, results: ModelToolResult[]): StopReason => {
-        if (results.length) unsent.set(turn.sessionId, results);
+        if (results.length && conversations.get(turn.sessionId) === conversation) unsent.set(turn.sessionId, results);
         return stop;
       };
       for (let step = 0; step < maxSteps; step++) {
