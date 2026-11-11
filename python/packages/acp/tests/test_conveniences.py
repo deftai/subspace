@@ -128,13 +128,22 @@ async def test_prompt_signal_and_timeout_ms_cancel_the_turn():
     await s.close()
 
 
+def _recorder(received: list):
+    """A reply function that records each turn's prompt."""
+
+    def record(turn, _n):
+        received.append(turn.prompt)
+
+    return record
+
+
 async def test_file_embedded_where_the_agent_takes_it_and_text_where_it_does_not(tmp_path):
     path = tmp_path / "notes.md"
     path.write_bytes(b"# Notes\nhi")
     for embedded in (True, False):
         received: list = []
         s = await connect_session(
-            agent_replying(lambda turn, _n, received=received: received.append(turn.prompt), {"promptCapabilities": {"embeddedContext": embedded}}),
+            agent_replying(_recorder(received), {"promptCapabilities": {"embeddedContext": embedded}}),
             cwd=str(tmp_path),
             permissions="reject",
             protocol=1,
