@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar
 
-from deft_subspace.kernel import AbortController, AbortSignal, Channel, InboundContext, RpcError, RpcPeer, cancel_request
+from deft_subspace.kernel import AbortController, AbortSignal, Channel, ErrorCode, InboundContext, RpcError, RpcPeer, cancel_request
 
 from . import schemas
 from .background import SessionWork, Work, base64
@@ -753,6 +753,8 @@ class _Negotiated:
 
     protocol: ProtocolVersion
     client_capabilities: dict[str, Any]
+    #: initialize was answered: a second one is refused (the protocol can't change mid-connection).
+    initialized: bool = False
 
 
 NEGOTIATED: StateKey[_Negotiated] = state_key("negotiated")
@@ -903,6 +905,8 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
     accepted = options.protocols
 
     def initialize(call: EndpointCall, ctx: CallContext, _state: Any, _next: Next) -> Any:
+        if ctx.get(NEGOTIATED).initialized:
+            raise RpcError(ErrorCode.INVALID_REQUEST, "Already initialized")
         params = call.params if isinstance(call.params, dict) else {}
         asked = _as_number(params.get("protocolVersion"))
         best: ProtocolVersion = max(accepted)
@@ -911,7 +915,7 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
             if asked == p:
                 protocol = p
         caps = params.get("capabilities") if protocol == 2 else params.get("clientCapabilities")
-        ctx.set(NEGOTIATED, _Negotiated(protocol, caps if isinstance(caps, dict) else {}))
+        ctx.set(NEGOTIATED, _Negotiated(protocol, caps if isinstance(caps, dict) else {}, initialized=True))
         info = {"name": options.name, "version": options.version}
         transports = options.mcp_transports
         if transports is None:
@@ -925,14 +929,23 @@ def _negotiate_layer(options: _Options, load_session: bool) -> AgentLayer[None]:
                 session_mcp = session.get("mcp")
                 session["mcp"] = {**mcp, **(session_mcp if isinstance(session_mcp, dict) else {})}
             return {"protocolVersion": 2, "info": info, "capabilities": {**extra, **({"session": session} if session else {})}, "authMethods": []}
+        # Merged like v2's: extra session and MCP capabilities add to these, they don't replace them.
+        rest = {k: v for k, v in extra.items() if k not in ("sessionCapabilities", "mcpCapabilities")}
+        extra_session = extra.get("sessionCapabilities")
+        extra_mcp = extra.get("mcpCapabilities")
+        mcp_capabilities = {**mcp, **(extra_mcp if isinstance(extra_mcp, dict) else {})}
         return {
             "protocolVersion": 1,
             "agentInfo": info,
             "agentCapabilities": {
                 "loadSession": load_session,
-                "sessionCapabilities": {"close": {}, **({"resume": {}} if load_session else {})},
-                **({"mcpCapabilities": mcp} if mcp else {}),
-                **extra,
+                **rest,
+                "sessionCapabilities": {
+                    "close": {},
+                    **({"resume": {}} if load_session else {}),
+                    **(extra_session if isinstance(extra_session, dict) else {}),
+                },
+                **({"mcpCapabilities": mcp_capabilities} if mcp_capabilities else {}),
             },
             "authMethods": [],
         }

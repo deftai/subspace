@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { channelPair, RpcError } from '@deft-subspace/kernel';
+import { channelPair, RpcError, RpcPeer } from '@deft-subspace/kernel';
 import { AcpClient, serveAgent, type McpConnector } from '@deft-subspace/acp';
 
 function recordingAgent(events: string[]) {
@@ -62,6 +62,40 @@ test('a closed connection stops turns and closes MCP connections, without closeS
   await client.close();
   for (let i = 0; i < 50 && events.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(events.sort(), ['mcp closed', 'turn stopped']);
+});
+
+test('v1 capabilities merge into sessionCapabilities and mcpCapabilities', async () => {
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, {
+    name: 'caps',
+    protocols: [1],
+    loadSession: () => {},
+    mcpTransports: ['http'],
+    capabilities: { sessionCapabilities: { list: {} }, mcpCapabilities: { sse: true } },
+    prompt: () => 'end_turn',
+  });
+  const peer = new RpcPeer(clientEnd);
+  peer.start();
+  const result = await peer.request<{ agentCapabilities: unknown }>('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.deepEqual(result.agentCapabilities, {
+    loadSession: true,
+    sessionCapabilities: { close: {}, resume: {}, list: {} },
+    mcpCapabilities: { http: true, sse: true },
+  });
+  await peer.close();
+});
+
+test('a second initialize is refused, and the protocol kept', async () => {
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, { name: 'once', prompt: () => 'end_turn' });
+  const peer = new RpcPeer(clientEnd);
+  peer.start();
+  assert.equal((await peer.request<{ protocolVersion: number }>('initialize', { protocolVersion: 2, capabilities: {} })).protocolVersion, 2);
+  await assert.rejects(peer.request('initialize', { protocolVersion: 1, clientCapabilities: {} }), (error: unknown) => RpcError.is(error) && error.code === -32600);
+  const { sessionId } = await peer.request<{ sessionId: string }>('session/new', { cwd: '/w', mcpServers: [] });
+  // Still v2: the prompt is answered at once with a message id.
+  assert.ok((await peer.request<{ messageId?: string }>('session/prompt', { sessionId, prompt: [] })).messageId);
+  await peer.close();
 });
 
 test('a closed connection calls connectionClosed with its open sessions, after their teardown', async () => {

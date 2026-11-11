@@ -17,6 +17,7 @@
  */
 import {
   cancelRequest,
+  ErrorCode,
   RpcError,
   RpcPeer,
   type Channel,
@@ -313,6 +314,8 @@ type AgentChannel = Pick<EndpointClient, 'request' | 'notify'>;
 interface Negotiated {
   protocol: ProtocolVersion;
   clientCapabilities: Record<string, unknown>;
+  /** initialize was answered: a second one is refused (the protocol can't change mid-connection). */
+  initialized?: boolean;
 }
 const NEGOTIATED = stateKey<Negotiated>('negotiated');
 
@@ -421,12 +424,13 @@ function negotiateLayer(options: AgentOptions, loadSession: boolean): AgentLayer
     create: (ctx) => ctx.set(NEGOTIATED, { protocol: 1, clientCapabilities: {} }),
     requests: {
       initialize: (call, ctx) => {
+        if (ctx.get(NEGOTIATED).initialized) throw new RpcError(ErrorCode.InvalidRequest, 'Already initialized');
         const params = call.params as { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown } | undefined;
         const asked = Number(params?.protocolVersion);
         const best = Math.max(...accepted) as ProtocolVersion;
         const protocol = (accepted.includes(asked as ProtocolVersion) ? asked : best) as ProtocolVersion;
         const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
-        ctx.set(NEGOTIATED, { protocol, clientCapabilities: caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {} });
+        ctx.set(NEGOTIATED, { protocol, clientCapabilities: caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {}, initialized: true });
         const info = { name: options.name, version: options.version ?? '0.0.0' };
         const mcp = mcpCapabilities(protocol, options.mcpTransports ?? (options.mcpConnector ? [...options.mcpConnector.transports] : []));
         const extra = options.capabilities ?? {};
@@ -435,14 +439,17 @@ function negotiateLayer(options: AgentOptions, loadSession: boolean): AgentLayer
           if (Object.keys(mcp).length) session.mcp = { ...mcp, ...((session.mcp as Record<string, unknown> | undefined) ?? {}) };
           return { protocolVersion: 2, info, capabilities: { ...extra, ...(Object.keys(session).length ? { session } : {}) }, authMethods: [] };
         }
+        // Merged like v2's: extra session and MCP capabilities add to these, they don't replace them.
+        const { sessionCapabilities: extraSession, mcpCapabilities: extraMcp, ...rest } = extra as Record<string, Record<string, unknown> | undefined>;
+        const mcpMerged = { ...mcp, ...(extraMcp ?? {}) };
         return {
           protocolVersion: 1,
           agentInfo: info,
           agentCapabilities: {
             loadSession,
-            sessionCapabilities: { close: {}, ...(loadSession ? { resume: {} } : {}) },
-            ...(Object.keys(mcp).length ? { mcpCapabilities: mcp } : {}),
-            ...extra,
+            ...rest,
+            sessionCapabilities: { close: {}, ...(loadSession ? { resume: {} } : {}), ...(extraSession ?? {}) },
+            ...(Object.keys(mcpMerged).length ? { mcpCapabilities: mcpMerged } : {}),
           },
           authMethods: [],
         };

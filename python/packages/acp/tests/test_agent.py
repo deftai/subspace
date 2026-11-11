@@ -356,6 +356,34 @@ async def test_initialize_v2_shape_and_version_choice() -> None:
     await client.close()
 
 
+async def test_initialize_v1_capabilities_merge_into_session_and_mcp_capabilities() -> None:
+    client = serve(
+        prompt=lambda turn: None,
+        load_session=lambda request: None,
+        mcp_transports=["http"],
+        capabilities={"sessionCapabilities": {"list": {}}, "mcpCapabilities": {"sse": True}},
+    )
+    result = await client.init(1)
+    assert result["agentCapabilities"] == {
+        "loadSession": True,
+        "sessionCapabilities": {"close": {}, "resume": {}, "list": {}},
+        "mcpCapabilities": {"http": True, "sse": True},
+    }
+    await client.close()
+
+
+async def test_a_second_initialize_is_refused_and_the_protocol_kept() -> None:
+    client = serve(prompt=lambda turn: None)
+    assert (await client.init(2))["protocolVersion"] == 2
+    with pytest.raises(RpcError) as info:
+        await client.init(1)
+    assert info.value.code == -32600
+    sid = await client.new_session()
+    # Still v2: the prompt is answered at once with a message id.
+    assert "messageId" in await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []})
+    await client.close()
+
+
 async def test_initialize_v2_without_extras_has_empty_capabilities() -> None:
     client = serve(prompt=lambda turn: None)
     assert (await client.init(2))["capabilities"] == {}
