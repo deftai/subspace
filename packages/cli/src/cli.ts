@@ -14,7 +14,7 @@
 import { accessSync, constants, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import {
   agentByName,
@@ -85,7 +85,7 @@ const HELP: Record<string, string> = {
 
 Runs prompts in one session, rendering the turn as it streams. Exit codes: 0 every
 turn completed, 3 the agent stopped after a refusal, 130 cancelled or a limit, 4 an
---expect-* check failed, 1 an error (the worst turn decides).
+--expect-* check failed, 1 an error (the worst turn decides; an error beats a failed check).
 
 Prompts:
   --prompt <text>        A prompt (repeat for several, run in order)
@@ -129,6 +129,9 @@ Runs scenario files (JSON: one scenario, a list, or { "scenarios": [...] }; or m
 exporting them). Each scenario runs in a fresh temporary workspace. Exits 1 if any failed.
 
   --update               Write regression snapshots instead of comparing with them
+  --ci                   A missing snapshot fails instead of being written
+                         (the default when the CI environment variable is set)
+  --keep                 Keep the workspaces and traces of passing scenarios too
   --junit <file>         Also write JUnit XML (a test case per turn)
   --artifacts <dir>      Where failure bundles go (default: the temp folder)
   --json                 Print the reports as JSON
@@ -220,28 +223,100 @@ interface Parsed {
   custom?: { command: string; args: string[] };
 }
 
-const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'junit', 'artifacts', 'prompts-file', 'timeout', 'expect-end', 'expect-stop-reason']);
+const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'service', 'junit', 'artifacts', 'prompts-file', 'timeout', 'expect-end', 'expect-stop-reason']);
 /** Valued flags that may be given more than once. */
 const REPEATED = new Set(['prompt', 'env', 'expect-contains', 'expect-not-contains', 'agents-file']);
 
-export function parse(argv: string[]): Parsed {
+const SESSION_FLAGS = ['cwd', 'mode', 'yes', 'read-only', 'env', 'trace', 'quiet', 'raw', 'agents-file'];
+/** The flags each command takes (besides --help and --version). `trace` checks its own. */
+const COMMAND_FLAGS: Record<string, readonly string[]> = {
+  run: [...SESSION_FLAGS, 'prompt', 'prompts-file', 'stdin', 'expect-contains', 'expect-not-contains', 'expect-end', 'expect-stop-reason', 'json', 'timeout'],
+  chat: SESSION_FLAGS,
+  test: ['update', 'ci', 'keep', 'junit', 'artifacts', 'json'],
+  check: ['only', 'mode', 'cwd', 'strict', 'agents-file'],
+  agents: ['all', 'refresh', 'files', 'json', 'cwd', 'agents-file'],
+  help: [],
+};
+const ALWAYS = ['help', 'h', 'version', 'v'];
+
+interface ParseProblems {
+  /** Flags given a value they do not take (--yes=1), or missing theirs. */
+  problems: string[];
+  /** Where the command is in argv. */
+  commandAt: number;
+  /** The flags as typed, in order. */
+  typed: string[];
+}
+
+function parseArgs(argv: string[]): { parsed: Parsed } & ParseProblems {
   const dash = argv.indexOf('--');
   const head = dash >= 0 ? argv.slice(0, dash) : argv;
   const tail = dash >= 0 ? argv.slice(dash + 1) : [];
   const parsed: Parsed = { positional: [], flags: {}, lists: {} };
+  const problems: string[] = [];
+  const typed: string[] = [];
+  let commandAt = -1;
   for (let i = 0; i < head.length; i++) {
     const arg = head[i]!;
     if (arg.startsWith('-') && arg !== '-') {
-      const name = arg.replace(/^--?/, '');
-      if (REPEATED.has(name)) (parsed.lists[name] ??= []).push(head[++i] ?? '');
-      else if (VALUED.has(name)) parsed.flags[name] = head[++i] ?? '';
+      // --name value, or --name=value.
+      const eq = arg.indexOf('=');
+      const name = (eq > 0 ? arg.slice(0, eq) : arg).replace(/^--?/, '');
+      typed.push(name);
+      const takes = REPEATED.has(name) || VALUED.has(name);
+      let value: string | undefined;
+      if (eq > 0) {
+        value = arg.slice(eq + 1);
+        if (!takes) {
+          problems.push(`--${name} takes no value.`);
+          continue;
+        }
+      } else if (takes) {
+        value = head[++i];
+        if (value === undefined) {
+          problems.push(`--${name} needs a value.`);
+          continue;
+        }
+      }
+      if (REPEATED.has(name)) (parsed.lists[name] ??= []).push(value!);
+      else if (VALUED.has(name)) parsed.flags[name] = value!;
       else parsed.flags[name] = true;
-    } else if (!parsed.command) parsed.command = arg;
-    else parsed.positional.push(arg);
+    } else if (!parsed.command) {
+      parsed.command = arg;
+      commandAt = i;
+    } else parsed.positional.push(arg);
   }
   // Everything after -- is the agent's command line.
   if (tail.length) parsed.custom = { command: tail[0]!, args: tail.slice(1) };
-  return parsed;
+  return { parsed, problems, commandAt, typed };
+}
+
+export function parse(argv: string[]): Parsed {
+  return parseArgs(argv).parsed;
+}
+
+/** The nearest known flag, if one is close (a typo or a prefix). */
+function nearest(name: string, known: readonly string[]): string | undefined {
+  let best: { flag: string; d: number } | undefined;
+  for (const flag of known) {
+    const d = flag.startsWith(name) && name.length >= 2 ? 0 : distance(name, flag);
+    if (d <= 2 && (!best || d < best.d)) best = { flag, d };
+  }
+  return best?.flag;
+}
+
+function distance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const next = Math.min(row[j]! + 1, row[j - 1]! + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = row[j]!;
+      row[j] = next;
+    }
+  }
+  return row[b.length]!;
 }
 
 function catalogOf(parsed: Parsed): AgentCatalog {
@@ -307,17 +382,24 @@ function view(parsed: Parsed, io: Io) {
   return parsed.flags.json ? {} : terminal({ out: { write: io.out, isTTY: process.stdout.isTTY }, thoughts: !quiet, tools: !quiet, plans: !quiet });
 }
 
-/** Whether a command can be found (an absolute path, or on PATH). */
-export function installed(command: string): boolean {
-  const candidates = isAbsolute(command) ? [command] : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, command));
-  return candidates.some((path) => {
-    try {
-      accessSync(path, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+/** Whether a command can be found (an absolute path, or on PATH; on Windows with the PATHEXT extensions). */
+export function installed(command: string, env: Record<string, string | undefined> = process.env, platform: string = process.platform): boolean {
+  const windows = platform === 'win32';
+  // Windows runs "claude" as claude.exe, claude.cmd, ...: whichever PATHEXT lists.
+  const extensions = windows ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean) : [];
+  const names = windows && !extensions.some((e) => command.toLowerCase().endsWith(e.toLowerCase())) ? extensions.map((e) => command + e) : [command];
+  const dirs = isAbsolute(command) ? [''] : (env.PATH ?? env.Path ?? '').split(windows ? ';' : ':').filter(Boolean);
+  return dirs.some((dir) =>
+    names.some((name) => {
+      try {
+        // Windows has no execute bit: there, being there is enough.
+        accessSync(dir ? join(dir, name) : name, windows ? constants.F_OK : constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+  );
 }
 
 /** Prompts, one per line: blank lines and # comments skipped. */
@@ -360,7 +442,14 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
   const agent = agentOf(parsed);
   const prompts = await promptsOf(parsed);
   if (!prompts.length) throw new UsageError('What should the agent do? Give a prompt (or --prompt, --prompts-file, --stdin).');
-  const timeout = typeof parsed.flags.timeout === 'string' ? Number(parsed.flags.timeout) * 1000 : undefined;
+  let timeout: number | undefined;
+  if (typeof parsed.flags.timeout === 'string') {
+    const seconds = Number(parsed.flags.timeout);
+    if (!parsed.flags.timeout.trim() || !Number.isFinite(seconds) || seconds <= 0) {
+      throw new UsageError(`--timeout takes a number of seconds above 0, got ${JSON.stringify(parsed.flags.timeout)}.`);
+    }
+    timeout = seconds * 1000;
+  }
   const started = await start(startTarget(agent), { ...startOptions(parsed, io, permissionsOf(parsed)), catalog: catalogOf(parsed) });
   const results: TurnResult[] = [];
   try {
@@ -380,9 +469,10 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
   if (parsed.flags.json) io.out(`${JSON.stringify(turns.length === 1 ? turns[0] : turns, null, 2)}\n`);
   const failed = expectationFailures(parsed, results);
   for (const failure of failed) io.err(`expectation failed: ${failure}\n`);
-  if (failed.length) return 4;
-  // The worst turn decides.
-  return Math.max(...turns.map((t) => exitFor(t.end)));
+  // The worst turn decides; an agent error is not hidden behind a failed expectation.
+  const worst = Math.max(...turns.map((t) => exitFor(t.end)));
+  if (failed.length) return worst === 1 ? 1 : 4;
+  return worst;
 }
 
 /** The --expect-* flags: text across the session, ends and stop reasons per turn. */
@@ -599,6 +689,8 @@ async function testCommand(parsed: Parsed, io: Io): Promise<number> {
         await runScenario(scenario, {
           baseDir: dirname(resolve(file)),
           updateSnapshots: !!parsed.flags.update,
+          ...(parsed.flags.ci ? { requireSnapshots: true } : {}),
+          ...(parsed.flags.keep ? { keep: true } : {}),
           ...(typeof parsed.flags.artifacts === 'string' ? { artifacts: parsed.flags.artifacts } : {}),
         })
       );
@@ -610,7 +702,7 @@ async function testCommand(parsed: Parsed, io: Io): Promise<number> {
 }
 
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
-  const parsed = parse(argv);
+  const { parsed, problems, commandAt, typed } = parseArgs(argv);
   if (parsed.flags.version || parsed.flags.v) {
     io.out(`subspace ${version()}\n`);
     return 0;
@@ -625,6 +717,20 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     io.out(topic ? HELP[topic]! : USAGE);
     return 0;
   }
+  const known = parsed.command ? COMMAND_FLAGS[parsed.command] : undefined;
+  if (known) {
+    // A typo must not become part of the prompt, or be ignored.
+    const unknown = typed.find((name) => !known.includes(name) && !ALWAYS.includes(name));
+    if (unknown) {
+      const near = nearest(unknown, known);
+      io.err(`Unknown option --${unknown} for subspace ${parsed.command}.${near ? ` Did you mean --${near}?` : ''}\nRun subspace ${parsed.command} --help for its options.\n`);
+      return 2;
+    }
+  }
+  if (problems.length && parsed.command !== 'trace') {
+    io.err(`${problems.join('\n')}\n${parsed.command && HELP[parsed.command] ? `Run subspace ${parsed.command} --help for its options.` : USAGE}\n`);
+    return 2;
+  }
   try {
     switch (parsed.command) {
       case 'run':
@@ -638,7 +744,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
       case 'test':
         return await testCommand(parsed, io);
       case 'trace':
-        return await traceMain(argv.slice(1), io);
+        // Its own options, wherever they were given (before or after the word trace).
+        return await traceMain([...argv.slice(0, commandAt), ...argv.slice(commandAt + 1)], io);
       case undefined:
         // No command at all: the usage, as an error (a script called it wrong).
         io.err(USAGE);

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { main, parse } from '@deft-subspace/cli';
+import { installed, main, parse } from '@deft-subspace/cli';
 
 const agent = ['--', process.execPath, '--conditions=subspace-source', fileURLToPath(new URL('./fixtures/tidy-agent.ts', import.meta.url))];
 
@@ -181,6 +181,56 @@ test('run: each turn is drawn fresh; the second starts right after its prompt li
   // The same turn twice draws the same; only the blank line before the next prompt differs.
   assert.equal(turns[1], `${turns[2]}\n`);
   assert.match(turns[2]!, /^thinking: Looking around\./);
+});
+
+test('flags: an unknown one exits 2 with a suggestion instead of joining the prompt; --flag=value; missing values', async () => {
+  const typo = await cli('run', '--cdw', '/etc', 'hello', ...agent);
+  assert.equal(typo.code, 2);
+  assert.match(typo.err, /Unknown option --cdw for subspace run\. Did you mean --cwd\?/);
+  // A flag another command has is still unknown here.
+  assert.match((await cli('check', '--yes', ...agent)).err, /Unknown option --yes for subspace check/);
+  const eq = await cli('run', '--prompt=env GREETING', '--env=GREETING=hi', '--quiet', ...agent);
+  assert.equal(eq.code, 0, eq.err);
+  assert.equal(eq.out, 'GREETING=hi\n');
+  assert.deepEqual(parse(['run', '--mode=plan', '--yes']).flags, { mode: 'plan', yes: true });
+  const missing = await cli('run', 'hi', '--timeout');
+  assert.equal(missing.code, 2);
+  assert.match(missing.err, /--timeout needs a value/);
+  assert.match((await cli('run', '--yes=1', 'hi', ...agent)).err, /--yes takes no value/);
+});
+
+test('run --timeout must be a number of seconds', async () => {
+  for (const bad of ['abc', '0', '-1']) {
+    const r = await cli('run', 'hi', '--timeout', bad, ...agent);
+    assert.equal(r.code, 2, bad);
+    assert.match(r.err, /--timeout takes a number of seconds/);
+  }
+  assert.equal((await cli('run', 'env X', '--timeout', '30', '--quiet', ...agent)).code, 0);
+});
+
+test('trace works with options before the command', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'subspace-cli-trace-'));
+  const trace = join(dir, 'run.jsonl');
+  assert.equal((await cli('run', 'env X', '--quiet', '--trace', trace, ...agent)).code, 0);
+  const summary = await cli('--summary', 'trace', trace);
+  assert.equal(summary.code, 0, summary.err);
+  assert.match(summary.out, /1 turns/);
+});
+
+test('run: an agent error wins over a failed expectation (exit 1, not 4)', async () => {
+  const failed = await cli('run', 'fail out of credits', '--quiet', '--expect-contains', 'never', ...agent);
+  assert.equal(failed.code, 1);
+  assert.match(failed.err, /expectation failed/);
+});
+
+test('installed: PATHEXT on Windows', async () => {
+  const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
+  const dir = await mk(join(tmpdir(), 'subspace-cli-path-'));
+  await wf(join(dir, 'myagent.CMD'), '@echo off\n');
+  const env = { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+  assert.equal(installed('myagent', env, 'win32'), true);
+  assert.equal(installed('myagent.CMD', env, 'win32'), true);
+  assert.equal(installed('other', env, 'win32'), false);
 });
 
 test('agents install: a name is needed; an npx agent is not a registry binary', async () => {
