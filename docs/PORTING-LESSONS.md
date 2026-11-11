@@ -477,6 +477,22 @@ the ports can drift without anyone noticing:
   default (stderr, once per file). A CLI that loads the catalog twice for
   one command should load it once, or the user sees the warning twice.
 
+### 2026-11-11: scenarios and the trust check
+
+The first trust change left one caller out: the TypeScript testkit loaded
+the catalog with the opt-in (`trustProject: true`) hard-coded, so a scenario
+naming an agent still read any project's `subspace.toml`. It now goes
+through the check like the CLI does, with its own opt-in.
+
+- After adding a check with an opt-in, search the repo for callers that pass
+  the opt-in themselves. One inside a library voids the check for everyone
+  who calls through it, and a port that has not reached that package yet
+  will not show it.
+- A runner that loads the catalog once per item (each scenario) and passes
+  its own `onWarning` gets the warning once per item: the library's
+  once-per-file default does not apply to a hook. The runner dedupes, so the
+  user still sees one warning per file per run.
+
 ### 2026-11-11: the stdio writer
 
 The Python agent's concurrency gap came from `serve_stdio` waiting for its

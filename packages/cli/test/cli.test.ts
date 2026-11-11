@@ -93,6 +93,31 @@ test('test runs scenario files: text report, JUnit, exit code', async () => {
   assert.match(await rf(junit, 'utf8'), /<testsuite name="tidy refused" tests="1" failures="1"/);
 });
 
+test("test: a scenario naming an agent from an untrusted subspace.toml warns once and fails; --trust-project reads it", async () => {
+  const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
+  const dir = await mk(join(tmpdir(), 'subspace-cli-test-trust-'));
+  const [, command, ...args] = agent;
+  await wf(join(dir, 'subspace.toml'), `[agents.tidy]\ncommand = ${JSON.stringify(command)}\nargs = [${args.map((a) => JSON.stringify(a)).join(', ')}]\n`);
+  const scenario = (name: string) => ({ name, agent: 'tidy', permissions: 'allow', turns: [{ prompt: 'tidy', expect: { text: { contains: 'Deleted them' } } }] });
+  const file = join(dir, 'tidy.scenario.json');
+  await wf(file, JSON.stringify({ scenarios: [scenario('one'), scenario('two')] }));
+  const saved = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = join(dir, 'config');
+  try {
+    const skipped = await cli('test', file, '--artifacts', join(dir, 'artifacts'));
+    assert.equal(skipped.code, 1);
+    assert.match(skipped.out, /2 of 2 scenarios failed/);
+    assert.equal(skipped.err.match(/skipped .*subspace\.toml: its folder is not trusted/g)?.length, 1, skipped.err);
+    assert.match(skipped.err, /Or run with --trust-project to use it this once\.\n/);
+    const trusted = await cli('test', file, '--trust-project', '--artifacts', join(dir, 'artifacts'));
+    assert.equal(trusted.code, 0, trusted.out + trusted.err);
+    assert.doesNotMatch(trusted.err, /not trusted/);
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = saved;
+  }
+});
+
 test('run: several prompts in one session, inline expectations (exit 4), --raw, --env', async () => {
   const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
   const dir = await mk(join(tmpdir(), 'subspace-cli-run-'));
