@@ -145,10 +145,10 @@ test('help: --help, -h and help exit 0; a command has its own help; --version; u
 test('agents: an agent of your own in subspace.toml, details with quirks, waivers in check, bad files exit 2', async () => {
   const { mkdtemp: mk, writeFile: wf } = await import('node:fs/promises');
   const dir = await mk(join(tmpdir(), 'subspace-cli-agents-'));
-  const fixture = new URL('./fixtures/tidy-agent.ts', import.meta.url).pathname;
+  const fixture = fileURLToPath(new URL('./fixtures/tidy-agent.ts', import.meta.url));
   await wf(
     join(dir, 'subspace.toml'),
-    `[agents.tidy]\ndescription = "The test agent"\ncommand = "node"\nargs = ["--conditions=subspace-source", "${fixture}"]\n\n[agents.tidy.quirks.made-up]\nsummary = "A quirk for the test"\nfix = "Nothing"\nwaives = ["session.unknown"]\n`
+    `[agents.tidy]\ndescription = "The test agent"\ncommand = "node"\nargs = ["--conditions=subspace-source", ${JSON.stringify(fixture)}]\n\n[agents.tidy.quirks.made-up]\nsummary = "A quirk for the test"\nfix = "Nothing"\nwaives = ["session.unknown"]\n`
   );
   const list = await cli('agents', '--cwd', dir);
   assert.equal(list.code, 0, list.err);
@@ -156,7 +156,7 @@ test('agents: an agent of your own in subspace.toml, details with quirks, waiver
   const one = await cli('agents', 'tidy', '--cwd', dir);
   assert.match(one.out, /command {3}node --conditions=subspace-source/);
   assert.match(one.out, /made-up: A quirk for the test\n {4}fix: Nothing\n {4}waives: session.unknown/);
-  assert.match(one.out, /from {6}\/.*subspace\.toml\n/);
+  assert.match(one.out, /from {6}.*subspace\.toml\n/);
   const run = await cli('run', 'tidy', 'tidy up', '--cwd', dir, '--yes', '--quiet', '--expect-end', 'completed');
   assert.equal(run.code, 0, run.err);
   const json = JSON.parse((await cli('agents', 'grok', '--json')).out);
