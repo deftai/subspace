@@ -11,7 +11,7 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "tiny", "version": "1"}}
     elif method == "tools/list":
-        result = {"tools": [{"name": "add", "description": "Add two numbers", "inputSchema": {"type": "object"}}]}
+        result = {"tools": [{"name": "add", "description": "Add two numbers", "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}}]}
     elif method == "tools/call":
         token = (message.get("params", {}).get("_meta") or {}).get("progressToken")
         if token is not None:
