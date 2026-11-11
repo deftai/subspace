@@ -158,6 +158,11 @@ export const BUILTIN_AGENTS = {
         seen: 'codex-acp 2.5.0, 2026-11',
         upstream: 'https://github.com/agentclientprotocol/codex-acp/issues/556',
       },
+      'mcp-calls-cancelled-in-read-only': {
+        summary: "In read-only mode it cancels every MCP tool call itself, without asking (the call fails with 'user cancelled MCP tool call')",
+        fix: "None here: pass mode: 'agent' (or another mode that may act) when the session needs MCP tools",
+        seen: 'codex-acp 2.5.0, 2026-11',
+      },
       'reject-option-named-cancel': {
         summary: 'Its reject option is named cancel (kind reject_once)',
         fix: 'Permission answers pick options by kind, not name',
