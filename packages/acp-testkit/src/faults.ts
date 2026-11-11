@@ -118,6 +118,8 @@ export function injectLines(
   const encoder = new TextEncoder();
   const noise = encoder.encode(lines.map((l) => `${l}\n`).join(''));
   const every = options.every ?? 1;
+  // 0 would never inject (n % 0 is NaN): say so instead.
+  if (!Number.isInteger(every) || every < 1) throw new RangeError(`injectLines: every must be a whole number of at least 1, not ${every}`);
   let started = false;
   let newlines = 0;
   return new TransformStream<Uint8Array, Uint8Array>({

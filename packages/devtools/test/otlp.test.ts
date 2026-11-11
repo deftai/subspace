@@ -44,6 +44,22 @@ test('exportTrace: the same spans as live, at the recorded times, with the servi
   assert.ok(finished.every((s) => !('acp.tool_call.title' in s.attributes)), 'no titles by default');
 });
 
+test('exportTrace: spans the queue had no room for are counted as dropped, not as sent', async () => {
+  // A collector that takes a moment, so the queue fills while it works.
+  let exported = 0;
+  const counting = (): SpanExporter => ({
+    export: (spans, done) => void setTimeout(() => ((exported += spans.length), done({ code: 0 })), 5),
+    shutdown: async () => {},
+  });
+  const all = await exportTrace(records, { exporter: counting() });
+  assert.equal(all.dropped, 0);
+  exported = 0;
+  const small = await exportTrace(records, { exporter: counting(), maxQueueSize: 1 });
+  assert.equal(small.spans, exported);
+  assert.ok(small.dropped > 0);
+  assert.equal(small.spans + small.dropped, all.spans);
+});
+
 test('subspace trace --otlp <url> posts protobuf spans to the collector; a refusal exits 1', async () => {
   const ok = await collector();
   const out: string[] = [];

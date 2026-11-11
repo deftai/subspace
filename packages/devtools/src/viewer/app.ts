@@ -569,7 +569,7 @@ export function viewerApp(): void {
       ['Error', err ? `<span class="badge error">${esc(rq!.error!.code ?? '')}</span> ${esc(rq!.error!.message ?? '')}` : undefined],
       ['Cancel', cancel ? (cancel.confirmedAfter !== undefined ? `confirmed after <b>${ms(cancel.confirmedAfter)}</b>` : 'not confirmed in the trace') : undefined],
     ]);
-    if (diags.length) html += `<h3>Problems</h3>${diags.map((d) => `<div class="diag"><span class="badge ${d.level === 'error' ? 'error' : 'warn'}">${d.level}</span><span>${esc(d.message)}</span></div>`).join('')}`;
+    if (diags.length) html += `<h3>Problems</h3>${diags.map((d) => `<div class="diag"><span class="badge ${d.level === 'error' ? 'error' : 'warn'}">${esc(d.level)}</span><span>${esc(d.message)}</span></div>`).join('')}`;
     if (e.toolCall !== undefined) html += `<h3>Tool call</h3>${toolCard(e.toolCall)}`;
     if (e.permission !== undefined) html += `<h3>Permission</h3>${permissionCard(e.permission)}`;
     html += `<h3>JSON<span class="grow"></span><button class="btn" data-act="expand">Expand all</button><button class="btn" data-act="copy">Copy</button></h3><div class="json" id="json"></div>`;
@@ -616,7 +616,7 @@ export function viewerApp(): void {
     const diags = A.diagnostics.filter((d) => d.level !== 'info');
     html += `<h3>Problems · ${diags.length}</h3>`;
     html += diags.length
-      ? diags.slice(0, 200).map((d) => `<div class="diag"><span class="badge ${d.level === 'error' ? 'error' : 'warn'}">${d.level}</span><span>${d.event !== undefined ? go(`e:${d.event}`, esc(d.message)) : esc(d.message)}</span></div>`).join('')
+      ? diags.slice(0, 200).map((d) => `<div class="diag"><span class="badge ${d.level === 'error' ? 'error' : 'warn'}">${esc(d.level)}</span><span>${d.event !== undefined ? go(`e:${d.event}`, esc(d.message)) : esc(d.message)}</span></div>`).join('')
       : '<div style="color:var(--muted)">None. Every request was answered and every turn ended.</div>';
     const slow = A.requests.filter((r) => r.latency !== undefined).sort((x, y) => y.latency! - x.latency!).slice(0, 6);
     if (slow.length) {

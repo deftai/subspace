@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import * as officialV1 from '@agentclientprotocol/sdk';
+import type { PermissionHandler } from '@deft-subspace/acp';
 import { workspaceFiles } from '@deft-subspace/acp/node';
 import { acpClientDriver, checkClient, CLIENT_CHECKS, failures, formatReport, type CheckResult } from '@deft-subspace/acp-testkit';
 
@@ -23,10 +24,17 @@ async function workspace() {
   return { root, cwd, outsideFile };
 }
 
+/** A user who allows after a moment, unless the turn is cancelled first. */
+const slowUser: PermissionHandler = (_request, signal) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('allow'), 100);
+    signal.addEventListener('abort', () => (clearTimeout(timer), resolve('cancelled')), { once: true });
+  });
+
 for (const protocol of [1, 2] as const) {
   test(`AcpClient v${protocol} with workspace files passes every check`, async () => {
     const { root, cwd, outsideFile } = await workspace();
-    const report = await checkClient(acpClientDriver({ cwd, permissions: 'allow', files: workspaceFiles(cwd) }), { protocol, outsideFile });
+    const report = await checkClient(acpClientDriver({ cwd, permissions: slowUser, files: workspaceFiles(cwd) }), { protocol, outsideFile });
     assert.deepEqual(report.map((r) => r.id), Object.keys(CLIENT_CHECKS));
     assert.deepEqual(failures(report), [], formatReport(report));
     assert.ok(report.every((r) => !r.skipped), formatReport(report));
@@ -36,29 +44,35 @@ for (const protocol of [1, 2] as const) {
   });
 }
 
-test('AcpClient without file access: the fs check is skipped; a reject policy still answers', async () => {
+test('AcpClient without file access: the fs check is skipped; a reject policy still answers, too soon to test a cancel', async () => {
   const report = await checkClient(acpClientDriver({ permissions: 'reject' }));
   assert.deepEqual(summary(report), [
     'permission.answered:pass',
-    'permission.cancelled-on-cancel:pass',
+    'permission.cancelled-on-cancel:skip',
     'fs.outside-workspace:skip',
     'unknown-method:pass',
   ]);
   assert.match(report[0]!.detail, /selected "reject"/);
+  assert.match(report[1]!.detail, /before the cancel/);
 });
 
-test('a careless official-SDK client fails the checks it breaks', async () => {
-  const { cwd } = await workspace();
+test('a careless official-SDK client fails the checks it breaks, and the files it wrote outside are removed', async () => {
+  const { root, cwd } = await workspace();
   const written: string[] = [];
   const report = await checkClient(async (channel) => {
     let sessionId = '';
     const connection = officialV1
       .client({ name: 'careless' })
-      // Always allows, even when the turn is being cancelled.
-      .onRequest('session/request_permission', () => ({ outcome: { outcome: 'selected', optionId: 'allow' } }))
-      // Writes anywhere (here: only records the path).
-      .onRequest('fs/write_text_file', ({ params }) => {
+      // Allows after a moment, even when the turn has been cancelled meanwhile.
+      .onRequest('session/request_permission', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { outcome: { outcome: 'selected', optionId: 'allow' } };
+      })
+      // Writes anywhere (here: inside the temporary root).
+      .onRequest('fs/write_text_file', async ({ params }) => {
         written.push(params.path);
+        await mkdir(dirname(params.path), { recursive: true });
+        await writeFile(params.path, params.content);
         return {};
       })
       .onRequest('fs/read_text_file', () => ({ content: '' }))
@@ -83,6 +97,64 @@ test('a careless official-SDK client fails the checks it breaks', async () => {
   ]);
   assert.match(report[1]!.detail, /"selected".*session\/cancel sent/);
   assert.deepEqual(written.map((p) => dirname(p) === cwd), [false, false]);
+  assert.equal(existsSync(join(root, 'deft-testkit-outside.txt')), false);
+  assert.equal(existsSync(`${cwd}-deft-testkit-outside`), false);
+});
+
+/** An official-SDK v1 client; `onCancel` is what its driver does when the user cancels. */
+function sdkClient(cwd: string, fs: { readTextFile?: boolean; writeTextFile?: boolean }, onCancel: (connection: { agent: { notify(method: string, params: unknown): unknown } }, sessionId: string, pending: Array<() => void>) => unknown) {
+  return async (channel: unknown) => {
+    let sessionId = '';
+    const pending: Array<() => void> = [];
+    const connection = officialV1
+      .client({ name: 'sdk-client' })
+      // Waits for the user, who only ever cancels.
+      .onRequest('session/request_permission', () => new Promise((resolve) => pending.push(() => resolve({ outcome: { outcome: 'cancelled' } }))))
+      .onRequest('fs/read_text_file', () => {
+        throw officialV1.RequestError.invalidParams({}, 'outside the workspace');
+      })
+      .onNotification('session/update', () => {})
+      .connect(channel as officialV1.Stream);
+    await connection.agent.request('initialize', { protocolVersion: 1, clientCapabilities: { fs } });
+    sessionId = (await connection.agent.request('session/new', { cwd, mcpServers: [] })).sessionId;
+    return {
+      prompt: (text: string) => connection.agent.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }),
+      cancel: () => onCancel(connection, sessionId, pending),
+      close: () => connection.close(),
+    };
+  };
+}
+
+test('a client that answers cancelled but never sends session/cancel fails permission.cancelled-on-cancel', async () => {
+  const { cwd } = await workspace();
+  const report = await checkClient(
+    sdkClient(cwd, {}, (_connection, _sessionId, pending) => pending.splice(0).forEach((answer) => answer())),
+    { only: ['permission.cancelled-on-cancel'], timeoutMs: 300 }
+  );
+  assert.deepEqual(summary(report), ['permission.cancelled-on-cancel:fail']);
+  assert.match(report[0]!.detail, /session\/cancel not sent/);
+});
+
+test('the cancel comes after the client has the permission request', async () => {
+  const { cwd } = await workspace();
+  let pendingAtCancel = -1;
+  const report = await checkClient(
+    sdkClient(cwd, {}, (connection, sessionId, pending) => {
+      pendingAtCancel = pending.length;
+      pending.splice(0).forEach((answer) => answer());
+      return connection.agent.notify('session/cancel', { sessionId });
+    }),
+    { only: ['permission.cancelled-on-cancel'] }
+  );
+  assert.deepEqual(summary(report), ['permission.cancelled-on-cancel:pass'], formatReport(report));
+  assert.equal(pendingAtCancel, 1);
+});
+
+test('a client that can only read, with no outsideFile to try, skips the fs check', async () => {
+  const { cwd } = await workspace();
+  const report = await checkClient(sdkClient(cwd, { readTextFile: true }, () => {}), { only: ['fs.outside-workspace'] });
+  assert.deepEqual(summary(report), ['fs.outside-workspace:skip']);
+  assert.match(report[0]!.detail, /outsideFile/);
 });
 
 test('a client that never connects is one failed check, not a hang', async () => {

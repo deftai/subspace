@@ -68,6 +68,11 @@ test('close mid-turn, at the first message chunk', async () => {
   }
 });
 
+test('injectLines: every must be a whole number of at least 1', () => {
+  for (const every of [0, -1, 1.5, Number.NaN]) assert.throws(() => injectLines(undefined, { every }), RangeError);
+  injectLines(undefined, { every: 3 });
+});
+
 test('a fault on the writing side: the agent never hears the prompt', async () => {
   const [a, b] = channelPair<unknown>();
   let prompted = false;

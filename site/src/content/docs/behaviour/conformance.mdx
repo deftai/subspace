@@ -9,7 +9,7 @@ The testkit's checks define behaviour Subspace relies on, independent of any one
 
 ## Agent checks
 
-`checkAgent` and `check-agent.ts` run these against an agent. Checks that need a feature the agent does not offer, or a situation it never gets into (asking permission), are reported as skipped.
+`checkAgent` and `check-agent.ts` run these against an agent. Checks that need a feature the agent does not offer, or a situation it never gets into (asking permission), are reported as skipped. A permission turn that neither asks nor ends in time fails. Updates are watched for 100 ms after a turn ends (`trailingUpdateMs`); later strays are not seen.
 
 <table>
   <thead><tr><th>Check</th><th>What it checks</th></tr></thead>
@@ -22,7 +22,7 @@ The testkit's checks define behaviour Subspace relies on, independent of any one
 
 ## Client checks
 
-`checkClient` plays an agent against a client:
+`checkClient` plays an agent against a client. The cancel check cancels only once the client has read the permission request; a client that answers at once (a fixed `allow` or `reject` policy) leaves nothing open to cancel, so that check is skipped. To test it, drive the client with a handler that waits, like a user. A client that can only read files is skipped on the file check unless `outsideFile` is given. Files a failing client writes outside its workspace are removed afterwards.
 
 <table>
   <thead><tr><th>Check</th><th>What it checks</th></tr></thead>

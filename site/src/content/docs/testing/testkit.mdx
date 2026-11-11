@@ -58,8 +58,8 @@ Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "s
 - **Workspace:** a fresh temporary folder each run, empty or a copy of `workspace.from` (relative to the scenario file).
 - **Permissions:** `allow`, `reject` (the default), `read-only`, or `{ allow: [kinds], reject: [kinds] }`.
 - **Expectations, per turn:** `end` (`completed`, `refused`, `cancelled`, `limit`, `error`), `stopReason`, `text` (`contains`, `notContains`, `matches`), `toolCalls` (`min`, `max`, `titles`, `kinds`, `allCompleted`), `permissions` (`min`, `max`, `titles`), `files` (`exists`, `contains`, `equals`, `matches`), `updates` (`min`, `max`).
-- **Snapshots:** `snapshot` records each turn's outcome (how it ended, its text and its tool calls) the first time and compares later runs with it; `--update` accepts a change. Best for deterministic agents (your own, or replayed ones).
-- **When it fails:** a failure bundle with the trace, the report and the workspace's file list (`--artifacts <dir>`, default under the temp folder).
+- **Snapshots:** `snapshot` records each turn's outcome (how it ended, its text and its tool calls) the first time and compares later runs with it; `--update` accepts a change. Best for deterministic agents (your own, or replayed ones). A snapshot that is not valid JSON fails and is left as it is. In CI (`--ci`, `requireSnapshots`, on when the `CI` environment variable is set) a missing snapshot fails instead of being written: commit them.
+- **When it fails:** a failure bundle with the trace, the report and the workspace's file list, in its own folder (`--artifacts <dir>`, default under the temp folder). A passing scenario removes its workspace and trace (`--keep`, `keep: true` to keep them).
 - **For CI:** `--junit results.xml` (a test case per turn), `--json`, and exit code 1 when any scenario failed.
 
 ## The quirks corpus

@@ -235,6 +235,8 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
 
   const pending = new Map<string, number>();
   const answered = new Map<string, number>();
+  /** Requests whose id was reused while they were open. */
+  const reused = new Set<number>();
   const sessionIndex = new Map<string, number>();
   /** Sessions something succeeded for: created, loaded or resumed, updated, or a request about them answered with a result. */
   const confirmed = new Set<string>();
@@ -404,7 +406,11 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
         a.requests.push(info);
         event.request = rq;
         const key = idKey(from, id);
-        if (pending.has(key)) warn('error', 'duplicate-request-id', `${from} reused id ${JSON.stringify(id)} while it was still open`, seq);
+        if (pending.has(key)) {
+          warn('error', 'duplicate-request-id', `${from} reused id ${JSON.stringify(id)} while it was still open`, seq);
+          // Its answer cannot be told apart from the new one's: already reported, not also "never answered".
+          reused.add(pending.get(key)!);
+        }
         pending.set(key, rq);
         answered.delete(key);
         event.label = requestLabel(method, params);
@@ -626,7 +632,7 @@ export function analyzeTrace(records: readonly unknown[], options: AnalyzeOption
 
   a.duration = lastT;
   for (const rq of a.requests) {
-    if (rq.outcome !== 'unanswered') continue;
+    if (rq.outcome !== 'unanswered' || reused.has(rq.seq)) continue;
     if (rq.cancelEvent !== undefined) rq.outcome = 'cancelled';
     warn(rq.cancelEvent !== undefined ? 'info' : 'warning', 'unanswered', `${rq.method} #${JSON.stringify(rq.id)} from the ${rq.from} was never answered`, rq.event);
   }

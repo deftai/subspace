@@ -23,14 +23,14 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
 
 ## What the prototype shows
 
-### Kernel (23 tests)
+### Kernel (29 tests)
 
 - **Request id 0 can be cancelled.** This is the MCP SDK's bug #3043.
 - **Ids are opaque:** `0` and `"0"` are different requests.
 - **Every request ends in exactly one place.** It ends either with the answer or with a `LocalError` saying why we stopped waiting: `aborted`, `timeout`, `closed`, `invalid-response` or `send-failed`.
   - A timeout is not reported as an abort (MCP's bug #2165).
   - A late answer is reported, never delivered.
-- **Timeouts are tested with a manual clock,** with no real waiting, and no timer is left behind.
+- **The kernel's timeouts are tested with a manual clock,** with no real waiting, and no timer is left behind. (The ACP, testkit and CLI tests use real, short timers.)
 - **A deadline keeps the process alive until it fires or is cleared** (request timeouts, turn limits, the cancel grace). Earlier they were unref'd, so with nothing else pending (an in-process agent, a script) Node exited before the timeout was reported (exit 13, unsettled top-level await). `test/deadlines.test.ts` runs that case in a child process.
 - **Inbound handlers run concurrently,** so a handler waiting on a call back to the other side doesn't block anything. Notifications keep arrival order.
 - **Malformed messages:**
@@ -45,10 +45,10 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
 - **Processes:**
   - a missing program is a `SpawnError` with a hint;
   - a reply written just before exit is not lost;
-  - `stop()` kills the whole process group, including a grandchild that ignores SIGTERM;
+  - `stop()` kills the whole process group, including a grandchild that ignores SIGTERM (POSIX only: on Windows there are no process groups, and it kills the direct child, so a grandchild can outlive it);
   - a tail of stderr is kept.
 
-### ACP (17 tests)
+### ACP (182 tests)
 
 - **One agent handler, both protocols.** The same handler runs on v1 and v2 over byte-by-byte NDJSON, and the client produces the same events for both.
 - **Turn completion:**
@@ -73,9 +73,9 @@ The original `@deft/*` packages from `main`, with their tests and developer guid
   - symbolic links are checked;
   - names starting with `..` are allowed.
 
-### Testkit (33 tests)
+### Testkit (76 tests)
 
-- **Record and replay** in the kernel trace format. A replayed agent remaps ids both ways, matches the client's calls by method, and fails with expected vs got instead of hanging.
+- **Record and replay** in the kernel trace format. A replayed agent remaps ids both ways, matches the client's calls by method (in any order within a few calls), and fails with expected vs got instead of hanging.
 - **Faults:** banner lines, odd and coalesced chunks, delay, disconnect after N messages, close mid-turn.
 - **Conformance:** `checkAgent` (10 checks) passes against `serveAgent` and official-SDK agents, v1 and v2, and catches a broken agent. `checkClient` (4 checks) passes against `AcpClient`, v1 and v2, and catches a careless official-SDK client.
 - **Quirks corpus:** three real Grok traces (plain, write rejected, cancel) replay to `AcpClient` with the same `TurnResult` as live.
@@ -229,10 +229,10 @@ Tests run the TypeScript sources directly. Node strips the types, and the `subsp
    - Grok's `-32602` for an unknown session is a known quirk, waived from the catalog (`waives: ['session.unknown']`); `--strict` turns it into a failure;
    - re-record with `scripts/record-claude-codex.sh` when an adapter version changes, and check the catalog's `seen` fields;
    - the old `@deft/acp-testkit` is now in `legacy/`, and this folder is now `packages/acp-testkit`, matching its package name (2026-11-08).
-6. **Devtools (`packages/devtools`, merged, 15 tests):**
+6. **Devtools (`packages/devtools`, merged, 19 tests):**
    - built: the trace analyzer, a standalone HTML viewer and the CLI;
    - done (2026-11-07): an answer after a `$/cancel_request` is not a problem (LSP expects one); ids seen only in failed requests are not sessions; checked in a browser on the Claude, Codex and Grok corpus traces, and it looked right;
    - OpenTelemetry (2026-11-07): `otelTap(otel)` in `@deft-subspace/acp`, an `RpcPeerOptions.tap` for a client or an agent, makes a span per request (CLIENT or SERVER), the `session/prompt` span is the turn (ends with the turn on v1 and v2, `acp.stop_reason`), with tool calls and the session's requests (permission questions, fs, terminals) inside it; cancels and plans are events. Requests start under the active context, so a turn nests under the app's span. No dependency (the app passes `@opentelemetry/api`); no conversation content, and tool titles only with `titles: true`. `spansFromTrace()` makes the same spans from a saved trace. Checked with the real SDK (sdk-trace-base 2.12, in-memory exporter, async-hooks context) on v1 and v2: one trace, the turn under the app's span. In Bridge: on both its ACP server and the MCP front's agent connections, with a test against the real SDK. Across the connection (2026-11-07): the `telemetry` option (client, `serveAgent`, `start()`) adds peer middleware that puts the W3C trace context in each request's `_meta` (`traceparent`, `tracestate`, `baggage`, the keys ACP's extensibility page reserves), continues a trace a request carries, and runs handlers inside their request's span; checked with the real SDK on v1 and v2 (one trace from the client app's span through the agent's turn, the agent's own span, its permission question and the client's answer). Bridge uses it on both sides, so a Bridge turn continues the MCP caller's trace and the pipeline's spans land in it (tested). Post-run: `subspace trace run.jsonl --otlp [url]` (`exportTrace()` in `@deft-subspace/devtools/otlp`) sends a saved trace's spans over OTLP/HTTP protobuf, batched, exit 1 with the reason when the collector refuses or is unreachable (tested with a local collector). OpenTelemetry JS packages: `sdk-trace-base` is deprecated for `sdk-trace` (2.12.0 here; its `TracerProvider` and `SimpleSpanProcessor({ exporter })` differ); 3.x is out (2026-10-20) and Bridge is still on 2.x.
 7. **Bounded turns:** done. `session.prompt(input, { limits })`, or the client's `limits` option, takes `maxDurationMs`, `idleMs`, `maxToolCalls` and `maxUsage`. A limit cancels the turn the normal way, pushes an `exhausted` event, and sets `result.exhausted` to `{ limit, max, value }`. 11 tests cover v1 and v2. In `bridge mcp`: the `prompt` tool takes `max_turn_seconds`, `idle_seconds` and `max_tool_calls`, `[mcp.limits]` sets the defaults, and the report says which limit fired.
-8. **CI:** Node 22, 24 and 26, plus Bun, Deno and the browser for the kernel.
+8. **CI:** what runs now: for TypeScript, type-check, build, the built CLIs' `--help` from `dist/`, and the tests, on Ubuntu, macOS and Windows with Node 22 and 24 (a Windows test failure does not yet fail the job; it has not been seen green there); for Python, pyright and pytest on the same three systems with Python 3.11 and 3.13. Not yet: Node 26, and Bun, Deno or a browser for the kernel, which is written for them but not tested on them.
 9. **Raw agent endpoint and layers** (branch `experiment/agent-layers`, design in `docs/AGENT-LAYERS.md`): `agentEndpoint()` hands every inbound request and notification, as sent, through optional layers to your own handlers, and sends anything to the client through outbound hooks. Built with its contract tests (10): exclusive handlers and `requires` checked when the stack is built, `next()` at most once, rewrites change the dispatched method and the params, state per endpoint, outbound hooks with context and results, notifications kept in order through a slow hook, `$/cancel_request` aborting the handler's signal and not passed on, close hooks. A two-way proxy on it (`examples/proxy.ts`, `test/proxy.test.ts`, v1 and v2): initialize and client capabilities pass through, permission and file requests travel up, unknown requests and notifications pass both ways, a downstream error keeps its code and data, and cancel crosses both hops. `serveAgent` now runs on it as five layers (negotiate, sessions with a session lifecycle service, mcp, turns, extensions): every existing test passes unchanged, new tests pin session-close order and connection close, and streaming throughput is unchanged. One change: a `methods` or `extensions` name that a built-in layer answers now fails at startup. Next: wire hooks, then `normalize`.

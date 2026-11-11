@@ -63,3 +63,7 @@ const client = await AcpClient.connect(channel, {
 ```
 
 Without these options the client advertises neither. ACP v2 removes these methods; there, a client offers its own tools through [MCP](../../mcp/servers/).
+
+:::caution[`workspaceTerminals` is not a sandbox]
+Only each command's working directory is confined to the workspace. By default it runs any command the agent asks for (pass `allow` to refuse some), with the client's own environment (`process.env`, plus the variables the agent sends), so a command can read and write anything the client's user can, and see its secrets. For an agent you do not trust, allow a short list of commands, or run the client itself in a container or VM.
+:::

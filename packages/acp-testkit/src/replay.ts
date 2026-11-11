@@ -8,8 +8,10 @@
  *
  * - The agent's recorded messages are sent in recorded order, as soon as the
  *   client messages recorded before them have arrived.
- * - Client requests and notifications are matched by method, in order. Their
- *   params may differ (pass `check` to be stricter). Responses to the agent's
+ * - Client requests and notifications are matched by method. Messages the
+ *   client sends together may arrive in another order than recorded: one is
+ *   matched with any of the next few recorded ones (`window`). Their params
+ *   may differ (pass `check` to be stricter). Responses to the agent's
  *   requests are matched by id.
  * - JSON-RPC ids are remapped both ways: recorded answers go out with the
  *   client's live ids, and the agent's requests get fresh ids.
@@ -29,8 +31,15 @@ export interface ReplayOptions {
   /** Which side recorded the trace. Default: the header's `peer` if it is 'agent', else 'client'. */
   recordedBy?: 'client' | 'agent';
   /**
+   * How many of the client's upcoming recorded requests and notifications a
+   * message may be matched with, when the client sends them in another
+   * order. Default 4; 1 is strict recorded order.
+   */
+  window?: number;
+  /**
    * Compare a client message with the recorded one (both whole JSON-RPC
-   * messages). Return a description to stop the replay as diverged.
+   * messages; `expected` has its ids mapped to the live ones). Return a
+   * description to stop the replay as diverged.
    */
   check?: (expected: Record<string, unknown>, got: Record<string, unknown>) => string | undefined | void;
 }
@@ -87,6 +96,7 @@ export function replayAgent(channel: Channel<unknown>, trace: readonly TraceReco
     });
   const waitMs = options.waitMs ?? 5000;
   const pace = options.pace ?? 0;
+  const window = Math.max(1, options.window ?? 4);
 
   const writer = channel.writable.getWriter();
   const reader = channel.readable.getReader();
@@ -185,6 +195,16 @@ export function replayAgent(channel: Channel<unknown>, trace: readonly TraceReco
     return rest;
   };
 
+  /** A recorded client message with the live client's ids. */
+  const liveIds = (message: Message): Message => {
+    const out: Message = { ...message };
+    if ('id' in out && clientIds.has(key(out.id))) out.id = clientIds.get(key(out.id))!;
+    if (out.method === '$/cancel_request' && isRecord(out.params) && clientIds.has(key(out.params.requestId))) {
+      out.params = { ...out.params, requestId: clientIds.get(key(out.params.requestId))! };
+    }
+    return out;
+  };
+
   const run = async () => {
     let lastT = 0;
     for (let index = 0; index < steps.length; index++) {
@@ -221,17 +241,28 @@ export function replayAgent(channel: Channel<unknown>, trace: readonly TraceReco
       }
 
       if (!isCall(expected)) continue;
-      const got = await waitFor(() => calls.shift());
+      // The recorded client calls a buffered one may stand for: this one and the next few.
+      const upcoming = steps.slice(index).filter((s) => s.dir === 'expect' && isCall(s.msg)).slice(0, window).map((s) => s.msg);
+      const same = (a: Message, b: Message) => a.method === b.method && ('id' in a) === ('id' in b);
+      let stray: Message | undefined;
+      const got = await waitFor(() => {
+        const at = calls.findIndex((c) => same(c, expected));
+        if (at >= 0) return calls.splice(at, 1)[0];
+        // Something none of them explains: stop now rather than wait.
+        stray = calls.find((c) => !upcoming.some((u) => same(c, u)));
+        return stray ? null : undefined;
+      });
       if (!got) {
-        await diverge(`expected the client to send ${describe(expected)}, got ${silence()}`);
+        if (stray) {
+          calls.splice(calls.indexOf(stray), 1);
+          await diverge(`expected the client to send ${describe(expected)}, got ${describe(stray)}`, stray);
+        }
+        await diverge(`expected the client to send ${describe(expected)}, got ${calls[0] ? describe(calls[0]) : silence()}`, calls[0]);
         return;
       }
-      if (got.method !== expected.method || ('id' in got) !== ('id' in expected)) {
-        await diverge(`expected the client to send ${describe(expected)}, got ${describe(got)}`, got);
-      }
-      const complaint = options.check?.(expected, got);
-      if (complaint) await diverge(complaint, got);
       if ('id' in expected) clientIds.set(key(expected.id), got.id as JsonRpcId);
+      const complaint = options.check?.(liveIds(expected), got);
+      if (complaint) await diverge(complaint, got);
     }
     scriptOver = true;
     // Requests already buffered past the end get the same answer as later ones.

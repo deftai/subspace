@@ -17,7 +17,7 @@ This guide goes from a first turn to the less common features. Each section stan
 
 | Package | What it is |
 |---|---|
-| `@deft-subspace/kernel` | Channels, NDJSON framing, and a JSON-RPC peer with timeouts and cancellation. No ACP in it. Runs in Node, Bun, Deno and browsers. |
+| `@deft-subspace/kernel` | Channels, NDJSON framing, and a JSON-RPC peer with timeouts and cancellation. No ACP in it. Written for Node, Bun, Deno and browsers (CI tests it on Node). |
 | `@deft-subspace/acp` | The ACP client (`AcpClient`) and agent (`serveAgent`). `@deft-subspace/acp/node` adds starting agent programs and file and terminal helpers confined to a workspace. |
 | `@deft-subspace/acp-testkit` | Recording and replay of traces, fault injection, and conformance checks for agents and clients. |
 | `@deft-subspace/devtools` | A trace analyzer and a standalone HTML trace viewer (`deft-subspace-trace`). |
@@ -58,6 +58,17 @@ const { text } = await run('codex', 'What does this repo do?', { permissions: 'r
 
 `start()` requires a permission answer. Handler options (`onMessage`, `onToolCall`, `onPermission`, `onQuestion`, `onEvent`, ...) work on any turn, also with `session.prompt()`. On the agent side, `serveStdio(options)` serves on stdio and `turn.tool(init, run)` runs a tool as one step. The rest of this guide is the model underneath.
 
+### Which entry point do I want
+
+| You have | Use | From | You get |
+|---|---|---|---|
+| An agent name (`claude`, a registry id, one in `agents.toml`) or a command, in Node | `start(agent, options)` | `@deft-subspace/acp/node` | The program started and connected, a session open in its ask-first mode, files confined to `cwd`, Ctrl-C handled; `run`, `prompt`, `close`. Needs a permission answer. |
+| The same, for one prompt | `run(agent, prompt, options)` | `@deft-subspace/acp/node` | `start()`, one turn, `close()`; resolves with the `TurnResult`. |
+| A program to start, and you want the plain client | `connectAgent(command, options)` | `@deft-subspace/acp/node` | `{ client, process, close }` after `initialize`. No session, no mode switch, no catalog; permissions are rejected unless you set them. |
+| A channel already (a socket, a pipe, an in-process agent, a browser) | `connectSession(channel, options)` | `@deft-subspace/acp` | `start()` without the process: connected, a session open (one login retry, the mode switched if offered), `run`, `prompt`, `close`. Needs a permission answer. |
+| An `AcpClient` already, and want a session the way `start()` opens one | `openSession(client, setup)` | `@deft-subspace/acp` | `{ session, modeWarning }`: `session/new`, the one-method login retry, and the mode switch. |
+| A channel, and you want every choice yourself | `AcpClient.connect(channel, options)` | `@deft-subspace/acp` | The client after `initialize`. Sessions, handlers, files and terminals are up to you. |
+
 ## A first turn
 
 Start a real agent and send it a prompt:
@@ -80,7 +91,7 @@ try {
   const result = await turn.done;
   console.log(`\n${result.stopReason}, ${result.toolCalls.length} tool call(s)`);
 } finally {
-  await close(); // closes the connection and stops the agent's process group
+  await close(); // closes the connection and stops the agent's process group (on Windows, the agent's own process)
 }
 ```
 
@@ -202,6 +213,8 @@ const client = await AcpClient.connect(channel, {
 ```
 
 Without these options the client advertises neither. ACP v2 removes these methods, because agents run their own tools and sandboxes. In v2, a client offers its own tools through MCP (next section).
+
+> **`workspaceTerminals` is not a sandbox.** Only each command's working directory is confined to the workspace. By default it runs any command the agent asks for (pass `allow` to refuse some), with the client's own environment (`process.env`, plus the variables the agent sends), so a command can read and write anything the client's user can, and see its secrets. For an agent you do not trust, allow a short list of commands, or run the client itself in a container or VM.
 
 ## MCP servers
 
