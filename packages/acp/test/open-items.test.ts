@@ -122,7 +122,8 @@ for (const protocol of [1, 2] as const) {
     const first = client.peer.request('session/prompt', { sessionId: session.id, prompt: [{ type: 'text', text: 'one' }] });
     const second = client.peer.request('session/prompt', { sessionId: session.id, prompt: [{ type: 'text', text: 'two' }] });
     await Promise.all([first, second]);
-    await sleep(60);
+    // On v2 the answer can come before the turn has ended: wait for it (up to 2 s).
+    for (let i = 0; i < 400 && order.length < 4; i++) await sleep(5);
     assert.deepEqual(order, ['start one', 'end one', 'start two', 'end two']);
     if (protocol === 1) {
       order.length = 0;

@@ -24,10 +24,13 @@ async function workspace() {
   return { root, cwd, outsideFile };
 }
 
-/** A user who allows after a moment, unless the turn is cancelled first. */
+/**
+ * A user who allows after a while, unless the turn is cancelled first. The while is long
+ * enough that the cancel check's cancel always comes first, even on a busy machine.
+ */
 const slowUser: PermissionHandler = (_request, signal) =>
   new Promise((resolve) => {
-    const timer = setTimeout(() => resolve('allow'), 100);
+    const timer = setTimeout(() => resolve('allow'), 2000);
     signal.addEventListener('abort', () => (clearTimeout(timer), resolve('cancelled')), { once: true });
   });
 
@@ -61,11 +64,15 @@ test('a careless official-SDK client fails the checks it breaks, and the files i
   const written: string[] = [];
   const report = await checkClient(async (channel) => {
     let sessionId = '';
+    const waiting: Array<() => void> = [];
     const connection = officialV1
       .client({ name: 'careless' })
-      // Allows after a moment, even when the turn has been cancelled meanwhile.
+      // Allows once the user cancels the turn (or after a while), as if the cancel did not matter.
       .onRequest('session/request_permission', async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2000);
+          waiting.push(() => (clearTimeout(timer), resolve()));
+        });
         return { outcome: { outcome: 'selected', optionId: 'allow' } };
       })
       // Writes anywhere (here: inside the temporary root).
@@ -85,7 +92,10 @@ test('a careless official-SDK client fails the checks it breaks, and the files i
     sessionId = (await connection.agent.request('session/new', { cwd, mcpServers: [] })).sessionId;
     return {
       prompt: (text) => connection.agent.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }),
-      cancel: () => connection.agent.notify('session/cancel', { sessionId }),
+      cancel: async () => {
+        await connection.agent.notify('session/cancel', { sessionId });
+        for (const allow of waiting.splice(0)) allow();
+      },
       close: () => connection.close(),
     };
   });

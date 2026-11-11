@@ -108,10 +108,10 @@ test('v2: a turn whose running state fails to send still frees the session', asy
   await peer.request('initialize', { protocolVersion: 2, capabilities: {} });
   const { sessionId } = await peer.request<{ sessionId: string }>('session/new', { cwd: '/w', mcpServers: [] });
   await peer.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'one' }] });
-  for (let i = 0; i < 100 && !states.length; i++) await sleep(5);
+  for (let i = 0; i < 400 && !states.length; i++) await sleep(5);
   // Not refused as busy: the first turn ended.
   await peer.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'two' }] });
-  for (let i = 0; i < 100 && states.length < 3; i++) await sleep(5);
+  for (let i = 0; i < 400 && states.length < 3; i++) await sleep(5);
   assert.deepEqual(states, ['idle:error', 'running', 'idle:end_turn']);
   await peer.close();
 });

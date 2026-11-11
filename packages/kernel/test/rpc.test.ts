@@ -357,3 +357,34 @@ test('start() after close() does nothing', async () => {
   await tick();
   assert.equal(handled, false);
 });
+
+test('nothing more is dispatched once a handler closes the peer', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  const seen: unknown[] = [];
+  peer.onRequest('shutdown', async (_p, ctx) => {
+    await ctx.peer.close();
+    return null;
+  });
+  peer.onRequest('after', (_p, ctx) => void seen.push([peer.state, ctx.signal.aborted]));
+  peer.onNotification('note', () => void seen.push('note'));
+  void end.send({ jsonrpc: '2.0', id: 1, method: 'shutdown' }).catch(() => {});
+  void end.send({ jsonrpc: '2.0', id: 2, method: 'after' }).catch(() => {});
+  void end.send({ jsonrpc: '2.0', method: 'note' }).catch(() => {}); // refused once the peer stops reading
+  peer.start();
+  await peer.closed;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(seen, []);
+});
+
+test('a request handled after the connection closed starts aborted', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  const seen: boolean[] = [];
+  peer.onRequest('x', (_p, ctx) => void seen.push(ctx.signal.aborted));
+  peer.start();
+  await peer.close();
+  (peer as unknown as { handleRequest(id: number, method: string, params: unknown): void }).handleRequest(1, 'x', undefined);
+  for (let i = 0; i < 3; i++) await tick();
+  assert.deepEqual(seen, [true]);
+});

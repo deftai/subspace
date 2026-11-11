@@ -11,7 +11,17 @@
  *   lost.
  * - A missing program becomes a SpawnError with a hint, not an uncaught error.
  * - On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
- *   file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
+ *   file (like `npx.cmd`) is run through cmd.exe (without AutoRun commands)
+ *   with its arguments escaped as Rust's std escapes them ("BatBadBut",
+ *   CVE-2024-24576): quoted, quotes doubled, `%` defused, so that neither
+ *   cmd.exe nor a shim that hands `%*` to cmd.exe again can be made to run
+ *   anything else. An argument containing CR, LF or NUL cannot be passed safely
+ *   and is refused with a SpawnError (code `EINVAL`).
+ * - On Windows, which has no process groups to signal, stop() ends the child
+ *   and every process it started with `taskkill /T` (run directly, no shell):
+ *   without /F first, then with /F after the grace period; if taskkill cannot
+ *   run, the child alone is killed. This matters for `.cmd` launches, where the
+ *   program is a child of cmd.exe and would otherwise keep stdout open.
  *
  * Process groups outlive this process unless it stops them, so the live ones
  * are killed when it exits: on 'exit', and, on POSIX, on SIGINT, SIGTERM and
@@ -135,8 +145,6 @@ const pollMaxMs = 1000;
 // -- Windows command resolution -------------------------------------------------------------
 
 const defaultPathext = '.COM;.EXE;.BAT;.CMD';
-const cmdMeta = /([()\][%!^"`<>&|;, *?])/g;
-const npmShim = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i;
 
 /** Windows environment names are case-insensitive (`Path`, `PATH`). */
 function envGet(env: Record<string, string | undefined>, name: string): string | undefined {
@@ -169,24 +177,64 @@ export function windowsFind(
   return undefined;
 }
 
-function escapeCmdArgument(arg: string, double: boolean): string {
-  // As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
-  // cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
-  let escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
-  escaped = `"${escaped}"`.replace(cmdMeta, '^$1');
-  return double ? escaped.replace(cmdMeta, '^$1') : escaped;
+/** What an argument to a batch file cannot carry: cmd.exe ends the command at CR or LF, and NUL ends the string. */
+const batUnsafe = /[\r\n\0]/;
+/** What may stay unquoted, as in Rust's std; any other ASCII character, or a control character, is quoted. */
+const batPlain = /^[A-Za-z0-9#$*+\-./:?@\\_ -￿]*$/;
+
+function batArgument(command: string, arg: string): string {
+  if (batUnsafe.test(arg)) {
+    throw new SpawnError(command, 'EINVAL', 'An argument to a .cmd or .bat file cannot contain a line break or NUL.');
+  }
+  const quote = arg === '' || arg.endsWith('\\') || !batPlain.test(arg);
+  let out = quote ? '"' : '';
+  let backslashes = 0;
+  for (const c of arg) {
+    if (c === '\\') {
+      backslashes++;
+    } else {
+      // A quote is doubled, so cmd.exe never sees the quoting end inside the argument; the
+      // program reads `""` within quotes as one `"`. Backslashes before it are doubled too.
+      if (c === '"') out += '\\'.repeat(backslashes) + '"';
+      // `%` becomes `%%cd:~,%`: cmd.exe expands `%cd:~,%` to nothing instead of a %VAR%.
+      else if (c === '%') out += '%%cd:~,';
+      backslashes = 0;
+    }
+    out += c;
+  }
+  return quote ? out + '\\'.repeat(backslashes) + '"' : out;
 }
 
-/** @internal A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally. */
-export function cmdLine(script: string, args: readonly string[]): string {
-  const double = npmShim.test(script); // npm shims pass their arguments through cmd.exe again
-  return [path.win32.normalize(script).replace(cmdMeta, '^$1'), ...args.map((a) => escapeCmdArgument(a, double))].join(' ');
+/**
+ * @internal The cmd.exe command line that runs the `.cmd`/`.bat` file `script` with `args`,
+ * escaped as Rust's std escapes them since CVE-2024-24576 ("BatBadBut"): an argument with
+ * anything but plain characters is quoted, its quotes doubled and each `%` defused, so
+ * cmd.exe finds nothing to interpret in it however often it reads it. That covers shims
+ * that hand `%*` to cmd.exe again (npx.cmd, npm's node_modules\.bin shims), wherever they
+ * are. An argument that cannot be passed safely (CR, LF or NUL) is a SpawnError.
+ */
+export function cmdLine(script: string, args: readonly string[], command = script): string {
+  const file = path.win32.normalize(script);
+  if (file.includes('"') || file.endsWith('\\')) {
+    throw new SpawnError(command, 'EINVAL', `${JSON.stringify(file)} is not a valid file name.`);
+  }
+  return [`"${file}"`, ...args.map((a) => batArgument(command, a))].join(' ');
+}
+
+/**
+ * @internal cmd.exe's arguments to run `line`: no AutoRun commands (/d; they could write
+ * to stdout), command extensions on (the `%` escape needs them), no delayed `!` expansion,
+ * and only the outer quotes stripped (/s).
+ */
+export function cmdExeArgs(line: string): string[] {
+  return ['/d', '/e:ON', '/v:OFF', '/s', '/c', `"${line}"`];
 }
 
 /**
  * @internal Windows can only start a `.cmd`/`.bat` file through cmd.exe (Node refuses
  * to without a shell since CVE-2024-27980): the command line to run, or undefined
- * when `command` is not one (and runs as given).
+ * when `command` is not one (and runs as given). Throws a SpawnError for an argument
+ * that cannot be passed safely.
  */
 export function windowsLaunch(
   command: string,
@@ -196,7 +244,16 @@ export function windowsLaunch(
 ): string | undefined {
   const found = windowsFind(command, env, isFile);
   if (!found || !['.cmd', '.bat'].includes(path.win32.extname(found).toLowerCase())) return undefined;
-  return cmdLine(found, args);
+  return cmdLine(found, args, command);
+}
+
+/**
+ * @internal The taskkill.exe command that ends process `pid` and every process it started
+ * (/T): asking them to close, or forcing it (/F). Run directly, not through a shell.
+ */
+export function taskkillCommand(pid: number, force: boolean, env: Record<string, string | undefined>): [string, string[]] {
+  const root = envGet(env, 'SYSTEMROOT') || 'C:\\Windows';
+  return [path.win32.join(root, 'System32', 'taskkill.exe'), ['/pid', String(pid), '/T', ...(force ? ['/F'] : [])]];
 }
 
 /** @internal */
@@ -225,7 +282,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
   const child: ChildProcess =
     line === undefined
       ? spawn(command, args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: groups })
-      : spawn(envGet(env, 'COMSPEC') || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+      : spawn(envGet(env, 'COMSPEC') || 'cmd.exe', cmdExeArgs(line), {
           cwd: options.cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -296,7 +353,31 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     }
   };
 
-  const killNow = () => signalGroup('SIGKILL');
+  // Windows has no process groups to signal, and killing cmd.exe would leave the program a
+  // .cmd file started (and its hold on stdout) running: end the tree with taskkill instead.
+  const treeKill = windows && pid !== undefined;
+  const killTree = (force: boolean): Promise<void> =>
+    new Promise((resolve) => {
+      // When taskkill cannot run or fails, a forced kill at least ends the child itself.
+      const fallback = (): void => {
+        if (force) signalGroup('SIGKILL');
+        resolve();
+      };
+      const [file, killArgs] = taskkillCommand(pid!, force, env);
+      let killer: ChildProcess;
+      try {
+        killer = spawn(file, killArgs, { stdio: 'ignore', windowsHide: true });
+      } catch {
+        return fallback();
+      }
+      killer.once('error', fallback);
+      killer.once('exit', (code) => (code === 0 ? resolve() : fallback()));
+    });
+
+  const killNow = (): void => {
+    if (treeKill) void killTree(true);
+    else signalGroup('SIGKILL');
+  };
   track(killNow);
   // Once the leader has exited, drop the group as soon as its last member is gone, so
   // the exit-time kill never hits a group id the system has since given to someone else.
@@ -316,13 +397,17 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     stopping ??= (async () => {
       child.stdin!.end();
       if (groupAlive()) {
-        signalGroup('SIGTERM');
+        if (treeKill) await killTree(false);
+        else signalGroup('SIGTERM');
         const grace = graceMs ?? options.killGraceMs ?? 2000;
         const deadline = Date.now() + grace;
         while (groupAlive() && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        if (groupAlive()) signalGroup('SIGKILL');
+        if (groupAlive()) {
+          if (treeKill) await killTree(true);
+          else signalGroup('SIGKILL');
+        }
       }
       untrack(killNow);
       return exited;

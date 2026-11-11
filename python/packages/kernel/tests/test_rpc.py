@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import sys
+import time
 from typing import Any
 
 import pytest
@@ -591,3 +592,128 @@ async def test_a_write_to_an_idle_channel_and_a_handler_that_does_not_wait_need_
     assert {"jsonrpc": "2.0", "id": 1, "result": {"x": 1}} in end.sent
     assert not peer._tasks
     await peer.close()
+
+
+async def test_a_custom_task_factory_still_makes_the_handler_and_writer_tasks():
+    loop = asyncio.get_running_loop()
+    made: list[str] = []
+
+    def factory(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        made.append(kwargs.get("name") or "")
+        return asyncio.Task(coro, loop=loop, **kwargs)
+
+    end = Raw()
+    loop.set_task_factory(factory)  # type: ignore[arg-type]
+    try:
+        peer = RpcPeer(end.channel, name="p")
+        peer.on_request("echo", lambda params, _context: params)
+        peer.start()
+        await end.send({"jsonrpc": "2.0", "id": 1, "method": "echo", "params": 1})
+        await tick(5)
+        assert {"jsonrpc": "2.0", "id": 1, "result": 1} in end.sent
+        assert "p:echo" in made and "p:write" in made
+        await peer.close()
+    finally:
+        loop.set_task_factory(None)
+
+
+async def test_nothing_more_is_dispatched_once_a_handler_closes_the_peer():
+    # On 3.12+ a handler starts eagerly, inside the read loop: once one closes the peer, the
+    # messages already buffered behind it must not be dispatched on the closed connection.
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    seen: list[Any] = []
+
+    async def shutdown(_params, context):
+        await context.peer.close()
+
+    peer.on_request("shutdown", shutdown)
+    peer.on_request("after", lambda _params, context: seen.append((peer.state, context.signal.aborted)))
+    peer.on_notification("note", lambda _params, _context: seen.append("note"))
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "shutdown"})
+    await end.send({"jsonrpc": "2.0", "id": 2, "method": "after"})
+    await end.send({"jsonrpc": "2.0", "method": "note"})
+    peer.start()
+    await asyncio.wait_for(peer.closed, 2)
+    await tick(5)
+    assert seen == []
+
+
+async def test_a_request_handled_after_the_connection_closed_starts_aborted():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    seen: list[bool] = []
+    peer.on_request("x", lambda _params, context: seen.append(context.signal.aborted))
+    peer.start()
+    await peer.close()
+    peer._handle_request(1, "x", None)  # as the read loop would, had it got that far
+    await tick(3)
+    assert seen == [True]
+
+
+class _SlowToCancel:
+    """A channel whose receive() (if `reads`) and send() wait until cancelled, and then
+    take a while to stop: until `stopping` is cancelled too, or released."""
+
+    def __init__(self, *, reads: bool) -> None:
+        self.reads = reads
+        self.waiting = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _block(self) -> None:
+        self.waiting.set()
+        try:
+            await asyncio.get_running_loop().create_future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.release.wait()  # a second cancel ends this at once
+            raise
+
+    async def receive(self) -> Any:
+        if self.reads:
+            await self._block()
+        else:
+            await self.release.wait()
+        from deft_subspace.kernel import EndOfChannel
+
+        raise EndOfChannel()
+
+    async def send(self, item: Any) -> None:
+        await self._block()
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_cancelling_close_while_it_waits_for_the_reader_is_not_swallowed():
+    channel = _SlowToCancel(reads=True)
+    peer = RpcPeer(channel).start()
+    try:
+        await channel.waiting.wait()
+        closer = asyncio.ensure_future(peer.close())
+        await channel.cancelled.wait()  # close() cancelled the reader and waits for it
+        closer.cancel()
+        await asyncio.wait([closer], timeout=2)
+        assert closer.cancelled()
+    finally:
+        channel.release.set()
+        await tick(3)
+
+
+async def test_cancelling_close_while_it_waits_for_the_writer_is_not_swallowed():
+    channel = _SlowToCancel(reads=False)
+    peer = RpcPeer(channel)
+    peer._close_wait_s = 0.05
+    peer.start()
+    try:
+        peer._write_quiet({"jsonrpc": "2.0", "method": "n"})
+        await channel.waiting.wait()
+        closer = asyncio.ensure_future(peer.close())
+        await asyncio.wait_for(channel.cancelled.wait(), 2)  # past the close wait, close() cancelled the writer
+        closer.cancel()
+        await asyncio.wait([closer], timeout=2)
+        assert closer.cancelled()
+    finally:
+        channel.release.set()
+        await tick(3)

@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import time
+from typing import Any
 
 import pytest
 
@@ -80,7 +81,8 @@ async def test_keeps_the_last_stderr_output():
             break
     info = await child.ended()
     assert info.code == 3
-    await asyncio.sleep(0.05)
+    assert child._stderr_task is not None
+    await asyncio.wait_for(child._stderr_task, 3)  # stderr read to its end
     assert child.stderr_tail().endswith("fatal: no API key")
     assert len(child.stderr_tail()) <= 64
 
@@ -92,7 +94,8 @@ async def test_the_stderr_tail_counts_bytes():
         stderr_tail_bytes=63,
     )
     await asyncio.wait_for(child.ended(), 3)
-    await asyncio.sleep(0.05)
+    assert child._stderr_task is not None
+    await asyncio.wait_for(child._stderr_task, 3)  # stderr read to its end
     tail = child.stderr_tail()
     assert tail.endswith("end")
     assert len(tail.encode()) <= 63
@@ -140,18 +143,21 @@ async def test_ended_settles_with_no_reader_and_the_output_is_still_there():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups")
-async def test_a_group_is_forgotten_once_its_last_member_is_gone():
+async def test_a_group_is_forgotten_once_its_last_member_is_gone(tmp_path):
     from deft_subspace.kernel import process
 
-    # The leader exits at once; a grandchild keeps the group alive a little longer.
+    # The leader exits at once; a grandchild keeps the group alive until it is told to go.
+    go = tmp_path / "go"
+    wait = f"import os, time; t = time.monotonic() + 30\nwhile not os.path.exists({str(go)!r}) and time.monotonic() < t: time.sleep(0.02)"
     script = (
         "import subprocess, sys\n"
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(0.5)'],"
+        f"subprocess.Popen([sys.executable, '-c', {wait!r}],"
         " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
     )
     child = await spawn_process(PY, args=["-c", script])
     await asyncio.wait_for(child.ended(), 3)
     assert child._kill_now in process._live  # the grandchild is still running
+    go.touch()
     deadline = time.monotonic() + 5
     while child._kill_now in process._live and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
@@ -160,12 +166,13 @@ async def test_a_group_is_forgotten_once_its_last_member_is_gone():
 
 # A program that starts a supervised child (which starts a grandchild), prints both pids, and waits.
 SUPERVISOR = """
-import asyncio, signal, sys
+import asyncio, os, signal, sys
 from deft_subspace.kernel import spawn_process
 
 async def main():
     if sys.argv[1] == "own-handler":
-        signal.signal(signal.SIGTERM, lambda *_: print("handled", flush=True))
+        # os.write, not print: the signal can arrive while print() of the pid line is still flushing.
+        signal.signal(signal.SIGTERM, lambda *_: os.write(1, b"handled\\n"))
     if sys.argv[1] == "loop-handler":
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: print("handled", flush=True))
     child = await spawn_process(sys.executable, args=["-c", (
@@ -262,7 +269,7 @@ def test_windows_runs_a_cmd_shim_found_through_pathext_via_cmd_exe():
     from deft_subspace.kernel.process import _windows_launch
 
     line = _windows_launch("npx", ["-y", "some agent"], WIN_ENV, _files(r"C:\nodejs\npx.cmd"))
-    assert line == r'C:\nodejs\npx.CMD ^"-y^" ^"some^ agent^"'
+    assert line == r'"C:\nodejs\npx.CMD" -y "some agent"'
 
 
 def test_windows_runs_an_exe_as_given():
@@ -283,14 +290,126 @@ def test_windows_follows_path_order_then_pathext_order():
     assert _windows_find("tool", {"PATH": r"C:\bin"}, _files(r"C:\bin\tool.cmd")) == r"C:\bin\tool.CMD"  # default PATHEXT
 
 
-def test_windows_escapes_cmd_metacharacters_in_arguments():
+def test_windows_quotes_cmd_metacharacters_in_arguments():
     from deft_subspace.kernel.process import _cmd_line
 
-    assert _cmd_line(r"C:\Program Files\nodejs\npx.cmd", ['a&b|c"d', "100%", "end\\"]) == (
-        r'C:\Program^ Files\nodejs\npx.cmd ^"a^&b^|c\^"d^" ^"100^%^" ^"end\\^"'
+    assert _cmd_line(r"C:\Program Files\nodejs\npx.cmd", ['a&b|c"d', "100%", "end\\", "", "plain-1.0/x:y@z", 'a\\"b']) == (
+        r'"C:\Program Files\nodejs\npx.cmd" "a&b|c""d" "100%%cd:~,%" "end\\" "" plain-1.0/x:y@z "a\\""b"'
     )
-    # npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
-    assert _cmd_line(r"C:\p\node_modules\.bin\agent.cmd", ["a&b"]) == r'C:\p\node_modules\.bin\agent.cmd ^^^"a^^^&b^^^"'
+
+
+def _cmd_read(line: str) -> tuple[str, str]:
+    """How cmd.exe reads a line, as far as quoting goes: the metacharacters it would act on
+    (outside quotes, not ^-escaped), and the line as it hands it on (escaping carets gone)."""
+    quoted = False
+    meta: list[str] = []
+    out: list[str] = []
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == '"':
+            quoted = not quoted
+        elif not quoted and c == "^":
+            i += 1
+            out.append(line[i : i + 1])
+            i += 1
+            continue
+        elif not quoted and c in "&|<>()":
+            meta.append(c)
+        out.append(c)
+        i += 1
+    return "".join(meta), "".join(out)
+
+
+def test_windows_no_argument_escapes_the_quoting_wherever_the_shim_is():
+    # BatBadBut: a shim like C:\Program Files\nodejs\npx.cmd or %APPDATA%\npm\agent.cmd hands %* to
+    # cmd.exe a second time, so the arguments must stay inert when read again, not only once.
+    from deft_subspace.kernel.process import _cmd_line
+
+    attacks = ['a"&calc&"b', '"&calc', 'x\\"&calc&\\"', '"^&calc', '""&calc&""', 'a" | calc | "b', ")&calc&(", '^"&calc']
+    scripts = [r"C:\Program Files\nodejs\npx.cmd", r"C:\Users\u\AppData\Roaming\npm\agent.cmd", r"C:\p\node_modules\.bin\agent.cmd"]
+    for script in scripts:
+        for attack in attacks:
+            line = _cmd_line(script, ["-y", attack])
+            first, handed_on = _cmd_read(line)
+            second, _ = _cmd_read(handed_on)
+            assert first + second == "", f"{attack} through {script}: {line}"
+
+
+def test_windows_refuses_an_argument_with_cr_lf_or_nul_for_a_cmd_file():
+    from deft_subspace.kernel.process import _windows_launch
+
+    for bad in ["a\nb", "a\rb", "a\0b"]:
+        with pytest.raises(SpawnError) as caught:
+            _windows_launch("npx", ["-y", bad], WIN_ENV, _files(r"C:\nodejs\npx.cmd"))
+        assert caught.value.code == "EINVAL"
+        assert caught.value.command == "npx"
+    # Not for a program that runs as given: it gets its arguments without cmd.exe.
+    assert _windows_launch("node", ["a\nb"], WIN_ENV, _files(r"C:\nodejs\node.exe")) is None
+
+
+def test_windows_runs_cmd_exe_without_autorun_and_with_the_line_verbatim():
+    from deft_subspace.kernel.process import _cmd_exe
+
+    env = {"ComSpec": r"C:\Windows\system32\cmd.exe"}
+    assert _cmd_exe('"C:\\x\\a.cmd" -y', env) == (
+        r"C:\Windows\system32\cmd.exe",
+        r'"C:\Windows\system32\cmd.exe" /d /e:ON /v:OFF /s /c ""C:\x\a.cmd" -y"',
+    )
+    assert _cmd_exe("x", {"SystemRoot": r"D:\Win"})[0] == r"D:\Win\System32\cmd.exe"
+
+
+async def test_windows_hands_the_cmd_exe_command_line_to_the_loop_as_a_string(monkeypatch: pytest.MonkeyPatch):
+    # The command line must reach CreateProcess as built: a str, with shell=False, so
+    # nothing quotes it again or wraps it in `COMSPEC /c`.
+    from deft_subspace.kernel import process
+
+    seen: list[tuple[Any, ...]] = []
+
+    async def make_transport(protocol, args, shell, stdin, stdout, stderr, bufsize, **kwargs):
+        seen.append((args, shell, stdin, stdout, stderr, bufsize, kwargs))
+        raise OSError(5, "stop here")
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(process, "_WINDOWS", True)
+    monkeypatch.setattr(process, "_windows_launch", lambda *a: '"C:\\n\\npx.cmd" -y')
+    monkeypatch.setattr(loop, "_make_subprocess_transport", make_transport, raising=False)
+    monkeypatch.setitem(os.environ, "COMSPEC", r"C:\cmd.exe")
+    monkeypatch.setattr(process.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    with pytest.raises(SpawnError):
+        await process.spawn_process("npx", args=["-y"])
+    [(args, shell, stdin, stdout, stderr, bufsize, kwargs)] = seen
+    assert args == r'"C:\cmd.exe" /d /e:ON /v:OFF /s /c ""C:\n\npx.cmd" -y"'
+    assert shell is False
+    assert (stdin, stdout, stderr, bufsize) == (asyncio.subprocess.PIPE,) * 3 + (0,)
+    assert kwargs["executable"] == r"C:\cmd.exe"
+    assert kwargs["creationflags"] == 0x200
+
+
+def test_windows_taskkill_ends_the_whole_tree_politely_or_forced():
+    from deft_subspace.kernel.process import _taskkill_command
+
+    assert _taskkill_command(1234, False, {"SystemRoot": r"C:\WINDOWS"}) == [r"C:\WINDOWS\System32\taskkill.exe", "/pid", "1234", "/T"]
+    assert _taskkill_command(1234, True, {}) == [r"C:\Windows\System32\taskkill.exe", "/pid", "1234", "/T", "/F"]
+
+
+async def test_windows_stop_runs_taskkill_without_then_with_f_and_falls_back_to_kill(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    # Stands in for taskkill: records its arguments and fails, as when the tree cannot be ended.
+    from deft_subspace.kernel import process
+
+    log = tmp_path / "taskkill.log"
+    record = f"import sys; open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n'); sys.exit(1)"
+    child = await spawn_process(PY, args=["-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(process, "_WINDOWS", True)
+        monkeypatch.setattr(process, "_taskkill_command", lambda pid, force, env: [PY, "-c", record, str(pid), *(["/F"] if force else [])])
+        await asyncio.wait_for(child.stop(100), 10)
+        assert child.returncode is not None  # killed by the fallback
+        assert log.read_text().splitlines() == [str(child.pid), f"{child.pid} /F"]
+    finally:
+        monkeypatch.undo()
+        await child.stop(0)
+        await child.ended()
 
 
 def test_the_not_found_hint_names_cmd_shims_on_windows():
@@ -300,9 +419,14 @@ def test_the_not_found_hint_names_cmd_shims_on_windows():
     assert ".cmd" not in _not_found_hint("npx", None, False)
 
 
-async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin():
-    # Reads nothing for a while, then all of stdin, and reports how much it got.
-    script = "import sys, time; time.sleep(0.5); print(len(sys.stdin.buffer.read()), flush=True); time.sleep(60)"
+async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin(tmp_path):
+    # Reads nothing until told to, then all of stdin, and reports how much it got.
+    go = tmp_path / "go"
+    script = (
+        f"import os, sys, time; t = time.monotonic() + 30\n"
+        f"while not os.path.exists({str(go)!r}) and time.monotonic() < t: time.sleep(0.02)\n"
+        "print(len(sys.stdin.buffer.read()), flush=True); time.sleep(60)"
+    )
     child = await spawn_process(PY, args=["-c", script], kill_grace_ms=300)
     try:
         peer = RpcPeer(ndjson(child.channel), name="stuck")
@@ -316,6 +440,7 @@ async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin()
         await asyncio.wait_for(peer.close(), 5)
         assert time.monotonic() - started < 2
         await asyncio.wait_for(asyncio.gather(*writes, return_exceptions=True), 2)
+        go.touch()
         # What was queued was dropped, not written later: the child got end of input early.
         stdout = child._proc.stdout
         assert stdout is not None
@@ -323,3 +448,4 @@ async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin()
         assert got < 1_000_000, got
     finally:
         await child.stop()
+        await asyncio.wait_for(child.ended(), 3)  # its transport is closed before the loop is

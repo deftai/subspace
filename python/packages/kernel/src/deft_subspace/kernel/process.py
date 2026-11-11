@@ -2,7 +2,11 @@
 
 - On POSIX the child gets its own process group (a new session), so stopping
   it also stops whatever it started (`npx foo` runs `foo` as a grandchild).
-  On Windows it gets its own process group, and stop() terminates the child.
+  On Windows, which has no process groups to signal, stop() ends the child and
+  every process it started with `taskkill /T` (run directly, no shell): without
+  /F first, then with /F after the grace period; if taskkill cannot run, the
+  child alone is killed. This matters for `.cmd` launches, where the program is
+  a child of cmd.exe and would otherwise keep stdout open.
 - stop() closes stdin, sends SIGTERM, then SIGKILL after a grace period.
 - The last stderr output is kept for error messages.
 - `ended` settles only after the process has exited *and* its stdout has
@@ -12,7 +16,11 @@
   without affecting the process or later calls.
 - A missing program becomes a SpawnError with a hint.
 - On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
-  file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
+  file (like `npx.cmd`) is run through cmd.exe with its arguments escaped as
+  Rust's std escapes them ("BatBadBut", CVE-2024-24576): quoted, quotes doubled,
+  `%` defused, so that neither cmd.exe nor a shim that hands `%*` to cmd.exe
+  again can be made to run anything else. An argument containing CR, LF or NUL
+  cannot be passed safely and is refused with a SpawnError (code `EINVAL`).
 
 Process groups outlive this process unless it stops them, so the live ones are
 killed when it exits: at normal interpreter exit (atexit, which also covers
@@ -138,8 +146,6 @@ def _remove_signal_hooks() -> None:
 # -- Windows command resolution ------------------------------------------------------------
 
 _DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-_CMD_META = re.compile(r'([()\][%!^"`<>&|;, *?])')
-_NPM_SHIM = re.compile(r"node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$", re.IGNORECASE)
 
 
 def _env_get(env: Mapping[str, str], name: str) -> str | None:
@@ -168,28 +174,79 @@ def _windows_find(command: str, env: Mapping[str, str], is_file: Callable[[str],
     return None
 
 
-def _escape_cmd_argument(arg: str, double: bool) -> str:
-    # As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
-    # cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
-    arg = re.sub(r'(\\*)"', r'\1\1\\"', arg)
-    arg = re.sub(r"(\\*)$", r"\1\1", arg)
-    arg = _CMD_META.sub(r"^\1", f'"{arg}"')
-    return _CMD_META.sub(r"^\1", arg) if double else arg
+#: What an argument to a batch file cannot carry: cmd.exe ends the command at CR or LF, and NUL ends the string.
+_BAT_UNSAFE = re.compile(r"[\r\n\0]")
+#: What may stay unquoted, as in Rust's std; any other ASCII character, or a control character, is quoted.
+_BAT_PLAIN = re.compile(r"[A-Za-z0-9#$*+\-./:?@\\_\u00a0-\U0010ffff]*")
 
 
-def _cmd_line(script: str, args: Sequence[str]) -> str:
-    """A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally."""
-    double = _NPM_SHIM.search(script) is not None  # npm shims pass their arguments through cmd.exe again
-    return " ".join([_CMD_META.sub(r"^\1", ntpath.normpath(script)), *(_escape_cmd_argument(a, double) for a in args)])
+def _bat_argument(command: str, arg: str) -> str:
+    if _BAT_UNSAFE.search(arg):
+        raise SpawnError(command, "EINVAL", "An argument to a .cmd or .bat file cannot contain a line break or NUL.")
+    quote = arg == "" or arg.endswith("\\") or _BAT_PLAIN.fullmatch(arg) is None
+    out = ['"'] if quote else []
+    backslashes = 0
+    for c in arg:
+        if c == "\\":
+            backslashes += 1
+        else:
+            # A quote is doubled, so cmd.exe never sees the quoting end inside the argument; the
+            # program reads `""` within quotes as one `"`. Backslashes before it are doubled too.
+            if c == '"':
+                out.append("\\" * backslashes + '"')
+            # `%` becomes `%%cd:~,%`: cmd.exe expands `%cd:~,%` to nothing instead of a %VAR%.
+            elif c == "%":
+                out.append("%%cd:~,")
+            backslashes = 0
+        out.append(c)
+    if quote:
+        out.append("\\" * backslashes + '"')
+    return "".join(out)
+
+
+def _cmd_line(script: str, args: Sequence[str], command: str | None = None) -> str:
+    """The cmd.exe command line that runs the `.cmd`/`.bat` file `script` with `args`.
+
+    Escaped as Rust's std escapes them since CVE-2024-24576 ("BatBadBut"): an argument with
+    anything but plain characters is quoted, its quotes doubled and each `%` defused, so
+    cmd.exe finds nothing to interpret in it however often it reads it. That covers shims
+    that hand `%*` to cmd.exe again (npx.cmd, npm's node_modules\\.bin shims), wherever they
+    are. An argument that cannot be passed safely (CR, LF or NUL) is a SpawnError.
+    """
+    command = script if command is None else command
+    file = ntpath.normpath(script)
+    if '"' in file or file.endswith("\\"):
+        raise SpawnError(command, "EINVAL", f"{file!r} is not a valid file name.")
+    return " ".join([f'"{file}"', *(_bat_argument(command, a) for a in args)])
 
 
 def _windows_launch(command: str, args: Sequence[str], env: Mapping[str, str], is_file: Callable[[str], bool]) -> str | None:
     """Windows can only start a `.cmd`/`.bat` file through cmd.exe: the command line to run, or None
-    when `command` is not one (and runs as given)."""
+    when `command` is not one (and runs as given). Raises SpawnError for an argument that cannot be
+    passed safely."""
     found = _windows_find(command, env, is_file)
     if found is None or ntpath.splitext(found)[1].lower() not in (".cmd", ".bat"):
         return None
-    return _cmd_line(found, args)
+    return _cmd_line(found, args, command)
+
+
+def _cmd_exe(line: str, env: Mapping[str, str]) -> tuple[str, str]:
+    """cmd.exe, and the whole command line to start it with, verbatim, to run `line`.
+
+    No AutoRun commands (/d; they could write to stdout), command extensions on (the `%`
+    escape needs them), no delayed `!` expansion, and only the outer quotes stripped (/s),
+    as the TypeScript port runs it. (`subprocess_shell` would run `COMSPEC /c "line"`.)
+    """
+    system_root = _env_get(env, "SYSTEMROOT") or "C:\\Windows"
+    comspec = _env_get(env, "COMSPEC") or ntpath.join(system_root, "System32", "cmd.exe")
+    return comspec, f'"{comspec}" /d /e:ON /v:OFF /s /c "{line}"'
+
+
+def _taskkill_command(pid: int, force: bool, env: Mapping[str, str]) -> list[str]:
+    """The taskkill.exe command that ends process `pid` and every process it started (/T):
+    asking them to close, or forcing it (/F). Run directly, not through a shell."""
+    system_root = _env_get(env, "SYSTEMROOT") or "C:\\Windows"
+    return [ntpath.join(system_root, "System32", "taskkill.exe"), "/pid", str(pid), "/T", *(["/F"] if force else [])]
 
 
 def _not_found_hint(command: str, cwd: object, windows: bool) -> str:
@@ -389,7 +446,57 @@ class SupervisedProcess:
             return False  # already gone
 
     def _kill_group(self) -> None:
+        if self._tree_kill:
+            self._kill_tree_now()
+        else:
+            self._force_kill()
+
+    def _force_kill(self) -> None:
         self._signal_group(getattr(signals, "SIGKILL", signals.SIGTERM))
+
+    # Windows has no process groups to signal, and killing cmd.exe would leave the program a
+    # .cmd file started (and its hold on stdout) running: the tree is ended with taskkill.
+
+    @property
+    def _tree_kill(self) -> bool:
+        return _WINDOWS and self.pid is not None
+
+    def _kill_tree_now(self) -> None:
+        """taskkill /T /F, waiting for it (at exit); the child alone if taskkill cannot run or fails."""
+        assert self.pid is not None
+        try:
+            done = subprocess.run(
+                _taskkill_command(self.pid, True, os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5,
+                check=False,
+            )
+            if done.returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+        self._force_kill()
+
+    async def _kill_tree(self, force: bool) -> None:
+        """taskkill /T, with /F if `force`; when that cannot run or fails, a forced kill ends the child alone."""
+        assert self.pid is not None
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                *_taskkill_command(self.pid, force, os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if await killer.wait() == 0:
+                return
+        except OSError:
+            pass
+        if force:
+            self._force_kill()
 
     def _group_alive(self) -> bool:
         if _WINDOWS or self.pid is None:
@@ -412,13 +519,19 @@ class SupervisedProcess:
     async def _stop(self, grace_ms: float | None) -> ExitInfo:
         self._close_stdin()
         if self._group_alive():
-            self._signal_group(signals.SIGTERM)
+            if self._tree_kill:
+                await self._kill_tree(False)
+            else:
+                self._signal_group(signals.SIGTERM)
             grace = (self._grace_ms if grace_ms is None else grace_ms) / 1000
             deadline = time.monotonic() + grace
             while self._group_alive() and time.monotonic() < deadline:
                 await asyncio.sleep(0.025)
             if self._group_alive():
-                self._kill_group()
+                if self._tree_kill:
+                    await self._kill_tree(True)
+                else:
+                    self._force_kill()
         _untrack(self._kill_now)
         return await asyncio.shield(self._exited)
 
@@ -437,7 +550,14 @@ async def _start(
 
     line = _windows_launch(command, args, env, os.path.isfile) if _WINDOWS else None
     if line is not None:
-        transport, _ = await loop.subprocess_shell(factory, line, env=env, **kwds)  # type: ignore[arg-type]
+        # A str for args is passed to CreateProcess as it is, which neither subprocess_exec (it
+        # quotes each argument) nor subprocess_shell (no /d) allows: make the transport as
+        # subprocess_exec does, from what it would have built.
+        executable, command_line = _cmd_exe(line, env)
+        stdio = [kwds.pop(name) for name in ("stdin", "stdout", "stderr")]
+        transport = await loop._make_subprocess_transport(  # type: ignore[attr-defined]
+            factory(), command_line, False, *stdio, 0, executable=executable, env=env, **kwds
+        )
     else:
         transport, _ = await loop.subprocess_exec(factory, command, *args, env=env, **kwds)  # type: ignore[arg-type]
     assert protocol is not None

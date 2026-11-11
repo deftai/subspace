@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
-import { cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
+import { cmdExeArgs, cmdLine, notFoundHint, spawnProcess, SpawnError, taskkillCommand, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
 
 const node = process.execPath;
 
@@ -203,15 +206,20 @@ test("an app's own signal handler is left alone", { skip: !posix }, async () => 
 });
 
 test('a group is forgotten once its last member is gone', { skip: !posix }, async () => {
-  // The leader exits at once; a grandchild keeps the group alive a little longer. The
-  // signal hook is there only while some group is remembered, so it shows when it is dropped.
+  // The leader exits at once; a grandchild keeps the group alive until the file \`go\` exists.
+  // The signal hook is there only while some group is remembered, so it shows when it is dropped.
+  const go = path.join(mkdtempSync(path.join(tmpdir(), 'subspace-')), 'go');
   const { app, line, lines } = await runApp(`
+    import { writeFileSync } from 'node:fs';
     import { spawnProcess } from '@deft-subspace/kernel/node';
+    process.env.SUBSPACE_TEST_GO = ${JSON.stringify(go)};
     const child = await spawnProcess(process.execPath, { args: ['-e', \`
-      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { stdio: 'ignore' }).unref();
+      const wait = 'const fs = require("node:fs"); const t = Date.now() + 30000; const i = setInterval(() => { if (fs.existsSync(process.env.SUBSPACE_TEST_GO) || Date.now() > t) clearInterval(i); }, 20)';
+      require('node:child_process').spawn(process.execPath, ['-e', wait], { stdio: 'ignore' }).unref();
     \`] });
     await child.ended;
     console.log(process.listenerCount('SIGTERM'));
+    writeFileSync(process.env.SUBSPACE_TEST_GO, '');
     const deadline = Date.now() + 5000;
     while (process.listenerCount('SIGTERM') > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     console.log(process.listenerCount('SIGTERM'));
@@ -233,7 +241,8 @@ const files =
 
 test('Windows: a .cmd shim found through PATHEXT runs via cmd.exe', () => {
   const launch = windowsLaunch('npx', ['-y', 'some agent'], winEnv, files('C:\\nodejs\\npx.cmd'));
-  assert.equal(launch, 'C:\\nodejs\\npx.CMD ^"-y^" ^"some^ agent^"');
+  assert.equal(launch, '"C:\\nodejs\\npx.CMD" -y "some agent"');
+  assert.deepEqual(cmdExeArgs(launch!), ['/d', '/e:ON', '/v:OFF', '/s', '/c', `"${launch}"`]);
 });
 
 test('Windows: an .exe, or a command not found, runs as given', () => {
@@ -250,13 +259,64 @@ test('Windows: PATH order, then PATHEXT order', () => {
   assert.equal(windowsFind('tool', { PATH: 'C:\\bin' }, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD'); // default PATHEXT
 });
 
-test('Windows: cmd.exe metacharacters in arguments are escaped', () => {
+test('Windows: cmd.exe metacharacters in arguments are quoted', () => {
   assert.equal(
-    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\']),
-    'C:\\Program^ Files\\nodejs\\npx.cmd ^"a^&b^|c\\^"d^" ^"100^%^" ^"end\\\\^"',
+    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\', '', 'plain-1.0/x:y@z', 'a\\"b']),
+    '"C:\\Program Files\\nodejs\\npx.cmd" "a&b|c""d" "100%%cd:~,%" "end\\\\" "" plain-1.0/x:y@z "a\\\\""b"',
   );
-  // npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
-  assert.equal(cmdLine('C:\\p\\node_modules\\.bin\\agent.cmd', ['a&b']), 'C:\\p\\node_modules\\.bin\\agent.cmd ^^^"a^^^&b^^^"');
+});
+
+/**
+ * How cmd.exe reads a line, as far as quoting goes: the metacharacters it would act on
+ * (outside quotes, not ^-escaped), and the line as it hands it on (escaping carets gone).
+ */
+function cmdRead(line: string): { meta: string; next: string } {
+  let quoted = false;
+  let meta = '';
+  let next = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && c === '^') {
+      next += line[++i] ?? '';
+      continue;
+    } else if (!quoted && '&|<>()'.includes(c)) meta += c;
+    next += c;
+  }
+  return { meta, next };
+}
+
+test('Windows: no argument escapes the quoting, wherever the shim is (BatBadBut)', () => {
+  // A shim like C:\Program Files\nodejs\npx.cmd or %APPDATA%\npm\agent.cmd hands %* to
+  // cmd.exe a second time, so the arguments must stay inert when read again, not only once.
+  const attacks = ['a"&calc&"b', '"&calc', 'x\\"&calc&\\"', '"^&calc', '""&calc&""', 'a" | calc | "b', ')&calc&(', '^"&calc'];
+  for (const script of ['C:\\Program Files\\nodejs\\npx.cmd', 'C:\\Users\\u\\AppData\\Roaming\\npm\\agent.cmd', 'C:\\p\\node_modules\\.bin\\agent.cmd']) {
+    for (const attack of attacks) {
+      const line = cmdLine(script, ['-y', attack]);
+      const first = cmdRead(line);
+      const second = cmdRead(first.next);
+      assert.equal(first.meta + second.meta, '', `${attack} through ${script}: ${line}`);
+    }
+  }
+});
+
+test('Windows: an argument with CR, LF or NUL is refused for a .cmd file', () => {
+  for (const bad of ['a\nb', 'a\rb', 'a\0b']) {
+    assert.throws(
+      () => windowsLaunch('npx', ['-y', bad], winEnv, files('C:\\nodejs\\npx.cmd')),
+      (e) => e instanceof SpawnError && e.code === 'EINVAL' && e.command === 'npx',
+    );
+  }
+  // Not for a program that runs as given: it gets its arguments without cmd.exe.
+  assert.equal(windowsLaunch('node', ['a\nb'], winEnv, files('C:\\nodejs\\node.exe')), undefined);
+});
+
+test('Windows: stop() ends the whole tree with taskkill, politely, then forced', () => {
+  assert.deepEqual(taskkillCommand(1234, false, { SystemRoot: 'C:\\WINDOWS' }), [
+    'C:\\WINDOWS\\System32\\taskkill.exe',
+    ['/pid', '1234', '/T'],
+  ]);
+  assert.deepEqual(taskkillCommand(1234, true, {}), ['C:\\Windows\\System32\\taskkill.exe', ['/pid', '1234', '/T', '/F']]);
 });
 
 test('the not-found hint names .cmd shims on Windows', () => {

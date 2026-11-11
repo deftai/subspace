@@ -90,7 +90,9 @@ class PeerDiagnostic:
 
 @dataclass(frozen=True)
 class CloseInfo:
-    """`local`: close() was called. `remote-ended`: the other side's stream ended. `error`: the stream failed."""
+    """`local`: close() was called. `remote-ended`: the other side's stream ended (also when
+    close() is called while the peer drains after that: the other side ended it first).
+    `error`: the stream failed."""
 
     reason: Literal["local", "remote-ended", "error"]
     error: BaseException | None = None
@@ -155,14 +157,25 @@ class _Pending:
 
 #: Python 3.12+ can start a task eagerly: it runs at once, in its own task, until it first
 #: waits, so a write or a handler that does not wait costs no trip through the event loop.
+#:
+#: Not when the loop has a task factory (`loop.set_task_factory`): an eager task would
+#: bypass it, so then tasks are created as usual. And a handler that raises SystemExit or
+#: KeyboardInterrupt before its first `await` raises it inside the read loop, which ends
+#: with it; asyncio lets it out of the event loop then, as it does from a lazy task.
 _EAGER = sys.version_info >= (3, 12)
 
 
 def _new_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
     loop = asyncio.get_running_loop()
-    if _EAGER:
+    if _EAGER and loop.get_task_factory() is None:
         return asyncio.Task(coroutine, loop=loop, name=name, eager_start=True)  # type: ignore[call-arg]
     return loop.create_task(coroutine, name=name)
+
+
+def _being_cancelled() -> bool:
+    """Whether the running task has been asked to cancel (and has not uncancelled)."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 def _id_key(value: Any) -> Any:
@@ -332,13 +345,19 @@ class RpcPeer:
         await self._write(message if "jsonrpc" in message else {"jsonrpc": "2.0", **message})
 
     async def close(self) -> CloseInfo:
-        """Close the connection. Pending requests fail with `closed`; running handlers are aborted."""
+        """Close the connection. Pending requests fail with `closed`; running handlers are aborted.
+
+        While draining, this ends the drain early and the reason stays `remote-ended`.
+        """
         self._finish(CloseInfo("remote-ended" if self._state == "draining" else "local"))
         task = self._read_task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
             try:
                 await task
+            except asyncio.CancelledError:
+                if _being_cancelled():
+                    raise  # our caller's cancellation, not the reader's
             except BaseException:  # noqa: BLE001
                 pass
         writer = self._writer_task
@@ -350,6 +369,9 @@ class RpcPeer:
                 writer.cancel()
                 try:
                     await writer
+                except asyncio.CancelledError:
+                    if _being_cancelled():
+                        raise  # our caller's cancellation, not the writer's
                 except BaseException:  # noqa: BLE001
                     pass
                 await self._abort_channel()
@@ -469,6 +491,10 @@ class RpcPeer:
                 except EndOfChannel:
                     break
                 self._receive(message)
+                if self._state == "closed":
+                    # A handler closed the peer (on 3.12+ it runs eagerly, inside this loop):
+                    # nothing more is read, even what is already buffered.
+                    break
             self._drain()
         except asyncio.CancelledError:
             self._finish(self._close_info or CloseInfo("local"))
@@ -489,6 +515,8 @@ class RpcPeer:
             self._drain_timer = self._clock.set_timeout(lambda: self._finish(CloseInfo("remote-ended")), limit)
 
     def _receive(self, message: Any) -> None:
+        if self._state == "closed":
+            return  # nothing is dispatched on a closed connection
         self._tap("in", message)
         if not isinstance(message, dict):
             self._diagnose("invalid-message", "Message is not a JSON object", message)
@@ -544,6 +572,8 @@ class RpcPeer:
         if key in self._inbound:
             self._diagnose("duplicate-request-id", f"Request id {request_id!r} reused while in flight")
         controller = AbortController()
+        if self._connection.signal.aborted:  # a listener added now would never be called
+            controller.abort(LocalError("closed", "connection closed"))
         remove_close = self._connection.signal.add_listener(lambda _reason: controller.abort(LocalError("closed", "connection closed")))
         self._inbound[key] = controller
         context = InboundContext(method=method, signal=controller.signal, peer=self, id=request_id, is_request=True)
