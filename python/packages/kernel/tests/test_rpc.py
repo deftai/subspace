@@ -596,11 +596,12 @@ async def test_a_write_to_an_idle_channel_and_a_handler_that_does_not_wait_need_
 
 async def test_a_custom_task_factory_still_makes_the_handler_and_writer_tasks():
     loop = asyncio.get_running_loop()
-    made: list[str] = []
+    tasks: list[asyncio.Task[Any]] = []
 
     def factory(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
-        made.append(kwargs.get("name") or "")
-        return asyncio.Task(coro, loop=loop, **kwargs)
+        task = asyncio.Task(coro, loop=loop, **kwargs)
+        tasks.append(task)
+        return task
 
     end = Raw()
     loop.set_task_factory(factory)  # type: ignore[arg-type]
@@ -611,12 +612,15 @@ async def test_a_custom_task_factory_still_makes_the_handler_and_writer_tasks():
         await end.send({"jsonrpc": "2.0", "id": 1, "method": "echo", "params": 1})
         await tick(5)
         assert {"jsonrpc": "2.0", "id": 1, "result": 1} in end.sent
+        # Before 3.14 asyncio names the task after the factory made it, so read the names now.
+        made = [task.get_name() for task in tasks]
         assert "p:echo" in made and "p:write" in made
         await peer.close()
     finally:
         loop.set_task_factory(None)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="before 3.12 a handler starts after the read loop has dispatched what was buffered")
 async def test_nothing_more_is_dispatched_once_a_handler_closes_the_peer():
     # On 3.12+ a handler starts eagerly, inside the read loop: once one closes the peer, the
     # messages already buffered behind it must not be dispatched on the closed connection.
