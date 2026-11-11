@@ -223,7 +223,7 @@ class SupervisedProcess:
         self._tail_bytes = stderr_tail_bytes
         self._grace_ms = kill_grace_ms
         self._on_stderr = on_stderr
-        self._stderr = ""
+        self._stderr = b""
         loop = asyncio.get_running_loop()
         self._exited: asyncio.Future[ExitInfo] = loop.create_future()
         self._ended: asyncio.Future[ExitInfo] = loop.create_future()
@@ -263,11 +263,10 @@ class SupervisedProcess:
             data = await stderr.read(65536)
             if not data:
                 break
-            text = decoder.decode(data)
-            self._stderr = (self._stderr + text)[-self._tail_bytes :] if self._tail_bytes > 0 else ""
+            self._stderr = (self._stderr + data)[-self._tail_bytes :] if self._tail_bytes > 0 else b""
             if self._on_stderr is not None:
                 try:
-                    self._on_stderr(text)
+                    self._on_stderr(decoder.decode(data))
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -293,8 +292,11 @@ class SupervisedProcess:
         return self._proc.returncode
 
     def stderr_tail(self) -> str:
-        """The last stderr output, trimmed."""
-        return self._stderr.strip()
+        """The last stderr output (at most `stderr_tail_bytes` bytes), trimmed."""
+        tail = self._stderr
+        if len(tail) >= self._tail_bytes:
+            tail = tail.lstrip(bytes(range(0x80, 0xC0)))  # the tail of a character cut in half
+        return tail.decode("utf-8", errors="replace").strip()
 
     def _signal_group(self, sig: int) -> bool:
         try:

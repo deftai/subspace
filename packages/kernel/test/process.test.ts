@@ -94,6 +94,18 @@ test('keeps the last stderr output for error messages', async () => {
   assert.ok(child.stderrTail().length <= 64);
 });
 
+test('the stderr tail counts bytes', async () => {
+  const child = await spawnProcess(node, {
+    args: ['-e', `process.stderr.write('\u00e9'.repeat(100) + '\\nend'); process.exit(0)`],
+    stderrTailBytes: 63,
+  });
+  await child.ended;
+  const tail = child.stderrTail();
+  assert.match(tail, /end$/);
+  assert.ok(Buffer.byteLength(tail) <= 63, `${Buffer.byteLength(tail)} bytes`);
+  assert.ok(!tail.includes('\ufffd'), 'a character cut in half is dropped, not shown as garbage');
+});
+
 const posix = process.platform !== 'win32';
 const kernelDir = new URL('..', import.meta.url);
 

@@ -77,6 +77,20 @@ async def test_keeps_the_last_stderr_output():
     assert len(child.stderr_tail()) <= 64
 
 
+async def test_the_stderr_tail_counts_bytes():
+    child = await spawn_process(
+        PY,
+        args=["-c", "import sys; sys.stderr.buffer.write(('é' * 100 + '\\nend').encode()); raise SystemExit(0)"],
+        stderr_tail_bytes=63,
+    )
+    await asyncio.wait_for(child.ended(), 3)
+    await asyncio.sleep(0.05)
+    tail = child.stderr_tail()
+    assert tail.endswith("end")
+    assert len(tail.encode()) <= 63
+    assert "�" not in tail  # a character cut in half is dropped, not shown as garbage
+
+
 IGNORES_SIGTERM = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
 
 

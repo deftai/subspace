@@ -22,6 +22,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import type { Channel } from './channel.ts';
 
 export interface SpawnOptions {
@@ -65,7 +66,7 @@ export interface SupervisedProcess {
   readonly exited: Promise<ExitInfo>;
   /** Settles when the process has exited and stdout has ended. */
   readonly ended: Promise<ExitInfo>;
-  /** The last stderr output, trimmed. */
+  /** The last stderr output (at most `stderrTailBytes` bytes), trimmed. */
   stderrTail(): string;
   /**
    * Stop the process and its process group: end stdin, SIGTERM, then SIGKILL
@@ -151,13 +152,21 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     });
   });
 
-  const tailBytes = options.stderrTailBytes ?? 16 * 1024;
-  let stderr = '';
-  child.stderr!.setEncoding('utf8');
-  child.stderr!.on('data', (text: string) => {
-    stderr = (stderr + text).slice(-tailBytes);
-    options.onStderr?.(text);
+  const tailBytes = Math.max(0, options.stderrTailBytes ?? 16 * 1024);
+  let stderr = Buffer.alloc(0);
+  const decoder = new StringDecoder('utf8');
+  child.stderr!.on('data', (chunk: Buffer) => {
+    stderr = tailBytes > 0 ? Buffer.concat([stderr, chunk]).subarray(-tailBytes) : stderr;
+    if (options.onStderr) {
+      const text = decoder.write(chunk);
+      if (text) options.onStderr(text);
+    }
   });
+  const stderrTail = (): string => {
+    let start = 0;
+    if (stderr.length >= tailBytes) while (start < stderr.length && (stderr[start]! & 0xc0) === 0x80) start++; // a character cut in half
+    return stderr.subarray(start).toString('utf8').trim();
+  };
   // EPIPE after the child exits surfaces as a failed write, not a crash.
   child.stdin!.on('error', () => {});
 
@@ -239,7 +248,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     channel,
     exited,
     ended,
-    stderrTail: () => stderr.trim(),
+    stderrTail,
     stop,
   };
 }
