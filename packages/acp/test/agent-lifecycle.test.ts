@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { channelPair } from '@deft-subspace/kernel';
+import { channelPair, RpcError } from '@deft-subspace/kernel';
 import { AcpClient, serveAgent, type McpConnector } from '@deft-subspace/acp';
 
 function recordingAgent(events: string[]) {
@@ -62,4 +62,36 @@ test('a closed connection stops turns and closes MCP connections, without closeS
   await client.close();
   for (let i = 0; i < 50 && events.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(events.sort(), ['mcp closed', 'turn stopped']);
+});
+
+test('session/new returning an id that is already open is refused, and the open session is kept', async () => {
+  const events: string[] = [];
+  const connector: McpConnector = {
+    transports: ['stdio'],
+    async connect() {
+      events.push('mcp connected');
+      return { request: async () => ({ result: { tools: [] } }), close: async () => void events.push('mcp closed') };
+    },
+  };
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, {
+    name: 'fixed',
+    protocols: [1],
+    mcpConnector: connector,
+    newSession: () => ({ sessionId: 'fixed' }),
+    async prompt(turn) {
+      await turn.mcp('files').listTools();
+      return 'end_turn';
+    },
+  });
+  const client = await AcpClient.connect(clientEnd);
+  const session = await client.newSession({ cwd: '/w', mcpServers: [server] });
+  await session.prompt('a').done;
+  await assert.rejects(client.newSession({ cwd: '/w', mcpServers: [server] }), (error: unknown) => RpcError.is(error) && error.code === -32602);
+  // The first session is untouched: same MCP connection, still usable.
+  await session.prompt('b').done;
+  assert.deepEqual(events, ['mcp connected']);
+  await session.close();
+  assert.deepEqual(events, ['mcp connected', 'mcp closed']);
+  await client.close();
 });

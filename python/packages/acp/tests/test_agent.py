@@ -1262,6 +1262,29 @@ async def test_a_closed_connection_stops_turns_and_closes_mcp_without_close_sess
     assert sorted(events) == ["mcp closed", "turn stopped"]
 
 
+async def test_session_new_returning_an_id_that_is_already_open_is_refused_and_the_open_session_is_kept() -> None:
+    events: list[str] = []
+    connector = RecordingConnector(events)
+
+    async def prompt(turn: AgentTurn) -> str:
+        await turn.mcp("files").list_tools()
+        return "end_turn"
+
+    client = serve(prompt=prompt, protocols=[1], mcp_connector=connector, new_session=lambda request: "fixed")
+    await client.init(1)
+    sid = await client.new_session(mcpServers=[SERVER])
+    assert await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}) == {"stopReason": "end_turn"}
+    with pytest.raises(RpcError) as info:
+        await client.new_session(mcpServers=[SERVER])
+    assert info.value.code == -32602
+    # The first session is untouched: same MCP connection, still usable.
+    assert await client.peer.request("session/prompt", {"sessionId": sid, "prompt": []}) == {"stopReason": "end_turn"}
+    assert connector.connects == 1 and events == []
+    await client.peer.request("session/close", {"sessionId": sid})
+    assert events == ["mcp closed"]
+    await client.close()
+
+
 async def test_mcp_connection_is_kept_for_the_session_and_unknown_servers_raise() -> None:
     events: list[str] = []
     connector = RecordingConnector(events)

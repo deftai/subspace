@@ -958,6 +958,9 @@ def _sessions_layer(options: _Options, replay_writer: Callable[[EndpointContext,
             session_id = str(created["sessionId"])
         else:
             session_id = _random_uuid()
+        # Never replace an open session (its turns, background work and MCP servers would be left running).
+        if session_id in sessions.sessions:
+            raise RpcError.invalid_params(f"Session {session_id} is already open", {"sessionId": session_id})
         sessions.open(session_id, servers, params["cwd"])
         return {"sessionId": session_id}
 
@@ -1294,7 +1297,8 @@ def serve_agent(
       (or the agent connects itself). v1 always takes stdio. Default: the connector's
       transports, else none (v1: stdio).
     - `mcp_connector`: connects to the session's `stdio`, `http` and `sse` MCP servers for `turn.mcp(name)`.
-    - `new_session(request)`: may return a session id (a str, or `{"sessionId": ...}`).
+    - `new_session(request)`: may return a session id (a str, or `{"sessionId": ...}`). An id that
+      is already open is refused (-32602), the open session kept.
     - `load_session(request)`: reopen an existing session: v1 `session/load` (with `replay`)
       and `session/resume` (without), v2 `session/resume` (with `replay` when the client asks
       for it). Replay history through `request.replay` before returning; the client is

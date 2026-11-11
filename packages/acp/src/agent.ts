@@ -243,6 +243,7 @@ export interface AgentOptions {
    * `turn.mcp(name)`: `mcpConnector()` from `@deft-subspace/acp/node`.
    */
   mcpConnector?: McpConnector;
+  /** Set up a new session; may choose its id. An id that is already open is refused (-32602), the open session kept. */
   newSession?(request: {
     cwd: string;
     /** As sent. */
@@ -451,6 +452,8 @@ function sessionsLayer(options: AgentOptions, replayWriter: (ctx: EndpointContex
       const { servers } = parseMcpServers(mcpServers);
       const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
       const id = (created && created.sessionId) || randomUUID();
+      // Never replace an open session (its turns, background work and MCP servers would be left running).
+      if (sessions.sessions.has(id)) throw RpcError.invalidParams(`Session ${id} is already open`, { sessionId: id });
       sessions.open(id, servers, params.cwd);
       return { sessionId: id };
     },
