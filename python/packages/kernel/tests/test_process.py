@@ -116,3 +116,22 @@ async def test_ended_settles_with_no_reader_and_the_output_is_still_there():
     assert (await asyncio.wait_for(child.ended(), 3)).code == 0
     assert await child.channel.receive() == b"unread\n"
 
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups")
+async def test_a_group_is_forgotten_once_its_last_member_is_gone():
+    from deft_subspace.kernel import process
+
+    # The leader exits at once; a grandchild keeps the group alive a little longer.
+    script = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(0.5)'],"
+        " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    )
+    child = await spawn_process(PY, args=["-c", script])
+    await asyncio.wait_for(child.ended(), 3)
+    assert child._kill_now in process._live  # the grandchild is still running
+    deadline = time.monotonic() + 5
+    while child._kill_now in process._live and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert child._kill_now not in process._live
+

@@ -135,13 +135,19 @@ class _ProcessChannel:
         self._process._close_stdin()
 
 
+#: How often to check whether an exited leader's group is gone: from this, doubling, up to the max.
+_POLL_FIRST = 0.05
+_POLL_MAX = 1.0
+
+
 class SupervisedProcess:
     """A running child. One supervisor task owns its lifecycle:
 
     running -> exited (the process has exited) -> ended (and stdout has closed),
-    with "stopping" (stop() was called) on top. Callers only ever get shielded
-    views of the private futures and tasks, so cancelling a wait affects
-    nothing else.
+    with "stopping" (stop() was called) on top. The supervisor also drops the
+    group from the exit-time kill list once its last member is gone, so a
+    reused group id is never killed. Callers only ever get shielded views of
+    the private futures and tasks, so cancelling a wait affects nothing else.
     """
 
     def __init__(
@@ -175,10 +181,22 @@ class SupervisedProcess:
     async def _supervise(self, stdout_closed: Awaitable[None]) -> None:
         info = _exit_info(await self._proc.wait())
         self._exited.set_result(info)
-        await stdout_closed
-        self._ended.set_result(info)
-        if not self._group_alive():
-            _untrack(self._kill_now)
+        stdout = asyncio.ensure_future(stdout_closed)
+        delay = _POLL_FIRST
+        tracked = True
+        while True:
+            if stdout.done() and not self._ended.done():
+                self._ended.set_result(info)
+            if tracked and not self._group_alive():
+                _untrack(self._kill_now)
+                tracked = False
+            if self._ended.done() and not tracked:
+                return
+            if stdout.done():
+                await asyncio.sleep(delay)
+            else:
+                await asyncio.wait([stdout], timeout=delay if tracked else None)
+            delay = min(delay * 2, _POLL_MAX)
 
     async def _read_stderr(self) -> None:
         stderr = self._proc.stderr
