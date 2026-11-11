@@ -670,8 +670,9 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         if (protocol === 1) return { stopReason: await run() };
 
         // v2: answer at once with the user message id, then run; the end is an idle state update.
+        // setImmediate, not setTimeout(0): Node waits at least 1 ms for a timer, on every turn.
         const userMessageId = randomUUID();
-        setTimeout(() => void run().catch(() => {}), 0);
+        setImmediate(() => void run().catch(() => {}));
         return { messageId: userMessageId };
       },
     },
