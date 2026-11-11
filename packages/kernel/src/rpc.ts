@@ -91,7 +91,11 @@ export type PeerState = 'idle' | 'open' | 'draining' | 'closed';
 const DEFAULT_DRAIN_MS = 1000;
 
 export interface CloseInfo {
-  /** `local`: close() was called. `remote-ended`: the other side's stream ended. `error`: the stream failed. */
+  /**
+   * `local`: close() was called. `remote-ended`: the other side's stream ended (also when
+   * close() is called while the peer drains after that: the other side ended it first).
+   * `error`: the stream failed.
+   */
   reason: 'local' | 'remote-ended' | 'error';
   error?: unknown;
 }
@@ -236,7 +240,10 @@ export class RpcPeer {
     return this.write('jsonrpc' in message ? message : this.message(message));
   }
 
-  /** Close the connection. Pending requests fail with `closed`; running handlers are aborted. */
+  /**
+   * Close the connection. Pending requests fail with `closed`; running handlers are aborted.
+   * While draining, this ends the drain early and the reason stays `remote-ended`.
+   */
   async close(): Promise<CloseInfo> {
     this.finish(this.current === 'draining' ? { reason: 'remote-ended' } : { reason: 'local' });
     await this.reader?.cancel().catch(() => {});

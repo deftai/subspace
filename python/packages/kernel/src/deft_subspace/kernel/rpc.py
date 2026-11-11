@@ -90,7 +90,9 @@ class PeerDiagnostic:
 
 @dataclass(frozen=True)
 class CloseInfo:
-    """`local`: close() was called. `remote-ended`: the other side's stream ended. `error`: the stream failed."""
+    """`local`: close() was called. `remote-ended`: the other side's stream ended (also when
+    close() is called while the peer drains after that: the other side ended it first).
+    `error`: the stream failed."""
 
     reason: Literal["local", "remote-ended", "error"]
     error: BaseException | None = None
@@ -343,7 +345,10 @@ class RpcPeer:
         await self._write(message if "jsonrpc" in message else {"jsonrpc": "2.0", **message})
 
     async def close(self) -> CloseInfo:
-        """Close the connection. Pending requests fail with `closed`; running handlers are aborted."""
+        """Close the connection. Pending requests fail with `closed`; running handlers are aborted.
+
+        While draining, this ends the drain early and the reason stays `remote-ended`.
+        """
         self._finish(CloseInfo("remote-ended" if self._state == "draining" else "local"))
         task = self._read_task
         if task is not None and not task.done() and task is not asyncio.current_task():
