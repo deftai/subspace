@@ -4,10 +4,12 @@
  * session/cancel and session/close do to it. Our client against serveAgent.
  */
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import * as officialV2 from '@agentclientprotocol/sdk/experimental/v2';
 import { RpcError } from '@deft-subspace/kernel';
 import { AcpClient, CapabilityError, serveAgent, terminalText, type TurnEvent } from '@deft-subspace/acp';
+import { SessionWork } from '../src/background.ts';
 import { byteLink } from './helpers.ts';
 
 const until = async (check: () => boolean, ms = 1000) => {
@@ -265,4 +267,11 @@ test('v2: a background terminal that exits before the agent starts the next prom
   assert.equal(second.text, 'turn 2');
   assert.deepEqual(session.terminals.get('dev')?.exitStatus, { exitCode: 0 });
   await client.close();
+});
+
+test('SessionWork stops listening on the turn when an item finishes', async () => {
+  const work = new SessionWork(async () => {});
+  const turn = new AbortController();
+  for (let n = 0; n < 5; n++) await work.finish(work.add('tool_call', `c${n}`, false, turn.signal));
+  assert.equal(getEventListeners(turn.signal, 'abort').length, 0);
 });

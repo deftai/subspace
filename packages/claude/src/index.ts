@@ -72,15 +72,17 @@ class ClaudeConversation implements ModelConversation {
   }
 
   async send(input: ModelInput, stream: { onText(delta: string): unknown; onThinking(delta: string): unknown; signal: AbortSignal }): Promise<ModelReply> {
-    const answered = 'toolResults' in input ? new Set(input.toolResults.map((r) => r.id)) : new Set<string>();
-    // Every tool_use needs a result in the next user message; ones nobody answered get an error.
+    // A prompt may carry results too: of tools that ran after the model last heard back.
+    const results = input.toolResults ?? [];
+    const answered = new Set(results.map((r) => r.id));
+    // Every tool_use needs a result in the next user message; ones that never ran get an error.
     const unanswered: ContentParam[] = this.pending
       .filter((id) => !answered.has(id))
       .map((id) => ({ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Not run: the turn ended first.' }));
-    const content: ContentParam[] =
-      'toolResults' in input
-        ? input.toolResults.map((r) => ({ type: 'tool_result', tool_use_id: r.id, content: r.content, ...(r.isError ? { is_error: true } : {}) }))
-        : claudeContent(input.prompt);
+    const content: ContentParam[] = [
+      ...results.map((r): ContentParam => ({ type: 'tool_result', tool_use_id: r.id, content: r.content, ...(r.isError ? { is_error: true } : {}) })),
+      ...('prompt' in input ? claudeContent(input.prompt) : []),
+    ];
     this.messages.push({ role: 'user', content: [...unanswered, ...content] });
     this.pending = [];
 
@@ -99,19 +101,27 @@ class ClaudeConversation implements ModelConversation {
         },
         { signal: stream.signal }
       );
-      request.on('text', (delta) => void stream.onText(delta));
-      request.on('thinking', (delta) => void stream.onThinking(delta));
+      // Deltas go out one after another, and all of them before this returns. One that fails
+      // (the client went away) is dropped: the turn ends through its signal, not here.
+      let delivered: Promise<unknown> = Promise.resolve();
+      const deliver = (send: (delta: string) => unknown) => (delta: string) => {
+        delivered = delivered.then(() => send(delta)).catch(() => {});
+      };
+      request.on('text', deliver((delta) => stream.onText(delta)));
+      request.on('thinking', deliver((delta) => stream.onThinking(delta)));
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await request.finalMessage();
         jsonRetries = 0;
       } catch (error) {
+        await delivered;
         if (stream.signal.aborted) return { stopReason: 'cancelled', toolCalls: [] };
         // A tool input that could not be parsed at all (eager streaming): re-issue, a few times.
         if (error instanceof Anthropic.APIError) throw new Error(apiErrorMessage(error), { cause: error });
         if (jsonRetries++ >= 2) throw error;
         continue;
       }
+      await delivered;
       // Append-only history: the whole assistant turn, thinking blocks included.
       this.messages.push({ role: 'assistant', content: message.content as ContentParam[] });
       if (message.stop_reason === 'pause_turn') continue;

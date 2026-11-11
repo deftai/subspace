@@ -111,6 +111,41 @@ test('the loop: pause_turn continues; tool results go back in one message; trunc
   assert.deepEqual(requests[3]!.params.messages.filter((m: { role: string }) => m.role === 'assistant').length, 3, 'append-only: pause, tool use and the truncated turn, all kept');
 });
 
+test('a prompt that carries results of tools that ran: real results first, "Not run" only for the rest, then the prompt', async () => {
+  const { client, requests } = fakeClient([
+    { content: [{ type: 'tool_use', id: 'r1', name: 'listFiles', input: {} }, { type: 'tool_use', id: 'r2', name: 'listFiles', input: {} }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' },
+  ]);
+  const conversation = claude({ client }).conversation({ tools: [], cwd: '/' });
+  const s = { onText: () => {}, onThinking: () => {}, signal: new AbortController().signal };
+  await conversation.send({ prompt: [{ type: 'text', text: 'go' }] }, s);
+  await conversation.send({ prompt: [{ type: 'text', text: 'next' }], toolResults: [{ id: 'r1', content: 'a.ts' }] }, s);
+  assert.deepEqual(requests[1]!.params.messages.at(-1).content, [
+    { type: 'tool_result', tool_use_id: 'r2', is_error: true, content: 'Not run: the turn ended first.' },
+    { type: 'tool_result', tool_use_id: 'r1', content: 'a.ts' },
+    { type: 'text', text: 'next' },
+  ]);
+});
+
+test('a text or thinking handler that fails does not leave an unhandled rejection', async () => {
+  const { client } = fakeClient([{ thinking: 'hm', text: 'Hi', content: [{ type: 'text', text: 'Hi' }], stop_reason: 'end_turn' }]);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const conversation = claude({ client }).conversation({ tools: [], cwd: '/' });
+    const fail = async () => {
+      throw new Error('closed');
+    };
+    const reply = await conversation.send({ prompt: [{ type: 'text', text: 'go' }] }, { onText: fail, onThinking: fail, signal: new AbortController().signal });
+    assert.equal(reply.stopReason, 'end_turn');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('end to end: modelAgent with claude() and an ACP client', async () => {
   const { client: anthropic } = fakeClient([
     { thinking: 'Check the files.', text: 'Looking.', content: [{ type: 'text', text: 'Looking.' }, { type: 'tool_use', id: 'u1', name: 'listFiles', input: { path: 'src' } }], stop_reason: 'tool_use' },

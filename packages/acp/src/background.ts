@@ -31,6 +31,8 @@ export class SessionWork {
   reports = false;
   state: State = 'idle';
   private readonly items = new Map<string, Work>();
+  /** Removes an item's listener on its turn's signal. */
+  private readonly unfollow = new Map<Work, () => void>();
   private readonly send: (update: Record<string, unknown>) => Promise<void>;
 
   constructor(send: (update: Record<string, unknown>) => Promise<void>) {
@@ -41,9 +43,13 @@ export class SessionWork {
     const work: Work = { kind, id, controller: new AbortController(), cancellable, listed: false, final: false };
     this.items.set(`${kind}:${id}`, work);
     // Foreground work stops with its turn; detached work does not.
-    turnSignal?.addEventListener('abort', () => {
-      if (!work.listed && !work.final) work.controller.abort(turnSignal.reason);
-    }, { once: true });
+    if (turnSignal) {
+      const onAbort = () => {
+        if (!work.listed && !work.final) work.controller.abort(turnSignal.reason);
+      };
+      turnSignal.addEventListener('abort', onAbort, { once: true });
+      this.unfollow.set(work, () => turnSignal.removeEventListener('abort', onAbort));
+    }
     return work;
   }
 
@@ -75,6 +81,8 @@ export class SessionWork {
     if (work.final) return;
     work.final = true;
     this.items.delete(`${work.kind}:${work.id}`);
+    this.unfollow.get(work)?.();
+    this.unfollow.delete(work);
     if (work.listed) await this.snapshot();
   }
 

@@ -108,6 +108,63 @@ test('modelAgent: maxSteps stops a looping model; a cancel stops it', async () =
   await client2.close();
 });
 
+test('modelAgent: results of tools that ran when maxSteps or a cancel ended the turn go to the model with the next prompt', async () => {
+  let cancelNext: (() => void) | undefined;
+  const slowTool = tool({
+    description: 'Slow',
+    run: async () => {
+      cancelNext?.();
+      return 'slow done';
+    },
+  });
+  const { model, sent } = scripted([
+    () => ({ stopReason: 'tool_use', toolCalls: [{ id: 'a', name: 'listFiles', input: { path: 'x' } }] }),
+    () => ({ stopReason: 'end_turn', toolCalls: [] }),
+    () => ({ stopReason: 'tool_use', toolCalls: [{ id: 'b', name: 'slowTool', input: {} }, { id: 'c', name: 'listFiles', input: { path: 'y' } }] }),
+    () => ({ stopReason: 'end_turn', toolCalls: [] }),
+  ]);
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, modelAgent({ name: 'steps', model, tools: { listFiles, slowTool }, maxSteps: 1 }));
+  const client = await AcpClient.connect(clientEnd, { onPermission: 'allow' });
+  const session = await client.newSession({ cwd: '/' });
+  // maxSteps: the tool ran, but the model never heard back.
+  assert.equal((await session.prompt('one').done).stopReason, 'max_turn_requests');
+  assert.equal((await session.prompt('two').done).stopReason, 'end_turn');
+  assert.deepEqual(sent[1], { prompt: [{ type: 'text', text: 'two' }], toolResults: [{ id: 'a', content: JSON.stringify(['x/a.ts', 'x/b.ts'], null, 2) }] });
+  // A cancel while the first of two tools runs: its result is kept, the second never ran (no result: the adapter says so).
+  const three = session.prompt('three');
+  cancelNext = () => void three.cancel();
+  assert.equal((await three.done).stopReason, 'cancelled');
+  cancelNext = undefined;
+  await session.prompt('four').done;
+  assert.deepEqual(sent[3], { prompt: [{ type: 'text', text: 'four' }], toolResults: [{ id: 'b', content: 'slow done' }] });
+  await client.close();
+});
+
+test("modelAgent: a closed connection drops its sessions' conversations", async () => {
+  const end: Step = () => ({ stopReason: 'end_turn', toolCalls: [] });
+  const { model, setups } = scripted([end, end, end]);
+  const closedSessions: string[][] = [];
+  // Loading reopens a session by id, so a conversation kept after its connection closed would be reused.
+  const options = modelAgent({ name: 'conversations', model, loadSession: () => {}, connectionClosed: (ids) => void closedSessions.push([...ids]) });
+  const [a1, c1] = channelPair<unknown>();
+  serveAgent(a1, options);
+  const first = await AcpClient.connect(c1);
+  const session = await first.newSession({ cwd: '/' });
+  await session.prompt('one').done;
+  await first.close();
+  for (let i = 0; i < 50 && !closedSessions.length; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(closedSessions, [[session.id]]);
+
+  const [a2, c2] = channelPair<unknown>();
+  serveAgent(a2, options);
+  const second = await AcpClient.connect(c2);
+  const resumed = await second.resumeSession({ sessionId: session.id, cwd: '/' });
+  await resumed.prompt('two').done;
+  assert.equal(setups.length, 2, 'a new conversation: the old one was dropped with its connection');
+  await second.close();
+});
+
 test('turn.useTool() runs a defined tool as a step; client.serveTools() serves tools without an MCP handler', async () => {
   const [agentEnd, clientEnd] = channelPair<unknown>();
   const seen: unknown[] = [];

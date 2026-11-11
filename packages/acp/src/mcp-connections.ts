@@ -29,6 +29,8 @@ export interface McpConnector {
 /** A session's connections, by server name. */
 export class SessionMcpConnections {
   private readonly open = new Map<string, Promise<McpConnection>>();
+  /** Aborts the connects in flight when the connections are dropped (close, or new servers). */
+  private connecting = new AbortController();
   private readonly connector: McpConnector | undefined;
   private cwd: string;
   private closed = false;
@@ -54,8 +56,8 @@ export class SessionMcpConnections {
     if (problem || !this.connector) return Promise.reject(new Error(problem));
     let connection = this.open.get(server.name);
     if (!connection) {
-      // Not the turn's signal: the connection outlives the turn that opened it.
-      connection = this.connector.connect(server, { cwd: this.cwd });
+      // Not the turn's signal: the connection outlives the turn that opened it. Dropping it aborts the connect.
+      connection = this.connector.connect(server, { cwd: this.cwd, signal: this.connecting.signal });
       this.open.set(server.name, connection);
       connection.catch(() => {
         if (this.open.get(server.name) === connection) this.open.delete(server.name);
@@ -85,6 +87,9 @@ export class SessionMcpConnections {
   private async closeOpen(): Promise<void> {
     const open = [...this.open.values()];
     this.open.clear();
+    // A connect still in flight is aborted rather than waited for (up to its own timeout).
+    this.connecting.abort(new Error('MCP connections closed'));
+    this.connecting = new AbortController();
     await Promise.all(open.map((c) => c.then((connection) => connection.close(), () => {}).catch(() => {})));
   }
 }

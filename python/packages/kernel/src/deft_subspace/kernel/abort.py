@@ -29,12 +29,14 @@ Listener = Callable[[Any], None]
 
 
 class AbortSignal:
-    __slots__ = ("_aborted", "_reason", "_listeners", "__weakref__")
+    __slots__ = ("_aborted", "_reason", "_listeners", "_dispose", "__weakref__")
 
     def __init__(self) -> None:
         self._aborted = False
         self._reason: Any = None
         self._listeners: list[Listener] = []
+        #: For a signal from `any`: removes its listeners from the source signals.
+        self._dispose: Callable[[], None] | None = None
 
     @property
     def aborted(self) -> bool:
@@ -60,6 +62,20 @@ class AbortSignal:
                 pass
 
         return remove
+
+    def dispose(self) -> None:
+        """Stop following the source signals (a signal from `any`): its listeners on them
+        are removed, so a long-lived source does not keep it alive. It will not fire after
+        this. A no-op for any other signal, and once it fired."""
+        dispose, self._dispose = self._dispose, None
+        if dispose is not None:
+            dispose()
+
+    def __enter__(self) -> AbortSignal:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.dispose()
 
     def throw_if_aborted(self) -> None:
         if self._aborted:
@@ -103,7 +119,15 @@ class AbortSignal:
 
     @staticmethod
     def any(signals: Iterable[AbortSignal | None]) -> AbortSignal:
-        """A signal that fires when the first of `signals` fires, with its reason."""
+        """A signal that fires when the first of `signals` fires, with its reason.
+
+        It listens on every source until one fires. When you are done with it before
+        then, `dispose()` it (or use it as a context manager) so a long-lived source
+        does not keep it, and whatever listens on it, alive:
+
+            with AbortSignal.any([turn_signal, connection_signal]) as signal:
+                ...
+        """
         combined = AbortSignal()
         live = [s for s in signals if s is not None]
         for signal in live:
@@ -112,13 +136,18 @@ class AbortSignal:
                 return combined
         removers: list[Callable[[], None]] = []
 
-        def fire(reason: Any) -> None:
+        def dispose() -> None:
             for remove in removers:
                 remove()
+            removers.clear()
+
+        def fire(reason: Any) -> None:
+            combined.dispose()
             combined._fire(reason)
 
         for signal in live:
             removers.append(signal.add_listener(fire))
+        combined._dispose = dispose
         return combined
 
     @staticmethod

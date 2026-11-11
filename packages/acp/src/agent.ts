@@ -17,6 +17,8 @@
  */
 import {
   cancelRequest,
+  ErrorCode,
+  LocalError,
   RpcError,
   RpcPeer,
   type Channel,
@@ -33,7 +35,7 @@ import {
   type ExtensionNotification,
   type ExtensionRequest,
 } from './extensions.ts';
-import { base64, SessionWork } from './background.ts';
+import { base64, SessionWork, type Work } from './background.ts';
 import { checkToolInput, toolOutputText, toolTitle, type ToolDefinition } from './tools.ts';
 import { McpCaller, serverClient, type McpServerClient } from './mcp-caller.ts';
 import { SessionMcpConnections, type ExternalMcpServer, type McpConnector } from './mcp-connections.ts';
@@ -243,6 +245,7 @@ export interface AgentOptions {
    * `turn.mcp(name)`: `mcpConnector()` from `@deft-subspace/acp/node`.
    */
   mcpConnector?: McpConnector;
+  /** Set up a new session; may choose its id. An id that is already open is refused (-32602), the open session kept. */
   newSession?(request: {
     cwd: string;
     /** As sent. */
@@ -272,6 +275,12 @@ export interface AgentOptions {
   }): Promise<void | Record<string, unknown>> | void | Record<string, unknown>;
   /** Called when the client closes a session (`session/close`), after its turn is cancelled. */
   closeSession?(sessionId: string): Promise<void> | void;
+  /**
+   * Called when the connection closes, with the sessions still open on it,
+   * after their turns stopped and their MCP connections closed. `closeSession`
+   * is not called for them; drop here what you keep per session.
+   */
+  connectionClosed?(sessionIds: string[]): Promise<void> | void;
   /** Queue a prompt that arrives while a turn is running, instead of refusing it. Default false. */
   queuePrompts?: boolean;
   /** Handlers for the client's calls to your vendor extension methods (see `extensionRequest`, `handle`). */
@@ -306,6 +315,8 @@ type AgentChannel = Pick<EndpointClient, 'request' | 'notify'>;
 interface Negotiated {
   protocol: ProtocolVersion;
   clientCapabilities: Record<string, unknown>;
+  /** initialize was answered: a second one is refused (the protocol can't change mid-connection). */
+  initialized?: boolean;
 }
 const NEGOTIATED = stateKey<Negotiated>('negotiated');
 
@@ -321,7 +332,8 @@ interface AgentSession {
  * Something that lives with a session (MCP connections, turns, background
  * work). Close runs every `stop`, removes the session, then every `release`,
  * then `closeSession`: today's order. A closed connection runs `disconnect`
- * only (MCP connections close; turns and their background work stop).
+ * only (MCP connections close; turns and their background work stop), then
+ * `connectionClosed` with the sessions that were open.
  */
 interface SessionPart<T> {
   name: string;
@@ -335,10 +347,12 @@ interface SessionPart<T> {
 class SessionLifecycle {
   readonly sessions = new Map<string, AgentSession>();
   private readonly parts: Array<SessionPart<any>> = [];
-  private readonly closeSession: ((sessionId: string) => Promise<void> | void) | undefined;
+  private readonly closeSession: AgentOptions['closeSession'];
+  private readonly connectionClosed: AgentOptions['connectionClosed'];
 
-  constructor(closeSession?: (sessionId: string) => Promise<void> | void) {
-    this.closeSession = closeSession;
+  constructor(hooks: Pick<AgentOptions, 'closeSession' | 'connectionClosed'> = {}) {
+    this.closeSession = hooks.closeSession;
+    this.connectionClosed = hooks.connectionClosed;
   }
 
   attach<T>(part: SessionPart<T>): void {
@@ -384,9 +398,9 @@ class SessionLifecycle {
   }
 
   async disconnect(): Promise<void> {
-    await Promise.all(
-      [...this.sessions.values()].flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session)))
-    );
+    const open = [...this.sessions.values()];
+    await Promise.all(open.flatMap((session) => this.parts.map((part) => part.disconnect?.(session.parts.get(part.name), session))));
+    await this.connectionClosed?.(open.map((session) => session.id));
   }
 }
 const SESSIONS = stateKey<SessionLifecycle>('sessions');
@@ -411,12 +425,13 @@ function negotiateLayer(options: AgentOptions, loadSession: boolean): AgentLayer
     create: (ctx) => ctx.set(NEGOTIATED, { protocol: 1, clientCapabilities: {} }),
     requests: {
       initialize: (call, ctx) => {
+        if (ctx.get(NEGOTIATED).initialized) throw new RpcError(ErrorCode.InvalidRequest, 'Already initialized');
         const params = call.params as { protocolVersion?: unknown; capabilities?: unknown; clientCapabilities?: unknown } | undefined;
         const asked = Number(params?.protocolVersion);
         const best = Math.max(...accepted) as ProtocolVersion;
         const protocol = (accepted.includes(asked as ProtocolVersion) ? asked : best) as ProtocolVersion;
         const caps = protocol === 2 ? params?.capabilities : params?.clientCapabilities;
-        ctx.set(NEGOTIATED, { protocol, clientCapabilities: caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {} });
+        ctx.set(NEGOTIATED, { protocol, clientCapabilities: caps && typeof caps === 'object' ? (caps as Record<string, unknown>) : {}, initialized: true });
         const info = { name: options.name, version: options.version ?? '0.0.0' };
         const mcp = mcpCapabilities(protocol, options.mcpTransports ?? (options.mcpConnector ? [...options.mcpConnector.transports] : []));
         const extra = options.capabilities ?? {};
@@ -425,14 +440,17 @@ function negotiateLayer(options: AgentOptions, loadSession: boolean): AgentLayer
           if (Object.keys(mcp).length) session.mcp = { ...mcp, ...((session.mcp as Record<string, unknown> | undefined) ?? {}) };
           return { protocolVersion: 2, info, capabilities: { ...extra, ...(Object.keys(session).length ? { session } : {}) }, authMethods: [] };
         }
+        // Merged like v2's: extra session and MCP capabilities add to these, they don't replace them.
+        const { sessionCapabilities: extraSession, mcpCapabilities: extraMcp, ...rest } = extra as Record<string, Record<string, unknown> | undefined>;
+        const mcpMerged = { ...mcp, ...(extraMcp ?? {}) };
         return {
           protocolVersion: 1,
           agentInfo: info,
           agentCapabilities: {
             loadSession,
-            sessionCapabilities: { close: {}, ...(loadSession ? { resume: {} } : {}) },
-            ...(Object.keys(mcp).length ? { mcpCapabilities: mcp } : {}),
-            ...extra,
+            ...rest,
+            sessionCapabilities: { close: {}, ...(loadSession ? { resume: {} } : {}), ...(extraSession ?? {}) },
+            ...(Object.keys(mcpMerged).length ? { mcpCapabilities: mcpMerged } : {}),
           },
           authMethods: [],
         };
@@ -451,6 +469,8 @@ function sessionsLayer(options: AgentOptions, replayWriter: (ctx: EndpointContex
       const { servers } = parseMcpServers(mcpServers);
       const created = await options.newSession?.({ cwd: params.cwd, mcpServers, servers, params });
       const id = (created && created.sessionId) || randomUUID();
+      // Never replace an open session (its turns, background work and MCP servers would be left running).
+      if (sessions.sessions.has(id)) throw RpcError.invalidParams(`Session ${id} is already open`, { sessionId: id });
       sessions.open(id, servers, params.cwd);
       return { sessionId: id };
     },
@@ -483,7 +503,7 @@ function sessionsLayer(options: AgentOptions, replayWriter: (ctx: EndpointContex
     requires: [NEGOTIATED],
     provides: [SESSIONS],
     create: (ctx) => {
-      const sessions = new SessionLifecycle(options.closeSession);
+      const sessions = new SessionLifecycle({ closeSession: options.closeSession, connectionClosed: options.connectionClosed });
       ctx.set(SESSIONS, sessions);
       return sessions;
     },
@@ -515,14 +535,33 @@ function mcpLayer(options: AgentOptions): AgentLayer<McpPart> {
   };
 }
 
-/** A session's turns: the running one, the queue, and background work (v2). */
+/**
+ * Where a prompt is in its session's queue: waiting for the turn ahead
+ * (`queued`), in the prompt handler (`running`), sending its last updates
+ * (`finishing`: open tool calls failed, v2's idle state), then `ended`. Only
+ * an ended turn lets the next one start, so its updates never interleave.
+ * Queued and running turns make the session busy; a finishing one does not
+ * (a prompt sent on its idle state waits the moment it takes to end).
+ */
+type TurnPhase = 'queued' | 'running' | 'finishing' | 'ended';
+
+interface SessionTurn {
+  phase: TurnPhase;
+  readonly controller: AbortController;
+  /** Settles when the turn is `ended`. */
+  readonly ended: Promise<void>;
+}
+
+/** A session's turns (the queue) and background work (v2). */
 interface TurnsPart {
-  controller?: AbortController;
-  /** Prompts waiting for the running one (with `queuePrompts`). */
-  waiting: Set<AbortController>;
-  /** Settles when the last queued turn ends. */
-  tail: Promise<void>;
+  /** Turns not yet ended, in order: the first is running or finishing, the rest are queued. */
+  turns: SessionTurn[];
   work: SessionWork;
+}
+
+/** Stop every turn of the session that has not ended, the running one and the queued ones. */
+function abortTurns(turns: TurnsPart, reason: Error): void {
+  for (const turn of [...turns.turns]) turn.controller.abort(reason);
 }
 
 /** `session/prompt` and the ways to stop work: the v1 and v2 turn lifecycles. */
@@ -534,21 +573,18 @@ function turnsLayer(options: AgentOptions): AgentLayer {
       ctx.get(SESSIONS).attach<TurnsPart>({
         name: 'turns',
         create: (session) => ({
-          waiting: new Set(),
-          tail: Promise.resolve(),
+          turns: [],
           work: new SessionWork((update) => ctx.client.notify('session/update', { sessionId: session.id, update })),
         }),
         stop: (turns, _session, reason) => {
-          turns.controller?.abort(reason);
-          for (const waiting of turns.waiting) waiting.abort(reason);
+          abortTurns(turns, reason);
           // Closing stops background work too.
           turns.work.closeAll();
         },
         // The client gone: detached work no longer follows the turn's signal, so stop it here.
         disconnect: (turns) => {
           const reason = new Error('connection closed');
-          turns.controller?.abort(reason);
-          for (const waiting of turns.waiting) waiting.abort(reason);
+          abortTurns(turns, reason);
           turns.work.closeAll(reason);
         },
       });
@@ -563,41 +599,40 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         const session = sessions.require(params?.sessionId);
         const turns = sessions.part<TurnsPart>(session, 'turns');
         const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
-        const busy = !!turns.controller || turns.waiting.size > 0;
+        // A turn that is only finishing (its handler returned) does not refuse the next prompt; that one waits for its end.
+        const busy = turns.turns.some((t) => t.phase === 'queued' || t.phase === 'running');
         if (busy && !options.queuePrompts) throw RpcError.invalidParams(`Session ${session.id} already has a turn running`);
         const controller = new AbortController();
         // The session's controller and the connection; not this request's own signal ($/cancel_request does not stop a turn).
         const signal = AbortSignal.any([controller.signal, ctx.peer.signal]);
-        const turn = new TurnWriter(
-          ctx.client,
-          session.id,
+        const turn = new TurnWriter({
+          peer: ctx.client,
+          sessionId: session.id,
           protocol,
-          params.prompt ?? [],
+          prompt: params.prompt ?? [],
           signal,
           clientCapabilities,
-          session.servers,
-          ctx.peek(MCP)?.caller,
-          turns.work,
-          sessions.part<SessionMcpConnections | undefined>(session, 'mcp')
-        );
+          servers: session.servers,
+          mcpCaller: ctx.peek(MCP)?.caller,
+          work: turns.work,
+          connections: sessions.part<SessionMcpConnections | undefined>(session, 'mcp'),
+        });
         // Wait for the turn ahead (if any), in order.
-        const ahead = turns.tail;
-        let release!: () => void;
-        turns.tail = new Promise<void>((resolve) => (release = resolve));
-        turns.waiting.add(controller);
+        const ahead = turns.turns.at(-1)?.ended;
+        let end!: () => void;
+        const entry: SessionTurn = { phase: 'queued', controller, ended: new Promise<void>((resolve) => (end = resolve)) };
+        turns.turns.push(entry);
 
-        const run = async (onStart?: () => Promise<void>): Promise<StopReason> => {
-          await ahead;
-          turns.waiting.delete(controller);
-          if (signal.aborted) {
-            release();
-            return 'cancelled';
-          }
-          turns.controller = controller;
-          await onStart?.();
-          let stop: StopReason;
+        const run = async (): Promise<StopReason> => {
+          let stop: StopReason = 'cancelled';
+          let failure: { error: unknown } | undefined;
           try {
-            stop = (await options.prompt(turn.api)) ?? 'end_turn';
+            await ahead;
+            if (!signal.aborted) {
+              entry.phase = 'running';
+              if (protocol === 2) await turn.state('running');
+              stop = (await options.prompt(turn.api)) ?? 'end_turn';
+            }
           } catch (error) {
             if (signal.aborted) {
               stop = 'cancelled';
@@ -605,18 +640,25 @@ function turnsLayer(options: AgentOptions): AgentLayer {
               // The agent stopped because the user said no: a normal end.
               stop = 'end_turn';
             } else {
-              if (protocol === 1) throw error;
-              await turn.idle('error', { message: error instanceof Error ? error.message : String(error) });
-              return 'error';
+              stop = 'error';
+              failure = { error };
+            }
+          }
+          if (signal.aborted) stop = 'cancelled';
+          // The turn's last updates go out before the next turn may start.
+          entry.phase = 'finishing';
+          try {
+            if (stop === 'cancelled' || failure) await turn.endOpenWork(signal.aborted ? signal.reason : failure?.error);
+            if (protocol === 2) {
+              const error = failure?.error;
+              await turn.idle(stop, failure ? { message: error instanceof Error ? error.message : String(error) } : undefined);
             }
           } finally {
-            turns.controller = undefined;
-            release();
+            entry.phase = 'ended';
+            turns.turns.splice(turns.turns.indexOf(entry), 1);
+            end();
           }
-          if (signal.aborted) {
-            stop = 'cancelled';
-            await turn.failOpenToolCalls();
-          }
+          if (failure && protocol === 1) throw failure.error;
           return stop;
         };
 
@@ -624,12 +666,7 @@ function turnsLayer(options: AgentOptions): AgentLayer {
 
         // v2: answer at once with the user message id, then run; the end is an idle state update.
         const userMessageId = randomUUID();
-        setTimeout(() => {
-          void (async () => {
-            const stop = await run(() => turn.state('running'));
-            if (stop !== 'error') await turn.idle(stop);
-          })().catch(() => {});
-        }, 0);
+        setTimeout(() => void run().catch(() => {}), 0);
         return { messageId: userMessageId };
       },
     },
@@ -639,10 +676,8 @@ function turnsLayer(options: AgentOptions): AgentLayer {
         const sessionId = (call.params as { sessionId?: unknown } | undefined)?.sessionId;
         const session = typeof sessionId === 'string' ? sessions.sessions.get(sessionId) : undefined;
         if (!session) return;
-        const turns = sessions.part<TurnsPart>(session, 'turns');
-        turns.controller?.abort(new Error('cancelled by the client'));
         // Queued prompts are cancelled too: the client asked for the session to stop.
-        for (const waiting of turns.waiting) waiting.abort(new Error('cancelled by the client'));
+        abortTurns(sessions.part<TurnsPart>(session, 'turns'), new Error('cancelled by the client'));
       },
     },
   };
@@ -679,7 +714,16 @@ function extensionsLayer(options: AgentOptions): AgentLayer {
 function agentLayers(options: AgentOptions): AgentLayer<any>[] {
   const replayWriter = (ctx: EndpointContext, sessionId: string): ReplayWriter => {
     const { protocol, clientCapabilities } = ctx.get(NEGOTIATED);
-    return new TurnWriter(ctx.client, sessionId, protocol, [], new AbortController().signal, clientCapabilities, [], ctx.peek(MCP)?.caller, undefined, undefined).api;
+    return new TurnWriter({
+      peer: ctx.client,
+      sessionId,
+      protocol,
+      prompt: [],
+      signal: new AbortController().signal,
+      clientCapabilities,
+      servers: [],
+      mcpCaller: ctx.peek(MCP)?.caller,
+    }).api;
   };
   return [negotiateLayer(options, !!options.loadSession), sessionsLayer(options, replayWriter), mcpLayer(options), turnsLayer(options), extensionsLayer(options)];
 }
@@ -699,11 +743,27 @@ export function serveAgent(channel: Channel<unknown>, options: AgentOptions): Rp
   return endpoint.peer;
 }
 
+/** What a turn's writer works with. A replay writer has no background work and no MCP connections. */
+interface TurnSetup {
+  peer: AgentChannel;
+  sessionId: string;
+  protocol: ProtocolVersion;
+  prompt: ContentBlock[];
+  signal: AbortSignal;
+  clientCapabilities: Record<string, unknown>;
+  servers: McpServer[];
+  mcpCaller: McpCaller | undefined;
+  work?: SessionWork;
+  connections?: SessionMcpConnections | undefined;
+}
+
 class TurnWriter {
   readonly api: AgentTurn;
   private segment = 0;
   private lastWasText = false;
   private readonly open = new Set<string>();
+  /** The turn's terminals (v2), until they exit or are detached. */
+  private readonly terminals = new Set<Work>();
   private readonly peer: AgentChannel;
   private readonly sessionId: string;
   private readonly protocol: ProtocolVersion;
@@ -711,18 +771,8 @@ class TurnWriter {
   private readonly work: SessionWork | undefined;
   private readonly signal: AbortSignal;
 
-  constructor(
-    peer: AgentChannel,
-    sessionId: string,
-    protocol: ProtocolVersion,
-    prompt: ContentBlock[],
-    signal: AbortSignal,
-    clientCapabilities: Record<string, unknown>,
-    servers: McpServer[],
-    mcpCaller: McpCaller | undefined,
-    work: SessionWork | undefined,
-    connections: SessionMcpConnections | undefined
-  ) {
+  constructor(setup: TurnSetup) {
+    const { peer, sessionId, protocol, prompt, signal, clientCapabilities, servers, mcpCaller, work, connections } = setup;
     this.peer = peer;
     this.sessionId = sessionId;
     this.protocol = protocol;
@@ -797,12 +847,19 @@ class TurnWriter {
       toolCallUpdate: async (fields, options) => {
         this.lastWasText = false;
         const { toolCallId } = fields;
-        if (options?.create) this.open.add(toolCallId);
-        if (isFinal(fields.status)) this.open.delete(toolCallId);
+        const final = isFinal(fields.status);
+        // Tracked as toolCall() does: open (and v2 work) from a create until a final status.
+        if (options?.create && !final && !this.open.has(toolCallId)) {
+          this.open.add(toolCallId);
+          if (!this.work?.get('tool_call', toolCallId)) this.work?.add('tool_call', toolCallId, false, this.signal);
+        }
+        if (final) this.open.delete(toolCallId);
         await this.update({
           ...fields,
           sessionUpdate: options?.create && protocol === 1 ? 'tool_call' : 'tool_call_update',
         });
+        const work = final ? this.work?.get('tool_call', toolCallId) : undefined;
+        if (work) await this.work!.finish(work);
       },
       sendUpdate: (update) => this.update(update),
       request: (method, params, options) => {
@@ -869,8 +926,9 @@ class TurnWriter {
           const answer = await peer.request<{ action?: string; content?: Record<string, unknown> }>('elicitation/create', params, { signal });
           if (answer?.action === 'accept') return { action: 'accept', ...(answer.content ? { content: answer.content } : {}), ...id };
           if (answer?.action === 'decline') return { action: 'decline', ...id };
-        } catch {
-          // Aborted with the turn, or an error answer.
+        } catch (error) {
+          // Aborted with the turn, or the connection gone: nobody answered. Anything else is the caller's.
+          if (!signal.aborted && !LocalError.is(error, 'aborted') && !LocalError.is(error, 'closed')) throw error;
         }
         return { action: 'cancel', ...id };
       },
@@ -891,8 +949,18 @@ class TurnWriter {
     return this.update({ sessionUpdate: 'state_update', state: 'idle', stopReason, ...(error ? { error } : {}), ...this.work?.fields() });
   }
 
-  async failOpenToolCalls(): Promise<void> {
+  /**
+   * The turn was cancelled or its handler threw: fail the tool calls it left
+   * open, and stop and drop the terminals it neither detached nor exited.
+   */
+  async endOpenWork(reason: unknown): Promise<void> {
     for (const id of [...this.open]) await this.toolUpdate(id, { status: 'failed' });
+    for (const work of [...this.terminals]) {
+      this.terminals.delete(work);
+      if (work.listed || work.final) continue;
+      work.controller.abort(reason);
+      await this.work!.finish(work);
+    }
   }
 
   private chunk(kind: 'agent_message_chunk' | 'agent_thought_chunk', text: string): Promise<void> {
@@ -916,10 +984,12 @@ class TurnWriter {
       content: init.content ?? [],
       locations: init.locations ?? [],
       ...(init.rawInput !== undefined ? { rawInput: init.rawInput } : {}),
-      ...(cancellable ? { capabilities: { cancel: {} } } : {}),
+      ...(cancellable && !isFinal(init.status) ? { capabilities: { cancel: {} } } : {}),
     };
-    this.open.add(id);
-    const work = this.work?.add('tool_call', id, cancellable, this.signal);
+    // One created already finished is neither open nor work.
+    const done = isFinal(init.status);
+    if (!done) this.open.add(id);
+    const work = done ? undefined : this.work?.add('tool_call', id, cancellable, this.signal);
     // v1 creates with tool_call; v2 has only the upsert.
     await this.update({ sessionUpdate: this.protocol === 1 ? 'tool_call' : 'tool_call_update', toolCallId: id, ...fields });
     return {
@@ -978,6 +1048,7 @@ class TurnWriter {
     if (this.protocol !== 2 || !this.work) throw new CapabilityError('agent terminals (protocol v2)', 'client');
     const id = init.id ?? `term-${randomUUID().slice(0, 8)}`;
     const work = this.work.add('terminal', id, !!init.cancellable, this.signal);
+    this.terminals.add(work);
     const terminal = (fields: Record<string, unknown>) => this.update({ sessionUpdate: 'terminal_update', terminalId: id, ...fields });
     await terminal({
       ...(init.command !== undefined ? { command: init.command } : {}),
@@ -991,10 +1062,14 @@ class TurnWriter {
       write: (data) => this.update({ sessionUpdate: 'terminal_output_chunk', terminalId: id, data: base64(data) }),
       replace: (data) => terminal({ output: { data: base64(data) } }),
       exit: async (status = {}) => {
+        this.terminals.delete(work);
         await terminal({ exitStatus: status, ...(init.cancellable ? { capabilities: null } : {}) });
         await this.work!.finish(work);
       },
-      detach: () => this.work!.detach(work),
+      detach: () => {
+        this.terminals.delete(work);
+        return this.work!.detach(work);
+      },
     };
   }
 

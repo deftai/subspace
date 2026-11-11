@@ -41,6 +41,8 @@ class SessionWork:
         self.reports = False
         self.state: WorkState = "idle"
         self._items: dict[str, Work] = {}
+        #: Removes an item's listener on its turn's signal.
+        self._unfollow: dict[Work, Callable[[], None]] = {}
         self._send = send
 
     def add(self, kind: WorkKind, id: str, cancellable: bool, turn_signal: AbortSignal | None = None) -> Work:
@@ -54,7 +56,7 @@ class SessionWork:
                 if not work.listed and not work.final:
                     work.controller.abort(signal.reason)
 
-            signal.add_listener(on_abort)
+            self._unfollow[work] = signal.add_listener(on_abort)
         return work
 
     def get(self, kind: WorkKind, id: str) -> Work | None:
@@ -85,6 +87,9 @@ class SessionWork:
             return
         work.final = True
         self._items.pop(f"{work.kind}:{work.id}", None)
+        unfollow = self._unfollow.pop(work, None)
+        if unfollow is not None:
+            unfollow()
         if work.listed:
             await self.snapshot()
 

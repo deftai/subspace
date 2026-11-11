@@ -344,7 +344,7 @@ Also on the turn:
 
 Options to `serveAgent`:
 
-- `newSession`, `loadSession` and `closeSession` hooks;
+- `newSession`, `loadSession` and `closeSession` hooks, and `connectionClosed` (the sessions still open when the connection closed);
 - `queuePrompts`;
 - typed vendor `extensions`;
 - `capabilities`, merged into `initialize`.
