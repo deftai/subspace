@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { ndjson, RpcPeer } from '@deft-subspace/kernel';
-import { spawnProcess, SpawnError } from '@deft-subspace/kernel/node';
+import { cmdLine, notFoundHint, spawnProcess, SpawnError, windowsFind, windowsLaunch } from '@deft-subspace/kernel/node';
 
 const node = process.execPath;
 
@@ -90,4 +92,162 @@ test('keeps the last stderr output for error messages', async () => {
   assert.equal(info.code, 3);
   assert.match(child.stderrTail(), /fatal: no API key$/);
   assert.ok(child.stderrTail().length <= 64);
+});
+
+test('the stderr tail counts bytes', async () => {
+  const child = await spawnProcess(node, {
+    args: ['-e', `process.stderr.write('\u00e9'.repeat(100) + '\\nend'); process.exit(0)`],
+    stderrTailBytes: 63,
+  });
+  await child.ended;
+  const tail = child.stderrTail();
+  assert.match(tail, /end$/);
+  assert.ok(Buffer.byteLength(tail) <= 63, `${Buffer.byteLength(tail)} bytes`);
+  assert.ok(!tail.includes('\ufffd'), 'a character cut in half is dropped, not shown as garbage');
+});
+
+const posix = process.platform !== 'win32';
+const kernelDir = new URL('..', import.meta.url);
+
+/** Run a Node program that imports the kernel; returns it and the first line it prints. */
+async function runApp(source: string): Promise<{ app: ChildProcess; line: string; lines: AsyncIterator<string> }> {
+  const app = spawnChild(node, ['--conditions=subspace-source', '--input-type=module', '-e', source], {
+    cwd: kernelDir,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const lines = createInterface({ input: app.stdout! })[Symbol.asyncIterator]();
+  const first = await lines.next();
+  return { app, line: String(first.value), lines };
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function gone(pid: number, withinMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + withinMs;
+  while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  return !alive(pid);
+}
+
+function killAll(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+}
+
+// Starts a supervised child (which starts a grandchild), prints both pids, and waits.
+const supervisor = (setup: string) => `
+  import { spawnProcess } from '@deft-subspace/kernel/node';
+  ${setup}
+  const child = await spawnProcess(process.execPath, { args: ['-e', \`
+    const g = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    console.log(g.pid);
+    setTimeout(() => {}, 60000);
+  \`] });
+  const reader = child.channel.readable.getReader();
+  const grandchild = new TextDecoder().decode((await reader.read()).value).trim();
+  console.log(child.pid, grandchild);
+  setTimeout(() => {}, 60000);
+`;
+
+for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) {
+  test(`${signal} stops the supervised groups and still kills the app`, { skip: !posix }, async () => {
+    const { app, line } = await runApp(supervisor(''));
+    const pids = line.split(' ').map(Number);
+    try {
+      const exited = new Promise<NodeJS.Signals | null>((resolve) => app.once('exit', (_code, sig) => resolve(sig)));
+      app.kill(signal);
+      assert.equal(await exited, signal);
+      for (const pid of pids) assert.ok(await gone(pid), `${pid} outlived the app`);
+    } finally {
+      killAll([app.pid!, ...pids]);
+    }
+  });
+}
+
+test("an app's own signal handler is left alone", { skip: !posix }, async () => {
+  const { app, line, lines } = await runApp(supervisor(`process.on('SIGTERM', () => console.log('handled'));`));
+  const pids = line.split(' ').map(Number);
+  try {
+    app.kill('SIGTERM');
+    assert.equal((await lines.next()).value, 'handled');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(app.exitCode, null);
+    assert.equal(app.signalCode, null);
+    for (const pid of pids) assert.ok(alive(pid), `${pid} was killed`);
+  } finally {
+    killAll([app.pid!, ...pids]);
+  }
+});
+
+test('a group is forgotten once its last member is gone', { skip: !posix }, async () => {
+  // The leader exits at once; a grandchild keeps the group alive a little longer. The
+  // signal hook is there only while some group is remembered, so it shows when it is dropped.
+  const { app, line, lines } = await runApp(`
+    import { spawnProcess } from '@deft-subspace/kernel/node';
+    const child = await spawnProcess(process.execPath, { args: ['-e', \`
+      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { stdio: 'ignore' }).unref();
+    \`] });
+    await child.ended;
+    console.log(process.listenerCount('SIGTERM'));
+    const deadline = Date.now() + 5000;
+    while (process.listenerCount('SIGTERM') > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    console.log(process.listenerCount('SIGTERM'));
+  `);
+  try {
+    assert.equal(line, '1', 'remembered while the grandchild runs');
+    assert.equal((await lines.next()).value, '0', 'forgotten once it is gone');
+  } finally {
+    killAll([app.pid!]);
+  }
+});
+
+// Windows command resolution runs anywhere: the environment and the file system are passed in.
+const winEnv = { Path: 'C:\\bin;C:\\nodejs', PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+const files =
+  (...paths: string[]) =>
+  (path: string) =>
+    paths.some((p) => p.toLowerCase() === path.toLowerCase());
+
+test('Windows: a .cmd shim found through PATHEXT runs via cmd.exe', () => {
+  const launch = windowsLaunch('npx', ['-y', 'some agent'], winEnv, files('C:\\nodejs\\npx.cmd'));
+  assert.equal(launch, 'C:\\nodejs\\npx.CMD ^"-y^" ^"some^ agent^"');
+});
+
+test('Windows: an .exe, or a command not found, runs as given', () => {
+  assert.equal(windowsLaunch('node', ['x'], winEnv, files('C:\\nodejs\\node.exe', 'C:\\nodejs\\node.cmd')), undefined);
+  assert.equal(windowsLaunch('missing', [], winEnv, files()), undefined);
+});
+
+test('Windows: PATH order, then PATHEXT order', () => {
+  assert.equal(windowsFind('tool', winEnv, files('C:\\nodejs\\tool.exe', 'C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD');
+  assert.equal(windowsFind('tool', winEnv, files('C:\\bin\\tool.cmd', 'C:\\bin\\tool.exe')), 'C:\\bin\\tool.EXE');
+  assert.equal(windowsFind('tool.cmd', winEnv, files('C:\\nodejs\\tool.cmd')), 'C:\\nodejs\\tool.cmd');
+  assert.equal(windowsFind('D:\\x\\run', winEnv, files('D:\\x\\run.bat')), 'D:\\x\\run.BAT');
+  assert.equal(windowsFind('./run', winEnv, files('./run.cmd', 'C:\\bin\\run.cmd')), './run.CMD');
+  assert.equal(windowsFind('tool', { PATH: 'C:\\bin' }, files('C:\\bin\\tool.cmd')), 'C:\\bin\\tool.CMD'); // default PATHEXT
+});
+
+test('Windows: cmd.exe metacharacters in arguments are escaped', () => {
+  assert.equal(
+    cmdLine('C:\\Program Files\\nodejs\\npx.cmd', ['a&b|c"d', '100%', 'end\\']),
+    'C:\\Program^ Files\\nodejs\\npx.cmd ^"a^&b^|c\\^"d^" ^"100^%^" ^"end\\\\^"',
+  );
+  // npm's node_modules\.bin shims hand their arguments to cmd.exe a second time.
+  assert.equal(cmdLine('C:\\p\\node_modules\\.bin\\agent.cmd', ['a&b']), 'C:\\p\\node_modules\\.bin\\agent.cmd ^^^"a^^^&b^^^"');
+});
+
+test('the not-found hint names .cmd shims on Windows', () => {
+  assert.match(notFoundHint('npx', undefined, true), /\.cmd shims/);
+  assert.doesNotMatch(notFoundHint('npx', undefined, false), /\.cmd/);
 });

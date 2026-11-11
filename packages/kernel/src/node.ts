@@ -10,9 +10,23 @@
  *   been read to the end, so a final reply written just before exit is not
  *   lost.
  * - A missing program becomes a SpawnError with a hint, not an uncaught error.
+ * - On Windows, a command found through PATH and PATHEXT as a `.cmd` or `.bat`
+ *   file (like `npx.cmd`) is run through cmd.exe with its arguments escaped.
+ *
+ * Process groups outlive this process unless it stops them, so the live ones
+ * are killed when it exits: on 'exit', and, on POSIX, on SIGINT, SIGTERM and
+ * SIGHUP, which end Node without 'exit'. Those signal listeners are added only
+ * while supervised groups are alive and only for signals the app has no
+ * listener for: an app that handles a signal itself decides what happens, and
+ * then stopping the children is up to it. After killing the groups the
+ * listener removes itself and re-sends the signal, so the process still dies
+ * of it.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import type { Channel } from './channel.ts';
 
 export interface SpawnOptions {
@@ -56,7 +70,7 @@ export interface SupervisedProcess {
   readonly exited: Promise<ExitInfo>;
   /** Settles when the process has exited and stdout has ended. */
   readonly ended: Promise<ExitInfo>;
-  /** The last stderr output, trimmed. */
+  /** The last stderr output (at most `stderrTailBytes` bytes), trimmed. */
   stderrTail(): string;
   /**
    * Stop the process and its process group: end stdin, SIGTERM, then SIGKILL
@@ -65,33 +79,165 @@ export interface SupervisedProcess {
   stop(graceMs?: number): Promise<ExitInfo>;
 }
 
+// -- Killing live groups when this process ends -----------------------------------------
+
+/** How to kill each process group that may still be alive. */
 const live = new Set<() => void>();
 let exitHookInstalled = false;
 
-/** Children in their own process group outlive us unless we stop them on exit. */
-function installExitHook(): void {
-  if (exitHookInstalled) return;
-  exitHookInstalled = true;
-  process.once('exit', () => {
-    for (const kill of live) kill();
-  });
+const killLive = (): void => {
+  for (const kill of live) kill();
+};
+
+function track(kill: () => void): void {
+  live.add(kill);
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once('exit', killLive);
+  }
+  installSignalHooks();
 }
 
+function untrack(kill: () => void): void {
+  live.delete(kill);
+  if (live.size === 0) removeSignalHooks();
+}
+
+/** Signals that end Node by default without emitting 'exit'. */
+const fatalSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+const signalHooks = new Map<NodeJS.Signals, () => void>();
+
+/** POSIX: on a fatal signal nobody else handles, kill the live groups and die of it anyway. */
+function installSignalHooks(): void {
+  if (process.platform === 'win32') return;
+  for (const signal of fatalSignals) {
+    if (signalHooks.has(signal) || process.listenerCount(signal) > 0) continue;
+    const hook = (): void => {
+      if (process.listenerCount(signal) > 1) return; // the app listens too now: its call
+      killLive();
+      removeSignalHooks();
+      process.kill(process.pid, signal); // no listeners left, so the default action: die of it
+    };
+    process.on(signal, hook);
+    signalHooks.set(signal, hook);
+  }
+}
+
+function removeSignalHooks(): void {
+  for (const [signal, hook] of signalHooks) process.off(signal, hook);
+  signalHooks.clear();
+}
+
+/** How often to check whether an exited leader's group is gone: from this, doubling, up to the max. */
+const pollFirstMs = 50;
+const pollMaxMs = 1000;
+
+// -- Windows command resolution -------------------------------------------------------------
+
+const defaultPathext = '.COM;.EXE;.BAT;.CMD';
+const cmdMeta = /([()\][%!^"`<>&|;, *?])/g;
+const npmShim = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i;
+
+/** Windows environment names are case-insensitive (`Path`, `PATH`). */
+function envGet(env: Record<string, string | undefined>, name: string): string | undefined {
+  for (const [key, value] of Object.entries(env)) if (key.toUpperCase() === name) return value;
+  return undefined;
+}
+
+/**
+ * @internal Where Windows would find `command`, trying each PATHEXT extension.
+ * A bare name is looked up in PATH; a name with a directory is used as is.
+ */
+export function windowsFind(
+  command: string,
+  env: Record<string, string | undefined>,
+  isFile: (path: string) => boolean,
+): string | undefined {
+  const win = path.win32;
+  const exts = (envGet(env, 'PATHEXT') || defaultPathext).split(';').filter(Boolean);
+  const ext = win.extname(command).toUpperCase();
+  const names = ext && exts.some((e) => e.toUpperCase() === ext) ? [command] : exts.map((e) => command + e);
+  const hasDir = /[\\/:]/.test(command);
+  const pathDirs = (envGet(env, 'PATH') ?? '').split(';').filter(Boolean);
+  const dirs = hasDir ? [''] : pathDirs.map((d) => d.replace(/^"|"$/g, ''));
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = dir ? win.join(dir, name) : name;
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function escapeCmdArgument(arg: string, double: boolean): string {
+  // As cross-spawn (MIT) does it: quote for the program's own parsing, then ^-escape every
+  // cmd.exe metacharacter, quotes included, so cmd.exe sees nothing to interpret.
+  let escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  escaped = `"${escaped}"`.replace(cmdMeta, '^$1');
+  return double ? escaped.replace(cmdMeta, '^$1') : escaped;
+}
+
+/** @internal A cmd.exe command line that runs a `.cmd`/`.bat` file with `args` passed through literally. */
+export function cmdLine(script: string, args: readonly string[]): string {
+  const double = npmShim.test(script); // npm shims pass their arguments through cmd.exe again
+  return [path.win32.normalize(script).replace(cmdMeta, '^$1'), ...args.map((a) => escapeCmdArgument(a, double))].join(' ');
+}
+
+/**
+ * @internal Windows can only start a `.cmd`/`.bat` file through cmd.exe (Node refuses
+ * to without a shell since CVE-2024-27980): the command line to run, or undefined
+ * when `command` is not one (and runs as given).
+ */
+export function windowsLaunch(
+  command: string,
+  args: readonly string[],
+  env: Record<string, string | undefined>,
+  isFile: (path: string) => boolean,
+): string | undefined {
+  const found = windowsFind(command, env, isFile);
+  if (!found || !['.cmd', '.bat'].includes(path.win32.extname(found).toLowerCase())) return undefined;
+  return cmdLine(found, args);
+}
+
+/** @internal */
+export function notFoundHint(command: string, cwd: string | undefined, windows: boolean): string {
+  const where = cwd ? ` (cwd: ${cwd})` : '';
+  const shims = windows ? ' On Windows it is looked up with PATHEXT, so .cmd shims such as npx.cmd are found too.' : '';
+  return `Is "${command}" installed and on PATH?${where}${shims}`;
+}
+
+const isFile = (file: string): boolean => {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
+// -- The supervised process -----------------------------------------------------------------
+
 export async function spawnProcess(command: string, options: SpawnOptions = {}): Promise<SupervisedProcess> {
-  const groups = process.platform !== 'win32';
-  const child: ChildProcess = spawn(command, [...(options.args ?? [])], {
-    cwd: options.cwd,
-    env: { ...process.env, ...(options.env ?? {}) },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: groups,
-  });
+  const windows = process.platform === 'win32';
+  const groups = !windows;
+  const env = { ...process.env, ...(options.env ?? {}) };
+  const args = [...(options.args ?? [])];
+  const line = windows ? windowsLaunch(command, args, env, isFile) : undefined;
+  const child: ChildProcess =
+    line === undefined
+      ? spawn(command, args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: groups })
+      : spawn(envGet(env, 'COMSPEC') || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+          cwd: options.cwd,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsVerbatimArguments: true,
+        });
 
   await new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', (error: NodeJS.ErrnoException) => {
       const hint =
         error.code === 'ENOENT'
-          ? `Is "${command}" installed and on PATH?${options.cwd ? ` (cwd: ${options.cwd})` : ''}`
+          ? notFoundHint(command, options.cwd, windows)
           : error.code === 'EACCES'
             ? `"${command}" is not executable.`
             : error.message;
@@ -99,13 +245,21 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     });
   });
 
-  const tailBytes = options.stderrTailBytes ?? 16 * 1024;
-  let stderr = '';
-  child.stderr!.setEncoding('utf8');
-  child.stderr!.on('data', (text: string) => {
-    stderr = (stderr + text).slice(-tailBytes);
-    options.onStderr?.(text);
+  const tailBytes = Math.max(0, options.stderrTailBytes ?? 16 * 1024);
+  let stderr = Buffer.alloc(0);
+  const decoder = new StringDecoder('utf8');
+  child.stderr!.on('data', (chunk: Buffer) => {
+    stderr = tailBytes > 0 ? Buffer.concat([stderr, chunk]).subarray(-tailBytes) : stderr;
+    if (options.onStderr) {
+      const text = decoder.write(chunk);
+      if (text) options.onStderr(text);
+    }
   });
+  const stderrTail = (): string => {
+    let start = 0;
+    if (stderr.length >= tailBytes) while (start < stderr.length && (stderr[start]! & 0xc0) === 0x80) start++; // a character cut in half
+    return stderr.subarray(start).toString('utf8').trim();
+  };
   // EPIPE after the child exits surfaces as a failed write, not a crash.
   child.stdin!.on('error', () => {});
 
@@ -143,10 +297,18 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
   };
 
   const killNow = () => signalGroup('SIGKILL');
-  live.add(killNow);
-  installExitHook();
-  void ended.then(() => {
-    if (!groupAlive()) live.delete(killNow);
+  track(killNow);
+  // Once the leader has exited, drop the group as soon as its last member is gone, so
+  // the exit-time kill never hits a group id the system has since given to someone else.
+  void exited.then(() => {
+    let delay = pollFirstMs;
+    const check = (): void => {
+      if (!live.has(killNow)) return;
+      if (!groupAlive()) return untrack(killNow);
+      setTimeout(check, delay).unref();
+      delay = Math.min(delay * 2, pollMaxMs);
+    };
+    check();
   });
 
   let stopping: Promise<ExitInfo> | undefined;
@@ -162,7 +324,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
         }
         if (groupAlive()) signalGroup('SIGKILL');
       }
-      live.delete(killNow);
+      untrack(killNow);
       return exited;
     })();
     return stopping;
@@ -179,7 +341,7 @@ export async function spawnProcess(command: string, options: SpawnOptions = {}):
     channel,
     exited,
     ended,
-    stderrTail: () => stderr.trim(),
+    stderrTail,
     stop,
   };
 }
