@@ -79,21 +79,15 @@ const CLAUDE_AGENT = `/**
  *   npx subspace run "What is in src?" -- node src/agent.ts
  */
 import { readdir, readFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { modelAgent, tool } from '@deft-subspace/acp';
-import { serveStdio } from '@deft-subspace/acp/node';
+import { insideWorkspace, serveStdio } from '@deft-subspace/acp/node';
 import { claude } from '@deft-subspace/claude';
 
 const path = { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] };
 
-// The tools stay inside the folder the agent was started in.
+// The tools stay inside the folder the agent was started in: insideWorkspace refuses a path
+// that leads outside it, also through a symbolic link.
 const root = process.cwd();
-function inside(path: string): string {
-  const full = resolve(root, path);
-  const rel = relative(root, full);
-  if (rel === '..' || rel.startsWith(\`..\${sep}\`) || isAbsolute(rel)) throw new Error(\`\${path} is outside \${root}\`);
-  return full;
-}
 
 serveStdio(
   modelAgent({
@@ -101,8 +95,8 @@ serveStdio(
     model: claude(), // Claude Opus 5.5, adaptive thinking, refusal fallbacks on
     system: ({ cwd }) => \`You help with the project in \${cwd}. Look before you answer. Be brief.\`,
     tools: {
-      listFiles: tool({ description: 'List a folder', input: path, kind: 'read', run: ({ path }: { path: string }) => readdir(inside(path)) }),
-      readText: tool({ description: 'Read a text file', input: path, kind: 'read', run: ({ path }: { path: string }) => readFile(inside(path), 'utf8') }),
+      listFiles: tool({ description: 'List a folder', input: path, kind: 'read', run: async ({ path }: { path: string }) => readdir(await insideWorkspace(root, path)) }),
+      readText: tool({ description: 'Read a text file', input: path, kind: 'read', run: async ({ path }: { path: string }) => readFile(await insideWorkspace(root, path), 'utf8') }),
     },
   })
 );

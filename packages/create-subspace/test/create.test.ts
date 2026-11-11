@@ -83,10 +83,12 @@ test('rejects unknown flags, missing values, and a target that is a file; odd na
   assert.equal(JSON.parse(await readFile(join(dir, 'eq', 'package.json'), 'utf8')).scripts.start, 'node src/agent.ts');
 });
 
-test('the claude-agent template confines its file tools to the working folder', async () => {
+test('the claude-agent template confines its file tools to the working folder, symbolic links included', async () => {
   const dir = join(await mkdtemp(join(tmpdir(), 'create-subspace-')), 'ca');
   assert.equal((await create(dir, '--template', 'claude-agent')).code, 0);
   const source = await readFile(join(dir, 'src', 'agent.ts'), 'utf8');
-  assert.match(source, /inside\(path\)/);
+  // insideWorkspace follows symbolic links to where they lead (a check on the path alone does not).
+  assert.match(source, /readdir\(await insideWorkspace\(root, path\)\)/);
+  assert.match(source, /readFile\(await insideWorkspace\(root, path\), 'utf8'\)/);
   assert.doesNotMatch(source, /readFile\(path,/);
 });
