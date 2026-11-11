@@ -20,7 +20,7 @@ Every client was run against every agent, each pair in two processes over stdio,
 
 **Across languages.** Against a TypeScript agent, the TypeScript clients get through about 2–5× more turns, chunks or requests per second than the Python clients. Against a Python agent, the agent is the limit and the difference mostly disappears. Python processes use about a third of the memory (50 against 130 MB in the streaming scenario).
 
-**Protocol v2.** Only Subspace speaks v2 in both languages. The run found a 1 ms delay per turn in the Subspace TS agent: it started each v2 turn with `setTimeout(..., 0)`, and Node waits at least 1 ms for any timer. With `setImmediate` the TS pair went from 775 to 24,449 turns/s, and from 13,317 to 63,992 across 20 sessions (`results/v2-before-setimmediate.json` and `results/v2.json`; the fix is its own change). In Python, a v2 turn costs about a third more than a v1 turn (3,130 against 4,920 turns/s): it has three messages instead of two (the answer, then an idle update).
+**Protocol v2.** Only Subspace speaks v2 in both languages. The run found a 1 ms delay per turn in the Subspace TS agent: it started each v2 turn with `setTimeout(..., 0)`, and Node waits at least 1 ms for any timer. With `setImmediate` the TS pair went from 775 to 24,449 turns/s, and from 13,317 to 63,992 across 20 sessions (`results/v2-before-setimmediate.json` and `results/v2.json`; the fix is #23). In Python, a v2 turn costs about a third more than a v1 turn (3,130 against 4,920 turns/s): it has three messages instead of two (the answer, then an idle update).
 
 ## What to keep in mind
 
