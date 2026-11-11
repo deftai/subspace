@@ -2,6 +2,11 @@
 
 Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
 
+## Unreleased
+
+- acp: a project's `subspace.toml` is only read if its folder is trusted. It can choose the command an agent name runs (even `claude`), so opening an untrusted checkout and starting an agent by name there could run a command the checkout chose. Trusted folders are listed in your own `~/.config/subspace/agents.toml` (`[trust] folders = ["~/work/my-project"]`): absolute or `~/` paths, that folder only (not the folders below it), symlinks resolved. An untrusted file is skipped with a warning on stderr (once per file) that names it and shows how to trust it; your `agents.toml`, `$SUBSPACE_AGENTS` and `files` still load, and a file named in those is read as given. New `load_catalog(trust_project=True)` reads it anyway; `on_warning=` receives the warning instead of stderr. A bad `[trust]` table in `agents.toml` is an `AgentFileError`. The TypeScript packages and the `subspace` CLI (`--trust-project`) behave the same.
+- acp: `AgentFile` (from `agent_files()`) has a third field, `trusted` (default `True`); code that unpacks it as `path, exists` needs `path, exists, _`.
+
 ## 0.1.0a1
 
 First release, an alpha (the API may still change): a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.

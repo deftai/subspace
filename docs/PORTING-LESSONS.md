@@ -433,3 +433,31 @@ Subspace Python agent does not gain from concurrent sessions (about 12,500
 turns/s with one session or twenty, against 8,400 → 40,000 for the official
 agent), the clearest thing to fix next. The run also found the 1 ms
 `setTimeout` delay per v2 turn in the TS agent.
+
+### 2026-11-11: trusting a project's subspace.toml
+
+A project's `subspace.toml` is now read only if the user's `agents.toml`
+trusts its folder, the same way in both ports (same file format, same
+warning text, tested word for word on both sides). Comparing paths is where
+the ports can drift without anyone noticing:
+
+- Resolve symlinks on both sides of the comparison, and fall back to the
+  plain path when the folder does not exist. Node has `realpathSync.native`
+  (throws on a missing path); Python's `os.path.realpath` does not throw by
+  default. Write the fallback either way.
+- Case: compare case-insensitively on Windows only (`os.path.normcase` in
+  Python, lower-casing on `win32` in TS). Do not fold case on macOS, even
+  though its default file system ignores case; a trust list should be strict.
+- Home: `~/` comes from `HOME` on POSIX and `USERPROFILE` on Windows, in
+  both runtimes. A test that moves the home folder must set both.
+- Absolute paths: Python 3.13 stopped treating `/x` as absolute on Windows
+  (`os.path.isabs`); Node's `isAbsolute` still does. Prefer drive-letter or
+  `~/` paths in cross-port tests.
+- Adding a field to a returned record is free in TS and breaks callers in
+  Python if the record is a `NamedTuple` they unpack. Give the new field a
+  default and say so in the changelog; in a future port, return records
+  that are not tuples.
+- A library that warns needs a hook (`onWarning` / `on_warning`) and a
+  default (stderr, once per file). A CLI that loads the catalog twice for
+  one command should load it once, or the user sees the warning twice.
+

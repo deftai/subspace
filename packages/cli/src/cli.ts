@@ -62,7 +62,9 @@ const SESSION_OPTIONS = `  --cwd <dir>            The agent's folder (default: h
                          (default: allow reads, ask about the rest in the terminal)
   --env KEY=VALUE        An environment variable for the agent (repeatable)
   --trace <file>         Record the connection (view it with subspace trace)
-  --quiet                No thoughts, tool lines or notices`;
+  --quiet                No thoughts, tool lines or notices
+  --agents-file <file>   An agents file to read too (repeatable)
+  --trust-project        Read the nearest subspace.toml even if its folder is not trusted`;
 
 const USAGE = `Usage: subspace <command> [options]
 
@@ -147,6 +149,7 @@ waived (shown as WAIVE). Exits 1 if any check failed.
   --mode <mode>          Switch each session to this mode first (default: the agent's ask-first mode)
   --cwd <dir>            The agent's folder (default: a temporary one)
   --strict               Do not waive known quirks
+  --trust-project        Read the nearest subspace.toml even if its folder is not trusted
 
 ${AGENTS_NOTE.replace('subspace run "hello" -- node my-agent.js', 'subspace check -- node my-agent.js')}
 `,
@@ -160,9 +163,18 @@ Agents come from layers, each later one changing the earlier field by field:
 the ACP agent registry, Subspace's built-ins, ~/.config/subspace/agents.toml,
 the nearest subspace.toml, and the files in $SUBSPACE_AGENTS or --agents-file.
 
+A project's subspace.toml can choose the commands agents run, so it is only read
+if your agents.toml trusts its folder (that folder only, not the ones below it):
+
+  [trust]
+  folders = ["~/work/my-project"]
+
+Otherwise it is skipped with a warning. --trust-project reads it for one run.
+
   --all                  Also list the registry's other agents
   --refresh              Fetch the latest ACP registry into the cache
   --files                List the agents files read, and whether each exists
+  --trust-project        Read the nearest subspace.toml even if its folder is not trusted
   --json                 Print as JSON
 
 \`agents install <name>\` downloads a registry agent's binary for this machine
@@ -227,14 +239,14 @@ const VALUED = new Set(['cwd', 'mode', 'trace', 'only', 'o', 'out', 'title', 'se
 /** Valued flags that may be given more than once. */
 const REPEATED = new Set(['prompt', 'env', 'expect-contains', 'expect-not-contains', 'agents-file']);
 
-const SESSION_FLAGS = ['cwd', 'mode', 'yes', 'read-only', 'env', 'trace', 'quiet', 'raw', 'agents-file'];
+const SESSION_FLAGS = ['cwd', 'mode', 'yes', 'read-only', 'env', 'trace', 'quiet', 'raw', 'agents-file', 'trust-project'];
 /** The flags each command takes (besides --help and --version). `trace` checks its own. */
 const COMMAND_FLAGS: Record<string, readonly string[]> = {
   run: [...SESSION_FLAGS, 'prompt', 'prompts-file', 'stdin', 'expect-contains', 'expect-not-contains', 'expect-end', 'expect-stop-reason', 'json', 'timeout'],
   chat: SESSION_FLAGS,
   test: ['update', 'ci', 'keep', 'junit', 'artifacts', 'json'],
-  check: ['only', 'mode', 'cwd', 'strict', 'agents-file'],
-  agents: ['all', 'refresh', 'files', 'json', 'cwd', 'agents-file'],
+  check: ['only', 'mode', 'cwd', 'strict', 'agents-file', 'trust-project'],
+  agents: ['all', 'refresh', 'files', 'json', 'cwd', 'agents-file', 'trust-project'],
   help: [],
 };
 const ALWAYS = ['help', 'h', 'version', 'v'];
@@ -319,24 +331,36 @@ function distance(a: string, b: string): number {
   return row[b.length]!;
 }
 
-function catalogOf(parsed: Parsed): AgentCatalog {
+const catalogs = new WeakMap<Parsed, AgentCatalog>();
+
+/** The catalog for this command (read once, so a skipped subspace.toml is warned about once). */
+function catalogOf(parsed: Parsed, io: Io): AgentCatalog {
+  const known = catalogs.get(parsed);
+  if (known) return known;
   try {
-    return loadCatalog({ cwd: cwdOf(parsed), files: parsed.lists['agents-file'] ?? [] });
+    const catalog = loadCatalog({
+      ...catalogOptions(parsed),
+      onWarning: (message) => io.err(`${message}Or run with --trust-project to use it this once.\n`),
+    });
+    catalogs.set(parsed, catalog);
+    return catalog;
   } catch (error) {
     if (error instanceof AgentFileError) throw new UsageError(error.message);
     throw error;
   }
 }
 
+const catalogOptions = (parsed: Parsed) => ({ cwd: cwdOf(parsed), files: parsed.lists['agents-file'] ?? [], trustProject: parsed.flags['trust-project'] === true });
+
 const cwdOf = (parsed: Parsed) => (typeof parsed.flags.cwd === 'string' ? resolve(parsed.flags.cwd) : process.cwd());
 
 /** The agent: a command after --, or a name looked up in the catalog. */
-function agentOf(parsed: Parsed): { command: string; args: string[] } | ResolvedAgent {
+function agentOf(parsed: Parsed, io: Io): { command: string; args: string[] } | ResolvedAgent {
   if (parsed.custom) return parsed.custom;
   const name = parsed.positional.shift();
   if (!name) throw new UsageError('Which agent? Give a name or a command after --.');
   try {
-    return agentByName(name, catalogOf(parsed));
+    return agentByName(name, catalogOf(parsed, io));
   } catch (error) {
     if (error instanceof TypeError) throw new UsageError(`${error.message.replace(', or pass { command, args }.', '')}, or a command after --.`);
     throw error;
@@ -439,7 +463,7 @@ export function turnError(result: TurnResult): string | undefined {
 const exitFor = (end: string) => (end === 'completed' ? 0 : end === 'refused' ? 3 : end === 'cancelled' || end === 'limit' ? 130 : 1);
 
 async function runCommand(parsed: Parsed, io: Io): Promise<number> {
-  const agent = agentOf(parsed);
+  const agent = agentOf(parsed, io);
   const prompts = await promptsOf(parsed);
   if (!prompts.length) throw new UsageError('What should the agent do? Give a prompt (or --prompt, --prompts-file, --stdin).');
   let timeout: number | undefined;
@@ -450,7 +474,7 @@ async function runCommand(parsed: Parsed, io: Io): Promise<number> {
     }
     timeout = seconds * 1000;
   }
-  const started = await start(startTarget(agent), { ...startOptions(parsed, io, permissionsOf(parsed)), catalog: catalogOf(parsed) });
+  const started = await start(startTarget(agent), { ...startOptions(parsed, io, permissionsOf(parsed)), catalog: catalogOf(parsed, io) });
   const results: TurnResult[] = [];
   try {
     if (started.modeWarning && !parsed.flags.quiet) io.err(`${started.modeWarning}\n`);
@@ -491,7 +515,7 @@ export function expectationFailures(parsed: Pick<Parsed, 'flags' | 'lists'>, res
 }
 
 async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
-  const agent = agentOf(parsed);
+  const agent = agentOf(parsed, io);
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
   // Permission questions go through the same line reader as the chat, one at a time.
   const ask = askVia(rl);
@@ -509,7 +533,7 @@ async function chatCommand(parsed: Parsed, io: Io): Promise<number> {
     }
   });
   try {
-    started = await start(startTarget(agent), { ...startOptions(parsed, io, onPermission), catalog: catalogOf(parsed), handleSignals: false });
+    started = await start(startTarget(agent), { ...startOptions(parsed, io, onPermission), catalog: catalogOf(parsed, io), handleSignals: false });
     io.err(`${started.client.agent.name ?? 'agent'} ready. /exit to quit.\n`);
     rl.prompt();
     for await (const line of rl) {
@@ -571,7 +595,7 @@ const ready = (a: ResolvedAgent) => installed(a.command);
 async function installCommand(parsed: Parsed, io: Io): Promise<number> {
   const name = parsed.positional[1];
   if (!name) throw new UsageError('subspace agents install <name>');
-  const catalog = catalogOf(parsed);
+  const catalog = catalogOf(parsed, io);
   const agent = resolveAgent(catalog, name);
   const entry = agent?.registry ? catalog.registry.agents.find((a) => a.id === agent.registry) : undefined;
   if (!agent) throw new UsageError(`Unknown agent ${JSON.stringify(name)}; \`subspace agents --all\` lists them`);
@@ -598,13 +622,13 @@ async function agentsCommand(parsed: Parsed, io: Io): Promise<number> {
     if (!parsed.positional.length && !parsed.flags.all) return 0;
   }
   if (parsed.flags.files) {
-    for (const f of agentFiles({ cwd: cwdOf(parsed), files: parsed.lists['agents-file'] ?? [] })) io.out(`${f.exists ? '✓' : '·'} ${f.path}\n`);
+    for (const f of agentFiles(catalogOptions(parsed))) io.out(`${!f.trusted ? '✗' : f.exists ? '✓' : '·'} ${f.path}${f.trusted ? '' : '   (not trusted: skipped)'}\n`);
     return 0;
   }
-  const catalog = catalogOf(parsed);
+  const catalog = catalogOf(parsed, io);
   const name = parsed.positional[0];
   if (name) {
-    const agent = agentOf(parsed);
+    const agent = agentOf(parsed, io);
     if (!('id' in agent)) throw new UsageError('subspace agents <name>');
     if (parsed.flags.json) {
       io.out(`${JSON.stringify(agent, null, 2)}\n`);
@@ -661,7 +685,7 @@ async function agentsCommand(parsed: Parsed, io: Io): Promise<number> {
 }
 
 async function checkCommand(parsed: Parsed, io: Io): Promise<number> {
-  const agent = agentOf(parsed);
+  const agent = agentOf(parsed, io);
   const known = 'id' in agent ? agent : undefined;
   const cwd = typeof parsed.flags.cwd === 'string' ? parsed.flags.cwd : await mkdtemp(join(tmpdir(), 'subspace-check-'));
   const mode = typeof parsed.flags.mode === 'string' ? (parsed.flags.mode === 'none' ? undefined : parsed.flags.mode) : known?.mode;

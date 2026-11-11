@@ -282,7 +282,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     agent = await start(target, {
       cwd: workspace,
       // A named agent is looked up from the scenario's project (its subspace.toml), not the temporary workspace.
-      ...(typeof target === 'string' ? { catalog: loadCatalog({ cwd: baseDir }) } : {}),
+      // That subspace.toml is trusted as the scenario file is: a scenario can name any command to run.
+      ...(typeof target === 'string' ? { catalog: loadCatalog({ cwd: baseDir, trustProject: true }) } : {}),
       permissions: permissionPolicy(scenario.permissions),
       trace: tracePath,
       quiet: true,
