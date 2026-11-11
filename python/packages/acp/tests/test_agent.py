@@ -269,6 +269,28 @@ async def test_endpoint_notifications_keep_order_when_a_hook_is_slow() -> None:
     await client.close()
 
 
+async def test_endpoint_notifications_through_hooks_use_one_sender_and_fail_one_at_a_time() -> None:
+    from deft_subspace.acp import endpoint as endpoint_module
+
+    async def hook(call: EndpointCall, ctx: Any, state: Any, next_: Any) -> Any:
+        if call.params["n"] == 3:
+            raise ValueError("no 3")
+        await asyncio.sleep(0)
+        return await next_()
+
+    endpoint, client = connect(name="sender", layers=[AgentLayer[None](name="hook", outbound=hook)])
+    before = len(endpoint_module._tasks)
+    sends = [endpoint.client.notify("session/update", {"n": n}) for n in range(50)]
+    # One task sends them all, not one per notification.
+    assert len(endpoint_module._tasks) - before <= 1
+    sends[10].cancel()  # cancelled before its turn: not sent
+    results = await asyncio.gather(*sends, return_exceptions=True)
+    await tick()
+    assert isinstance(results[3], ValueError)
+    assert [p["n"] for _m, p in client.notes] == [n for n in range(50) if n not in (3, 10)]
+    await client.close()
+
+
 async def test_endpoint_cancel_request_aborts_the_handler_signal() -> None:
     aborted = False
 

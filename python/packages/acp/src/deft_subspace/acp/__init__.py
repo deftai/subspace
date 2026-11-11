@@ -285,6 +285,7 @@ from .tools import (
 )
 from .turn import (
     Turn,
+    TurnHistory,
 )
 
 if TYPE_CHECKING:
@@ -427,6 +428,7 @@ __all__ = [
     "ToolResult",
     "ToolSet",
     "Turn",
+    "TurnHistory",
     "TurnEnd",
     "TurnEvent",
     "TurnHandlers",

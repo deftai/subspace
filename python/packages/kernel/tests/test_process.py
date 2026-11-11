@@ -290,3 +290,28 @@ def test_the_not_found_hint_names_cmd_shims_on_windows():
 
     assert ".cmd shims" in _not_found_hint("npx", None, True)
     assert ".cmd" not in _not_found_hint("npx", None, False)
+
+
+async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin():
+    # Reads nothing for a while, then all of stdin, and reports how much it got.
+    script = "import sys, time; time.sleep(0.5); print(len(sys.stdin.buffer.read()), flush=True); time.sleep(60)"
+    child = await spawn_process(PY, args=["-c", script], kill_grace_ms=300)
+    try:
+        peer = RpcPeer(ndjson(child.channel), name="stuck")
+        peer._close_wait_s = 0.1
+        peer.start()
+        big = {"x": "y" * 1_000_000}
+        writes = [asyncio.ensure_future(peer.notify("n", big)) for _ in range(4)]
+        await asyncio.sleep(0.1)
+        assert not all(w.done() for w in writes), "the pipe should be full"
+        started = time.monotonic()
+        await asyncio.wait_for(peer.close(), 5)
+        assert time.monotonic() - started < 2
+        await asyncio.wait_for(asyncio.gather(*writes, return_exceptions=True), 2)
+        # What was queued was dropped, not written later: the child got end of input early.
+        stdout = child._proc.stdout
+        assert stdout is not None
+        got = int(await asyncio.wait_for(stdout.readline(), 5))
+        assert got < 1_000_000, got
+    finally:
+        await child.stop()

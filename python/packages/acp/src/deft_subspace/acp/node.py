@@ -17,6 +17,7 @@ import asyncio
 import codecs
 import inspect
 import os
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -135,8 +136,9 @@ class WorkspaceFiles:
         self.root = os.fspath(root)
 
     async def read_text_file(self, request: dict[str, Any]) -> str:
-        path = await inside_workspace(self.root, request.get("path"))
-        content = await asyncio.to_thread(_read_text, path)
+        root, path = self.root, request.get("path")
+        # The check (realpath, lstat) and the read are blocking file calls: one thread for both.
+        content = await asyncio.to_thread(lambda: _read_text(_inside_workspace(root, path)))
         line, limit = request.get("line"), request.get("limit")
         if line is None and limit is None:
             return content
@@ -145,8 +147,8 @@ class WorkspaceFiles:
         return "\n".join(lines[start:] if limit is None else lines[start : start + limit])
 
     async def write_text_file(self, request: dict[str, Any]) -> None:
-        target = await inside_workspace(self.root, request.get("path"))
-        await asyncio.to_thread(_write_text, target, str(request.get("content", "")))
+        root, path, content = self.root, request.get("path"), str(request.get("content", ""))
+        await asyncio.to_thread(lambda: _write_text(_inside_workspace(root, path), content))
 
 
 def _read_text(path: str) -> str:
@@ -167,6 +169,13 @@ def workspace_files(root: str | os.PathLike[str]) -> WorkspaceFiles:
 
 async def inside_workspace(root: str | os.PathLike[str], path: Any) -> str:
     """`path` resolved against `root`; raises ValueError if it, or a symbolic link on the way, leads outside."""
+    if not isinstance(path, str) or not path:
+        raise ValueError("Path is required")
+    # realpath and lstat block: off the event loop.
+    return await asyncio.to_thread(_inside_workspace, root, path)
+
+
+def _inside_workspace(root: str | os.PathLike[str], path: Any) -> str:
     if not isinstance(path, str) or not path:
         raise ValueError("Path is required")
     base = os.path.abspath(root)
@@ -216,24 +225,48 @@ class CommandRequest:
 class _Terminal:
     session_id: str
     limit: int
-    output: str = ""
+    #: The newest output, as UTF-8 chunks; `size` bytes in all.
+    chunks: deque[bytes] = field(default_factory=deque)
     size: int = 0
     truncated: bool = False
     process: SupervisedProcess | None = None
     exit: ExitInfo | None = None
     ended: asyncio.Task[ExitInfo] | None = None
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    #: `output`, until more arrives.
+    _text: str | None = None
 
     def append(self, text: str) -> None:
-        self.output += text
-        self.size += len(text.encode("utf-8"))
-        if self.size <= self.limit:
+        if not text:
             return
-        # Keep the newest bytes, cut at a character boundary.
-        kept = self.output.encode("utf-8")[-self.limit :].decode("utf-8", errors="replace").lstrip("�")
-        self.output = kept
-        self.size = len(kept.encode("utf-8"))
-        self.truncated = True
+        chunk = text.encode("utf-8")
+        self.chunks.append(chunk)
+        self.size += len(chunk)
+        self._text = None
+        # Keep the newest bytes: drop whole chunks from the front, then part of one.
+        while self.size > self.limit:
+            self.truncated = True
+            first = self.chunks[0]
+            excess = self.size - self.limit
+            if len(first) <= excess:
+                self.chunks.popleft()
+                self.size -= len(first)
+            else:
+                self.chunks[0] = first[excess:]
+                self.size -= excess
+
+    @property
+    def output(self) -> str:
+        """The output kept, as text. A character the limit cut in half at the start is dropped."""
+        if self._text is None:
+            data = b"".join(self.chunks)
+            self.chunks = deque([data] if data else [])
+            start = 0
+            if self.truncated:
+                while start < len(data) and start < 3 and data[start] & 0xC0 == 0x80:
+                    start += 1
+            self._text = data[start:].decode("utf-8", errors="replace")
+        return self._text
 
 
 #: Code for a command the client refused to run.

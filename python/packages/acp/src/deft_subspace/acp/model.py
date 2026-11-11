@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Union
 
 if TYPE_CHECKING:
@@ -65,12 +66,16 @@ class ToolCall:
     cancellable: bool = False
 
     def snapshot(self) -> ToolCall:
-        """A copy that later updates do not change."""
-        return ToolCall(
+        """A copy that later updates do not change.
+
+        Content only grows by appending (a replacement is a new list), so the copy keeps
+        the list and its length and copies that much when its `content` is read.
+        """
+        source = self.__dict__.get("_content")
+        snap = ToolCall(
             id=self.id,
             title=self.title,
             status=self.status,
-            content=list(self.content),
             locations=list(self.locations),
             name=self.name,
             kind=self.kind,
@@ -78,6 +83,76 @@ class ToolCall:
             raw_output=self.raw_output,
             cancellable=self.cancellable,
         )
+        if isinstance(source, _ContentAt):
+            snap.__dict__["_content"] = source
+        elif isinstance(source, list):
+            snap.__dict__["_content"] = _ContentAt(source, len(source))
+        return snap
+
+
+#: The last content copy made: (list, length, copy). Reading a snapshot twice gives the same list.
+_last_content: list[Any] = [None, 0, None]
+
+
+class _ContentAt:
+    """A tool call's content list as it was: the list and its length at the time."""
+
+    __slots__ = ("items", "length")
+
+    def __init__(self, items: list[Any], length: int) -> None:
+        self.items = items
+        self.length = length
+
+    def read(self) -> list[Any]:
+        if _last_content[0] is self.items and _last_content[1] == self.length:
+            return _last_content[2]
+        out = self.items[: self.length]
+        _last_content[:] = [self.items, self.length, out]
+        return out
+
+
+class _ContentField:
+    """`ToolCall.content`: a list, or a snapshot's view of one, copied when read."""
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self
+        value = obj.__dict__.get("_content")
+        return value.read() if isinstance(value, _ContentAt) else value
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        obj.__dict__["_content"] = value
+
+
+setattr(ToolCall, "content", _ContentField())
+
+
+class TextAt:
+    """A message's text as it was: read from its log when looked at (see `TextField`)."""
+
+    __slots__ = ("read",)
+
+    def __init__(self, read: Callable[[], str]) -> None:
+        self.read = read
+
+
+class TextField:
+    """The `text` of a text event: a str, or a `TextAt` read when looked at, so a turn's
+    events do not each keep a copy of the message so far."""
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self
+        value = obj.__dict__.get("_text", "")
+        return value.read() if isinstance(value, TextAt) else value
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        obj.__dict__["_text"] = value
+
+
+def text_source(event: Any) -> Any:
+    """@internal The stored `text` of an event: a str or a `TextAt`, without reading it."""
+    return event.__dict__.get("_text", "")
 
 
 # ---- background work (v2) ----------------------------------------------------
@@ -211,6 +286,10 @@ class UserMessageEvent:
     delta: str
     text: str
     type: Literal["user_message"] = field(default="user_message", init=False)
+
+
+for _cls in (MessageEvent, ThoughtEvent, UserMessageEvent):
+    setattr(_cls, "text", TextField())
 
 
 @dataclass(frozen=True)

@@ -26,7 +26,7 @@ export {
   type ToolCallHandle,
   type ToolCallInit,
 } from './agent.ts';
-export { Turn } from './turn.ts';
+export { Turn, type TurnHistory } from './turn.ts';
 export {
   agentEndpoint,
   stateKey,

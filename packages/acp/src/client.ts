@@ -46,12 +46,12 @@ import {
 } from './extensions.ts';
 import { modesFrom, modesFromConfig, type SessionModes } from './modes.ts';
 import { decide, type PermissionPolicy } from './permissions.ts';
-import { backgroundOf, TurnProjection } from './projection.ts';
+import { backgroundOf, snapshotToolCall, TurnProjection } from './projection.ts';
 import { McpProvider, mcpServersParam, MCP_PROTOCOL_VERSION, type McpRegistration, type McpServer, type ServeMcpOptions } from './mcp.ts';
 import { checkToolInput, toolInputSchema, toolOutputText, type ToolSet } from './tools.ts';
 import { READ_KINDS } from './policies.ts';
 import { Terminals } from './terminals.ts';
-import { Turn } from './turn.ts';
+import { Turn, type TurnHistory } from './turn.ts';
 
 /** A prompt: text, a content block, or a list of both (strings become text blocks). */
 export type PromptInput = string | ContentBlock | ReadonlyArray<string | ContentBlock>;
@@ -193,6 +193,8 @@ export type PromptOptions = {
   signal?: AbortSignal;
   /** Cancel the turn after this long (the same as `limits.maxDurationMs`). */
   timeoutMs?: number;
+  /** What the turn keeps of its events (default `'all'`); bound it for long turns. See `TurnHistory`. */
+  history?: TurnHistory;
 } & TurnHandlers;
 
 /** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
@@ -1004,8 +1006,8 @@ export class Session {
     const projection = new TurnProjection(id, this.terminals);
     const turn = new Turn(id, () => this.cancelTurn(active), {
       text: () => projection.text,
-      toolCalls: () => [...projection.toolCalls.values()].map((c) => ({ ...c })),
-    });
+      toolCalls: () => [...projection.toolCalls.values()].map(snapshotToolCall),
+    }, options.history);
     const active: ActiveTurn = {
       turn,
       projection,
@@ -1324,7 +1326,7 @@ export class Session {
     return {
       sessionId: this.id,
       title,
-      toolCall: toolCall ? { ...toolCall } : undefined,
+      toolCall: toolCall ? snapshotToolCall(toolCall) : undefined,
       command,
       options,
       protocol: this.client.protocol,
@@ -1357,7 +1359,7 @@ export class Session {
     active.turn.finish({
       stopReason,
       text: active.projection.text,
-      toolCalls: [...active.projection.toolCalls.values()].map((c) => ({ ...c })),
+      toolCalls: [...active.projection.toolCalls.values()].map((c) => ({ ...c, content: [...c.content] })),
       cancelled,
       ...(forced ? { forced: true } : {}),
       ...(error !== undefined ? { error } : {}),

@@ -67,7 +67,7 @@ from .policies import READ_KINDS
 from .projection import TurnProjection, background_of
 from .terminals import Terminals
 from .tools import ToolSet, check_tool_input, tool_input_schema, tool_output_text
-from .turn import Turn, TurnView
+from .turn import Turn, TurnHistory, TurnView
 
 PromptInput = Union[str, ContentBlock, Sequence[Union[str, ContentBlock]]]
 """A prompt: text, a content block, or a list of both (strings become text blocks)."""
@@ -1057,6 +1057,7 @@ class Session:
         queue: bool | None = None,
         signal: AbortSignal | None = None,
         timeout_ms: float | None = None,
+        history: TurnHistory = "all",
         **handlers: Any,
     ) -> Turn:
         """Send a prompt. Iterate the turn for its events, or pass handlers (`on_message`,
@@ -1067,7 +1068,8 @@ class Session:
         `limits.max_duration_ms`; `signal` cancels the turn when it fires. While a turn is running
         this raises, unless `queue` (or the client's `queue_prompts`) is set: then the turn starts
         when the running one ends. Content the agent cannot take (an image it did not offer to
-        accept, for example) raises a `CapabilityError`.
+        accept, for example) raises a `CapabilityError`. `history` bounds what the turn keeps of
+        its events for a long turn (default "all"; see `TurnHistory`).
         """
         _check_handler_names(handlers)
         blocks = self._fit_content(prompt_blocks(prompt))
@@ -1084,6 +1086,7 @@ class Session:
             lambda: self._cancel_turn(holder[0]),
             TurnView(lambda: projection.text, lambda: [c.snapshot() for c in projection.tool_calls.values()]),
             self._spawn,
+            history,
         )
         active = _Active(turn=turn, projection=projection, limits=base)
         holder.append(active)

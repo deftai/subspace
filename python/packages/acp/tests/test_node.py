@@ -139,3 +139,26 @@ async def test_a_terminal_for_another_session_is_unknown(tmp_path):
     assert status == {"exitCode": 0, "signal": None}
     assert (await terminals.output({"sessionId": "a", **created}))["output"].strip() == "1"
     await terminals.dispose()
+
+
+async def test_the_output_limit_keeps_the_newest_bytes_and_drops_only_a_character_it_cut_in_half(tmp_path):
+    terminals = workspace_terminals(str(tmp_path))
+
+    async def run(code: str, limit: int) -> dict:
+        command, args = _python(code)
+        created = await terminals.create({"sessionId": "s", "command": command, "args": args, "outputByteLimit": limit})
+        await terminals.wait_for_exit({"sessionId": "s", **created})
+        return await terminals.output({"sessionId": "s", **created})
+
+    try:
+        # 'ab' + U+FFFD (3 bytes) + '123456': 11 bytes.
+        code = "import sys, time; sys.stdout.buffer.write('ab\\ufffd'.encode()); sys.stdout.flush(); time.sleep(0.02); sys.stdout.write('123456')"
+        # The cut falls before U+FFFD: a real one is kept.
+        out = await run(code, 9)
+        assert out["output"] == "\ufffd123456" and out["truncated"] is True
+        # The cut falls inside it: its tail is dropped.
+        assert (await run(code, 8))["output"] == "123456"
+        many = await run("import sys\nfor i in range(3000): sys.stdout.write(str(i % 10)); sys.stdout.flush()", 1000)
+        assert len(many["output"]) == 1000 and many["output"].endswith("789")
+    finally:
+        await terminals.dispose()

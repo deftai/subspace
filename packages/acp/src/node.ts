@@ -119,8 +119,11 @@ export interface WorkspaceTerminalOptions {
 interface TerminalState {
   sessionId: string;
   process: SupervisedProcess;
-  output: string;
+  /** The newest output, as UTF-8 chunks; `bytes` in all. */
+  chunks: Buffer[];
   bytes: number;
+  /** `output()`'s text, until more arrives. */
+  text?: string;
   limit: number;
   truncated: boolean;
   exit?: ExitInfo;
@@ -150,14 +153,38 @@ export function workspaceTerminals(
   };
 
   const append = (terminal: TerminalState, text: string) => {
-    terminal.output += text;
-    terminal.bytes += Buffer.byteLength(text);
-    if (terminal.bytes <= terminal.limit) return;
-    // Keep the newest bytes, cut at a character boundary.
-    const kept = Buffer.from(terminal.output).subarray(-terminal.limit).toString('utf8').replace(/^\uFFFD+/, '');
-    terminal.output = kept;
-    terminal.bytes = Buffer.byteLength(kept);
-    terminal.truncated = true;
+    if (!text) return;
+    const chunk = Buffer.from(text, 'utf8');
+    terminal.chunks.push(chunk);
+    terminal.bytes += chunk.length;
+    terminal.text = undefined;
+    // Keep the newest bytes: drop whole chunks from the front, then part of one.
+    while (terminal.bytes > terminal.limit) {
+      terminal.truncated = true;
+      const first = terminal.chunks[0]!;
+      const excess = terminal.bytes - terminal.limit;
+      if (first.length <= excess) {
+        terminal.chunks.shift();
+        terminal.bytes -= first.length;
+      } else {
+        terminal.chunks[0] = first.subarray(excess);
+        terminal.bytes -= excess;
+      }
+    }
+  };
+
+  /** The output kept, as text. A character the limit cut in half at the start is dropped. */
+  const outputText = (terminal: TerminalState): string => {
+    if (terminal.text !== undefined) return terminal.text;
+    let bytes = Buffer.concat(terminal.chunks, terminal.bytes);
+    terminal.chunks = bytes.length ? [bytes] : [];
+    if (terminal.truncated) {
+      let start = 0;
+      while (start < bytes.length && start < 3 && (bytes[start]! & 0xc0) === 0x80) start++;
+      bytes = bytes.subarray(start);
+    }
+    terminal.text = bytes.toString('utf8');
+    return terminal.text;
   };
 
   const exitStatus = (info: ExitInfo) => ({ exitCode: info.code, signal: info.signal });
@@ -173,7 +200,7 @@ export function workspaceTerminals(
       const env = Object.fromEntries((request.env ?? []).map((v) => [v.name, v.value]));
       const terminal = {
         sessionId: request.sessionId,
-        output: '',
+        chunks: [] as Buffer[],
         bytes: 0,
         limit: request.outputByteLimit ?? options.defaultOutputByteLimit ?? 1024 * 1024,
         truncated: false,
@@ -210,7 +237,7 @@ export function workspaceTerminals(
     async output(request) {
       const terminal = get(request);
       return {
-        output: terminal.output,
+        output: outputText(terminal),
         truncated: terminal.truncated,
         ...(terminal.exit ? { exitStatus: exitStatus(terminal.exit) } : {}),
       };

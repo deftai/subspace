@@ -60,6 +60,25 @@ export interface TraceTap {
   note(text: string, data?: unknown): void;
 }
 
+/**
+ * A copy of a message, so later mutation does not change the record. Plain
+ * objects and arrays (all JSON has) are copied directly, which is several
+ * times faster than `structuredClone`; anything else goes to `structuredClone`.
+ */
+function copyJson(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (Array.isArray(value)) {
+    const out = new Array<unknown>(value.length);
+    for (let i = 0; i < value.length; i++) out[i] = copyJson(value[i]);
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return structuredClone(value);
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) out[key] = copyJson((value as Record<string, unknown>)[key]);
+  return out;
+}
+
 /** An `RpcPeerOptions.tap` that records a trace. The header is written at once. */
 export function traceTap(write: (record: TraceRecord) => void, options: TraceTapOptions): TraceTap {
   const clock = options.clock ?? systemClock;
@@ -76,7 +95,7 @@ export function traceTap(write: (record: TraceRecord) => void, options: TraceTap
     const msg = options.redact ? options.redact(message, direction) : message;
     if (msg === undefined) return;
     // Copy, so later mutation of the message does not change the record.
-    write({ v: TRACE_VERSION, kind: 'message', t: clock.now() - start, dir: direction, msg: structuredClone(msg) });
+    write({ v: TRACE_VERSION, kind: 'message', t: clock.now() - start, dir: direction, msg: copyJson(msg) });
   }) as TraceTap;
   tap.note = (text, data) =>
     write({ v: TRACE_VERSION, kind: 'note', t: clock.now() - start, text, ...(data === undefined ? {} : { data }) });
