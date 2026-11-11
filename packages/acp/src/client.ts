@@ -53,8 +53,6 @@ import { READ_KINDS } from './policies.ts';
 import { Terminals } from './terminals.ts';
 import { Turn } from './turn.ts';
 
-/** File access an agent may ask for (v1 `fs/*`). See `workspaceFiles()` in `@deft-subspace/acp/node`. */
-
 /** A prompt: text, a content block, or a list of both (strings become text blocks). */
 export type PromptInput = string | ContentBlock | ReadonlyArray<string | ContentBlock>;
 
@@ -64,6 +62,7 @@ export function promptBlocks(input: PromptInput): ContentBlock[] {
   return typeof input === 'string' || !Array.isArray(input) ? [text(input as string | ContentBlock)] : input.map(text);
 }
 
+/** File access an agent may ask for (v1 `fs/*`). See `workspaceFiles()` in `@deft-subspace/acp/node`. */
 export interface FileHandlers {
   readTextFile(request: { path: string; line?: number | null; limit?: number | null }): Promise<string>;
   writeTextFile(request: { path: string; content: string }): Promise<void>;
@@ -182,7 +181,6 @@ export interface ClientOptions extends TurnHandlers {
   onDiagnostic?: (diagnostic: PeerDiagnostic) => void;
 }
 
-/** Which existing session to open, and where. */
 /** Options for one prompt: limits, queueing, and handlers for this turn. */
 export type PromptOptions = {
   limits?: TurnLimits;
@@ -196,6 +194,7 @@ export type PromptOptions = {
 /** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
 export type SessionMcpServers = ReadonlyArray<McpServer | McpRegistration>;
 
+/** Which existing session to open, and where. */
 export interface SessionLocator {
   sessionId: string;
   cwd: string;
@@ -644,7 +643,6 @@ export class AcpClient {
   }
 
   /** @internal */
-  /** @internal */
   get defaultHandlers(): TurnHandlers | undefined {
     return this.options.handlers;
   }
@@ -888,7 +886,7 @@ export class Session {
     }
     if (modes.via === 'modes') {
       await this.client.peer.request('session/set_mode', { sessionId: this.id, modeId }, options);
-      modes.current = modeId;
+      this.currentModes = { ...modes, current: modeId };
       return;
     }
     const params =
@@ -934,7 +932,9 @@ export class Session {
     const result = (await this.client.peer.request('session/set_config_option', built.params, options)) as Record<string, unknown> | null;
     this.currentConfig = configOptionsFrom(result?.configOptions) ?? this.withValue(id, value);
     this.currentModes = modesFromConfig(result?.configOptions) ?? this.currentModes;
-    if (this.currentModes?.via === 'config' && this.currentModes.configId === id && typeof value === 'string') this.currentModes.current = value;
+    if (this.currentModes?.via === 'config' && this.currentModes.configId === id && typeof value === 'string') {
+      this.currentModes = { ...this.currentModes, current: value };
+    }
   }
 
   /** The model option (category `model`, a select), if the agent offers one. */
@@ -1258,7 +1258,7 @@ export class Session {
       if (typeof u.updatedAt === 'string') this.info.updatedAt = u.updatedAt;
     }
     if (u.sessionUpdate === 'current_mode_update' && this.currentModes && typeof u.currentModeId === 'string') {
-      this.currentModes.current = u.currentModeId;
+      this.currentModes = { ...this.currentModes, current: u.currentModeId };
     } else if (u.sessionUpdate === 'config_option_update') {
       const modes = modesFromConfig(u.configOptions);
       if (modes) this.currentModes = modes;

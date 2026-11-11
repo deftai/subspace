@@ -18,7 +18,7 @@ import inspect
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol, Union
 
 from deft_subspace.kernel import (
@@ -963,7 +963,7 @@ class Session:
         try:
             if self.client.supports.close_session:
                 await self.client.peer.request("session/close", {"sessionId": self.id}, timeout_ms=10_000)
-        except (RpcError, LocalError):
+        except Exception:  # noqa: BLE001
             # Not supported, or the agent is gone: the session is closed here regardless.
             pass
         finally:
@@ -987,7 +987,7 @@ class Session:
             raise ValueError(f'The agent offers no mode "{mode_id}" (available: {available})')
         if modes.via == "modes":
             await self.client.peer.request("session/set_mode", {"sessionId": self.id, "modeId": mode_id}, timeout_ms=timeout_ms)
-            modes.current = mode_id
+            self._modes = replace(modes, current=mode_id)
             return
         params = (
             {"sessionId": self.id, "configId": modes.config_id, "type": "id", "value": mode_id}
@@ -1022,7 +1022,7 @@ class Session:
         self._config = config_options_from(options) or self._with_value(option_id, value)
         self._modes = modes_from_config(options) or self._modes
         if self._modes is not None and self._modes.via == "config" and self._modes.config_id == option_id and isinstance(value, str):
-            self._modes.current = value
+            self._modes = replace(self._modes, current=value)
 
     async def set_model(self, value: str, *, timeout_ms: float | None = None) -> None:
         """Choose a model: sets the option with category `model`."""
@@ -1400,7 +1400,7 @@ class Session:
             if isinstance(update.get("updatedAt"), str):
                 self.info.updated_at = update["updatedAt"]
         if kind == "current_mode_update" and self._modes is not None and isinstance(update.get("currentModeId"), str):
-            self._modes.current = update["currentModeId"]
+            self._modes = replace(self._modes, current=update["currentModeId"])
         elif kind == "config_option_update":
             modes = modes_from_config(update.get("configOptions"))
             if modes is not None:

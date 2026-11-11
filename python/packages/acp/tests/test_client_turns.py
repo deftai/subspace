@@ -253,3 +253,24 @@ async def test_caught_up_stops_waiting_once_the_handlers_have_failed_and_leaves_
     started = time.monotonic()
     await turn.caught_up()
     assert time.monotonic() - started < 0.5, "no handler will run again: nothing to wait for"
+
+
+async def test_a_mode_change_replaces_session_modes_instead_of_changing_the_object_an_app_holds():
+    async def on_prompt(_agent: RpcPeer, _params: Any, _n: int) -> Any:
+        return {"stopReason": "end_turn"}
+
+    client, agent = await Fake(1, on_prompt).start()
+    modes = {"currentModeId": "auto", "availableModes": [{"id": "auto", "name": "Auto"}, {"id": "plan", "name": "Plan"}]}
+    agent.on_request("session/new", lambda _p, _c: {"sessionId": "s1", "modes": modes})
+    agent.on_request("session/set_mode", lambda _p, _c: {})
+    session = await client.new_session("/")
+    before = session.modes
+    await session.set_mode("plan")
+    assert session.modes is not None and session.modes.current == "plan"
+    after_set = session.modes
+    await update(agent, {"sessionUpdate": "current_mode_update", "currentModeId": "auto"})
+    await asyncio.sleep(0.01)
+    assert session.modes is not None and session.modes.current == "auto"
+    assert before is not None and before.current == "auto", "unchanged since it was read"
+    assert after_set.current == "plan", "unchanged since it was read"
+    await client.close()

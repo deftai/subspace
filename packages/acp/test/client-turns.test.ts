@@ -186,3 +186,23 @@ test('caughtUp stops waiting once the handlers have failed, and leaves nothing b
   await turn.caughtUp();
   assert.ok(Date.now() - started < 500, 'no handler will run again: nothing to wait for');
 });
+
+test('a mode change replaces session.modes instead of changing the object an app holds', async () => {
+  const { client, agent } = await fakeAgent(1, () => ({ stopReason: 'end_turn' }));
+  agent.onRequest('session/new', () => ({
+    sessionId: 's1',
+    modes: { currentModeId: 'auto', availableModes: [{ id: 'auto', name: 'Auto' }, { id: 'plan', name: 'Plan' }] },
+  }));
+  agent.onRequest('session/set_mode', () => ({}));
+  const session = await client.newSession({ cwd: '/' });
+  const before = session.modes;
+  await session.setMode('plan');
+  assert.equal(session.modes?.current, 'plan');
+  const afterSet = session.modes;
+  await update(agent, { sessionUpdate: 'current_mode_update', currentModeId: 'auto' });
+  await sleep(10);
+  assert.equal(session.modes?.current, 'auto');
+  assert.equal(before?.current, 'auto', 'unchanged since it was read');
+  assert.equal(afterSet?.current, 'plan', 'unchanged since it was read');
+  await client.close();
+});
