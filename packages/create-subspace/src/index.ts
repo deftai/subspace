@@ -3,19 +3,21 @@
  *
  *   npm create subspace@latest my-app                       # asks nothing: the script template
  *   npm create subspace@latest my-agent -- --template agent
- *   npx create-subspace my-agent --template claude-agent --subspace ../subspace   # link a local checkout
+ *   pnpm dlx create-subspace my-agent --template claude-agent --subspace ../subspace   # link a local checkout (pnpm only)
  *
  * Templates:
  *   script        a program that uses an agent (start() + terminal())
  *   agent         an ACP agent of your own (serveStdio() + turn.tool())
  *   claude-agent  an ACP agent backed by Claude (modelAgent() + claude())
  */
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 export interface Io {
   out: (text: string) => void;
   err: (text: string) => void;
+  /** Where npm_config_user_agent is read from. Default process.env. */
+  env?: Record<string, string | undefined>;
 }
 const defaultIo: Io = { out: (t) => process.stdout.write(t), err: (t) => process.stderr.write(t) };
 
@@ -77,11 +79,21 @@ const CLAUDE_AGENT = `/**
  *   npx subspace run "What is in src?" -- node src/agent.ts
  */
 import { readdir, readFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { modelAgent, tool } from '@deft-subspace/acp';
 import { serveStdio } from '@deft-subspace/acp/node';
 import { claude } from '@deft-subspace/claude';
 
 const path = { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] };
+
+// The tools stay inside the folder the agent was started in.
+const root = process.cwd();
+function inside(path: string): string {
+  const full = resolve(root, path);
+  const rel = relative(root, full);
+  if (rel === '..' || rel.startsWith(\`..\${sep}\`) || isAbsolute(rel)) throw new Error(\`\${path} is outside \${root}\`);
+  return full;
+}
 
 serveStdio(
   modelAgent({
@@ -89,8 +101,8 @@ serveStdio(
     model: claude(), // Claude Opus 5.5, adaptive thinking, refusal fallbacks on
     system: ({ cwd }) => \`You help with the project in \${cwd}. Look before you answer. Be brief.\`,
     tools: {
-      listFiles: tool({ description: 'List a folder', input: path, kind: 'read', run: ({ path }: { path: string }) => readdir(path) }),
-      readText: tool({ description: 'Read a text file', input: path, kind: 'read', run: ({ path }: { path: string }) => readFile(path, 'utf8') }),
+      listFiles: tool({ description: 'List a folder', input: path, kind: 'read', run: ({ path }: { path: string }) => readdir(inside(path)) }),
+      readText: tool({ description: 'Read a text file', input: path, kind: 'read', run: ({ path }: { path: string }) => readFile(inside(path), 'utf8') }),
     },
   })
 );
@@ -132,6 +144,21 @@ Node 22.19 or later runs the TypeScript directly.${
 `;
 }
 
+/** A valid npm package name from a folder name; `subspace-project` if nothing is left. */
+function packageName(dir: string): string {
+  return (
+    basename(dir)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'subspace-project'
+  );
+}
+
+/** A path as a shell would need it typed. */
+function shellQuote(text: string): string {
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`;
+}
+
 /** The files of a new project, by path. */
 export function files(name: string, template: Template, subspace?: { root: string; from: string }): Record<string, string> {
   // Absolute: relative links break where the project's path goes through a symbolic link (macOS /var).
@@ -141,7 +168,7 @@ export function files(name: string, template: Template, subspace?: { root: strin
   const devDependencies: Record<string, string> = { '@deft-subspace/cli': spec('cli'), '@types/node': '^22.19.0', typescript: '^5.9.3' };
   const main = template === 'script' ? 'src/index.ts' : 'src/agent.ts';
   const pkg = {
-    name: basename(name).toLowerCase().replace(/[^a-z0-9-]+/g, '-'),
+    name: packageName(name),
     version: '0.1.0',
     private: true,
     type: 'module',
@@ -160,18 +187,45 @@ export function files(name: string, template: Template, subspace?: { root: strin
   };
 }
 
+const FLAGS = ['--template', '-t', '--subspace', '--help', '-h'];
+
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
   let dir: string | undefined;
   let template: Template = 'script';
   let subspace: string | undefined;
+  const usage = `Usage: create-subspace <dir> [--template ${TEMPLATES.join('|')}] [--subspace <checkout>]\n`;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === '--template' || arg === '-t') template = argv[++i] as Template;
-    else if (arg === '--subspace') subspace = argv[++i];
-    else if (arg === '--help' || arg === '-h') {
-      io.out(`Usage: create-subspace <dir> [--template ${TEMPLATES.join('|')}] [--subspace <checkout>]\n`);
+    let arg = argv[i]!;
+    let inline: string | undefined;
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    if (eq > 0) [arg, inline] = [arg.slice(0, eq), arg.slice(eq + 1)];
+    const value = (): string | undefined => {
+      if (inline !== undefined) return inline;
+      const next = argv[i + 1];
+      if (next === undefined || (next.startsWith('-') && next !== '-')) return undefined;
+      i++;
+      return next;
+    };
+    if (arg === '--template' || arg === '-t' || arg === '--subspace') {
+      const v = value();
+      if (v === undefined) {
+        io.err(`${arg} needs a value.\n${usage}`);
+        return 2;
+      }
+      if (arg === '--subspace') subspace = v;
+      else template = v as Template;
+    } else if (arg === '--help' || arg === '-h') {
+      io.out(usage);
       return 0;
+    } else if (arg.startsWith('-') && arg !== '-') {
+      const near = FLAGS.find((f) => f.startsWith('--') && (f.startsWith(arg) || arg.startsWith(f.slice(0, 5))));
+      io.err(`Unknown option ${arg}.${near ? ` Did you mean ${near}?` : ''}\n${usage}`);
+      return 2;
     } else if (!dir) dir = arg;
+    else {
+      io.err(`One folder only (got ${dir} and ${arg}).\n${usage}`);
+      return 2;
+    }
   }
   if (!dir) {
     io.err(`Where? create-subspace <dir> [--template ${TEMPLATES.join('|')}]\n`);
@@ -182,9 +236,15 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     return 2;
   }
   const target = resolve(dir);
-  if (existsSync(target) && readdirSync(target).length) {
-    io.err(`${dir} is not empty; pick a new folder.\n`);
-    return 1;
+  if (existsSync(target)) {
+    if (!statSync(target).isDirectory()) {
+      io.err(`${dir} is not a folder; pick a new folder.\n`);
+      return 1;
+    }
+    if (readdirSync(target).length) {
+      io.err(`${dir} is not empty; pick a new folder.\n`);
+      return 1;
+    }
   }
   const checkout = subspace ? resolve(subspace) : undefined;
   if (checkout && !existsSync(join(checkout, 'packages', 'acp', 'package.json'))) {
@@ -196,9 +256,15 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, text);
   }
+  // Linked packages use link: and workspace:* specifiers, which only pnpm installs.
+  const pm = checkout ? 'pnpm' : 'npm';
+  const runAgent = checkout ? 'pnpm exec subspace run "hello" -- node src/agent.ts' : 'npx subspace run "hello" -- node src/agent.ts';
   io.out(
-    `Created ${dir} (${template}).\n\n  cd ${dir}\n  npm install\n  ${template === 'script' ? 'npm start' : 'npx subspace run "hello" -- node src/agent.ts'}\n` +
+    `Created ${dir} (${template}).\n\n  cd ${shellQuote(dir)}\n  ${pm} install\n  ${template === 'script' ? `${pm} start` : runAgent}\n` +
       (checkout ? '' : `\n(The @deft-subspace packages are not on npm yet: until they are, pass --subspace <path to a checkout>.)\n`)
   );
+  const agent = (io.env ?? process.env).npm_config_user_agent ?? '';
+  if (checkout && agent.startsWith('npm/'))
+    io.err(`\nNote: npm cannot install the linked packages (link: dependencies to a pnpm workspace). Use pnpm (https://pnpm.io) in ${dir}.\n`);
   return 0;
 }
