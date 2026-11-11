@@ -48,7 +48,8 @@ class NdjsonDecoder:
     ) -> None:
         self._max = max_line_length
         self._on_diagnostic = on_diagnostic
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # utf-8-sig: a byte order mark at the very start is skipped, as TextDecoder does.
+        self._decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._pieces: list[str] = []
         self._pending = 0
         self._skipping = False  # inside an over-long line; drop until the next newline

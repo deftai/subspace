@@ -66,6 +66,13 @@ def test_large_lines_cost_linear_time():
     assert elapsed < 3, f"took {elapsed:.2f} s"
 
 
+def test_a_leading_byte_order_mark_is_skipped():
+    diagnostics: list[FramingDiagnostic] = []
+    data = '﻿{"a":1}\n{"b":"﻿"}\n'.encode()
+    assert decode([data[:2], data[2:]], on_diagnostic=diagnostics.append) == [{"a": 1}, {"b": "﻿"}]
+    assert diagnostics == []
+
+
 def test_encoder_writes_one_line_per_value():
     encoder = ndjson_encoder()
     text = b"".join(b for value in ({"text": "a\nb"}, 0) for b in encoder.feed(value)).decode()
