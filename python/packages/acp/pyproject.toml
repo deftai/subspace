@@ -8,6 +8,7 @@ dependencies = ["deft-subspace-kernel", "agent-client-protocol==1.0.0"]
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.27"]
+mcp = ["mcp>=2.3"]
 
 [build-system]
 requires = ["hatchling>=1.25"]

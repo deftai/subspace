@@ -29,7 +29,7 @@ Or in one line: `await run("codex", "What does this repo do?", permissions="reje
 | Distribution | Import | What it is |
 |---|---|---|
 | `deft-subspace-kernel` | `deft_subspace.kernel` | Channels, NDJSON framing, a JSON-RPC peer with timeouts and cancellation, abort signals, traces, supervised processes. No dependencies. |
-| `deft-subspace-acp` | `deft_subspace.acp` | `AcpClient`, `Session` and `Turn`; `serve_agent` and `agent_endpoint`; `start()`, `run()` and `serve_stdio()`; permission rules, tools, MCP-over-ACP, `model_agent()`, OpenTelemetry (`otel` extra). |
+| `deft-subspace-acp` | `deft_subspace.acp` | `AcpClient`, `Session` and `Turn`; `serve_agent` and `agent_endpoint`; `start()`, `run()` and `serve_stdio()`; permission rules, tools, MCP-over-ACP, `model_agent()`, OpenTelemetry (`otel` extra), MCP servers over http and sse (`mcp` extra). |
 
 The testkit, devtools, CLI and the Claude model adapter are not ported yet. Traces are the same JSON Lines format as the TypeScript packages, so the TypeScript trace viewer reads them.
 
@@ -77,7 +77,7 @@ await peer.closed
 - **Cancellation:** `AbortController` and `AbortSignal` (in the kernel) work like the Web ones. Cancelling a task that awaits a request also gives up on it and tells the other side.
 - **Validators** (`schema=` on tools, `json()`, extensions) are pydantic models, `TypeAdapter`s, or objects with `parse()`, in place of Standard Schema.
 - **Protocol types** are the official SDK's pydantic models, as `deft_subspace.acp.v1` and `.v2`. They are loaded on first use, because importing them is slow.
-- **`mcp_connector()`** connects to `stdio` MCP servers by itself, with no MCP SDK. It does not connect to `http` or `sse` servers yet.
+- **`mcp_connector()`** connects to `stdio` MCP servers by itself, with no MCP SDK. `http` and `sse` servers go through the official MCP SDK, the `mcp` extra (`pip install 'deft-subspace-acp[mcp]'`), which negotiates MCP 2026-07-28 and older versions.
 
 ## Develop
 

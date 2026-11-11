@@ -97,3 +97,63 @@ async def test_mcp_connector_stdio():
     assert progress and progress[0]["method"] == "notifications/progress"
     await session.close()
     await client.close()
+
+
+async def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _serve_http(kind: str):
+    import asyncio
+
+    from deft_subspace.kernel import spawn_process
+
+    port = await _free_port()
+    child = await spawn_process(sys.executable, args=[str(Path(__file__).parent / "fixtures" / "mcp_http_server.py"), str(port), kind])
+    for _ in range(200):
+        try:
+            _r, w = await asyncio.open_connection("127.0.0.1", port)
+            w.close()
+            break
+        except OSError:
+            await asyncio.sleep(0.05)
+    return child, port
+
+
+import pytest  # noqa: E402
+
+from deft_subspace.acp.mcp import HttpMcpServer, SseMcpServer  # noqa: E402
+
+
+@pytest.mark.parametrize("kind", ["http", "sse"])
+async def test_mcp_connector_http_and_sse(kind):
+    child, port = await _serve_http(kind)
+    try:
+        server = (
+            HttpMcpServer("web", f"http://127.0.0.1:{port}/mcp", {"Authorization": "Bearer t"})
+            if kind == "http"
+            else SseMcpServer("web", f"http://127.0.0.1:{port}/sse", {"Authorization": "Bearer t"})
+        )
+        progress = []
+
+        async def prompt(turn):
+            web = turn.mcp("web")
+            listed = await web.list_tools()
+            added = await web.call_tool("add", {"a": 2, "b": 3}, on_notification=progress.append)
+            who = await web.call_tool("whoami", {})
+            await turn.say(f"{sorted(t['name'] for t in listed)} {added['content'][0]['text']} {who['content'][0]['text']}")
+
+        # sse exists only in v1.
+        client = await connect({"prompt": prompt, "mcp_connector": mcp_connector(), "protocols": [1] if kind == "sse" else [1, 2]})
+        session = await client.new_session("/tmp", mcp_servers=[server])
+        result = await session.prompt("go")
+        assert result.text == "['add', 'whoami'] 5 Bearer t"
+        assert progress and progress[0]["params"]["progress"] == 1
+        await session.close()
+        await client.close()
+    finally:
+        await child.stop()
