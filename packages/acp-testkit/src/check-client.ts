@@ -102,8 +102,11 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
     'permission.cancelled-on-cancel': async (turn) => {
       const call = await turn.toolCall({ title: 'Write notes.txt', kind: 'edit' });
       const read = new Promise<void>((resolve) => (onPermissionRead = resolve));
+      // Answered by the client (a timeout is no answer).
       let settled = false;
-      const answer = within(agent.request('session/request_permission', permissionParams(turn, call.id)), timeout, TIMED_OUT).finally(() => (settled = true));
+      const request = agent.request('session/request_permission', permissionParams(turn, call.id));
+      request.then(() => (settled = true), () => (settled = true));
+      const answer = within(request, timeout, TIMED_OUT);
       // Once the client has read the request (and had a moment to handle it), the user cancels the turn.
       const delivered = await within(read, timeout, TIMED_OUT);
       onPermissionRead = undefined;

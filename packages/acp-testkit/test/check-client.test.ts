@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import * as officialV1 from '@agentclientprotocol/sdk';
 import type { PermissionHandler } from '@deft-subspace/acp';
+import type { Channel } from '@deft-subspace/kernel';
 import { workspaceFiles } from '@deft-subspace/acp/node';
 import { acpClientDriver, checkClient, CLIENT_CHECKS, failures, formatReport, type CheckResult } from '@deft-subspace/acp-testkit';
 
@@ -143,6 +144,45 @@ test('a client that answers cancelled but never sends session/cancel fails permi
   );
   assert.deepEqual(summary(report), ['permission.cancelled-on-cancel:fail']);
   assert.match(report[0]!.detail, /session\/cancel not sent/);
+});
+
+test('a client that has not read the permission request when it times out fails permission.cancelled-on-cancel', async (t) => {
+  // The client stops reading after the tool call, before the permission request, until the request has timed out.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { cwd } = await workspace();
+  let stalled!: () => void;
+  const stall = new Promise<void>((resolve) => (stalled = resolve));
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const gated = (channel: Channel<unknown>): Channel<unknown> => {
+    const reader = channel.readable.getReader();
+    let held = false;
+    return {
+      readable: new ReadableStream({
+        async pull(controller) {
+          if (held) await released;
+          const { done, value } = await reader.read();
+          if (done) return controller.close();
+          controller.enqueue(value);
+          if ((value as { method?: unknown }).method === 'session/update' && !held) {
+            held = true;
+            stalled();
+          }
+        },
+      }),
+      writable: channel.writable,
+    };
+  };
+  const connect = sdkClient(cwd, {}, (connection, sessionId) => connection.agent.notify('session/cancel', { sessionId }));
+  const report = checkClient((channel) => connect(gated(channel)), { only: ['permission.cancelled-on-cancel'], timeoutMs: 1000 });
+  await stall;
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1000);
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const results = await report;
+  assert.deepEqual(summary(results), ['permission.cancelled-on-cancel:fail'], formatReport(results));
+  assert.match(results[0]!.detail, /not answered within 1000 ms/);
 });
 
 test('the cancel comes after the client has the permission request', async () => {
