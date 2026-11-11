@@ -505,6 +505,37 @@ async def test_handlers_still_running_when_the_drain_time_is_up_are_aborted():
         task.cancel()
 
 
+async def test_close_gives_up_on_a_stuck_writer_and_aborts_the_channel():
+    left, _right = channel_pair()
+    aborted: list[bool] = []
+
+    class Stuck:
+        async def receive(self) -> Any:
+            return await left.receive()
+
+        async def send(self, _message: Any) -> None:
+            await asyncio.get_running_loop().create_future()  # a full pipe nobody reads
+
+        async def close(self) -> None:
+            pass
+
+        async def abort(self) -> None:
+            aborted.append(True)
+
+    peer = RpcPeer(Stuck())
+    peer._close_wait_s = 0.05
+    peer.start()
+    first = asyncio.ensure_future(peer.notify("a"))
+    second = asyncio.ensure_future(peer.notify("b"))
+    await tick()
+    await asyncio.wait_for(peer.close(), 1)
+    assert peer._writer_task is not None and peer._writer_task.done()
+    assert aborted == [True]
+    for write in (first, second):
+        with pytest.raises(LocalError):
+            await asyncio.wait_for(write, 1)
+
+
 async def test_with_nothing_running_the_other_side_ending_closes_at_once():
     end = Raw()
     peer = RpcPeer(end.channel).start()

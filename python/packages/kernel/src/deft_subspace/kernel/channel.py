@@ -6,6 +6,9 @@ Bytes on the edges (stdio, sockets), structured messages in process.
     await channel.send(message)
     await channel.close()               # end our side; the other side reads EndOfChannel
 
+A channel may also have `abort()`: close at once, dropping unsent data. The
+peer uses it when a write is stuck; without it, it calls `close()`.
+
 `channel_pair()` connects two in-process ends; `stream_channel()` wraps
 asyncio streams; `pipe_channel()` applies a transform to each direction (that
 is how `ndjson()` turns bytes into JSON values).
@@ -111,6 +114,9 @@ class MemoryChannel(Generic[T]):
     async def close(self) -> None:
         self._outbox.end()
 
+    async def abort(self) -> None:
+        self._outbox.end()
+
 
 def channel_pair() -> tuple[MemoryChannel[Any], MemoryChannel[Any]]:
     """Two connected channels in one process: what `a` sends, `b` receives, and the other way round.
@@ -153,6 +159,18 @@ class StreamChannel:
         try:
             if self._writer.can_write_eof():
                 self._writer.write_eof()
+            else:
+                self._writer.close()
+        except (OSError, RuntimeError):
+            pass
+
+    async def abort(self) -> None:
+        """Close at once, dropping anything not yet written."""
+        self._closed = True
+        transport = getattr(self._writer, "transport", None)
+        try:
+            if transport is not None:
+                transport.abort()
             else:
                 self._writer.close()
         except (OSError, RuntimeError):
@@ -205,6 +223,10 @@ class _Piped(Generic[A, B]):
         except ChannelClosed:
             pass
         await self._channel.close()
+
+    async def abort(self) -> None:
+        abort = getattr(self._channel, "abort", None)
+        await (abort() if abort is not None else self._channel.close())
 
 
 def pipe_channel(channel: Channel[A], *, read: Transform[A, B], write: Transform[B, A]) -> Channel[B]:

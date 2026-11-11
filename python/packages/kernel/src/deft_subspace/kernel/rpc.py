@@ -330,10 +330,32 @@ class RpcPeer:
         writer = self._writer_task
         if writer is not None and not writer.done() and writer is not asyncio.current_task():
             try:
-                await asyncio.wait_for(asyncio.shield(writer), 1.0)
-            except BaseException:  # noqa: BLE001
+                await asyncio.wait_for(asyncio.shield(writer), self._close_wait_s)
+            except TimeoutError:
+                # The channel is not taking writes (a full pipe nobody reads): drop them.
+                writer.cancel()
+                try:
+                    await writer
+                except BaseException:  # noqa: BLE001
+                    pass
+                await self._abort_channel()
+            except Exception:  # noqa: BLE001
                 pass
         return self._close_info  # type: ignore[return-value]
+
+    #: How long close() waits for queued writes before it drops them.
+    _close_wait_s = 1.0
+
+    async def _abort_channel(self) -> None:
+        while self._outbox:
+            _message, future = self._outbox.popleft()
+            if not future.done():
+                future.set_exception(LocalError("closed", f"{self.name}: connection closed"))
+        abort = getattr(self._channel, "abort", None)
+        try:
+            await _resolve(abort() if abort is not None else self._channel.close())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_outbound(self, call: Call, send: Callable[[Any], Awaitable[Any]]) -> Awaitable[Any]:
         chain = self._outbound_chain
