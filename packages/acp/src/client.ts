@@ -51,7 +51,7 @@ import { McpProvider, mcpServersParam, MCP_PROTOCOL_VERSION, type McpRegistratio
 import { checkToolInput, toolInputSchema, toolOutputText, type ToolSet } from './tools.ts';
 import { READ_KINDS } from './policies.ts';
 import { Terminals } from './terminals.ts';
-import { Turn } from './turn.ts';
+import { Turn, type TurnHistory } from './turn.ts';
 
 /** A prompt: text, a content block, or a list of both (strings become text blocks). */
 export type PromptInput = string | ContentBlock | ReadonlyArray<string | ContentBlock>;
@@ -193,6 +193,8 @@ export type PromptOptions = {
   signal?: AbortSignal;
   /** Cancel the turn after this long (the same as `limits.maxDurationMs`). */
   timeoutMs?: number;
+  /** What the turn keeps of its events (default `'all'`); bound it for long turns. See `TurnHistory`. */
+  history?: TurnHistory;
 } & TurnHandlers;
 
 /** MCP servers for a session: declarations, or registrations from `client.serveMcp()`. */
@@ -1005,7 +1007,7 @@ export class Session {
     const turn = new Turn(id, () => this.cancelTurn(active), {
       text: () => projection.text,
       toolCalls: () => [...projection.toolCalls.values()].map(snapshotToolCall),
-    });
+    }, options.history);
     const active: ActiveTurn = {
       turn,
       projection,

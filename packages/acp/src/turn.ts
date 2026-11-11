@@ -11,9 +11,21 @@
  *   once something else arrives or the turn ends.
  * - `cancel()` tells the agent, answers its open permission questions with
  *   `cancelled`, and ends the turn if the agent does not confirm in time.
+ * - `history` (a prompt option) bounds what the turn keeps for a long turn;
+ *   see `TurnHistory`.
  */
 import { dispatch, TextTracker, type TurnHandlers } from './handlers.ts';
 import type { ToolCall, TurnEvent, TurnResult } from './model.ts';
+
+/**
+ * What a turn keeps of its events, for `history` and for iterating it again:
+ * `'all'` (the default) keeps every event; a number keeps the last that many;
+ * `'none'` keeps none. An event is only dropped once every iterator running
+ * at the time (and the turn's handlers) has had it, so a running reader never
+ * misses one; an iterator started later begins at the oldest event kept.
+ * `text`, `toolCalls` and `done` are not affected.
+ */
+export type TurnHistory = 'all' | 'none' | number;
 
 /** @internal What the turn knows so far, for `text` and `toolCalls`. */
 export interface TurnView {
@@ -30,7 +42,14 @@ export class Turn implements AsyncIterable<TurnEvent> {
   readonly id: string;
   readonly done: Promise<TurnResult>;
 
-  private readonly events: TurnEvent[] = [];
+  /** Events kept, from `head` on; `dropped` events came before them. */
+  private events: TurnEvent[] = [];
+  private head = 0;
+  private dropped = 0;
+  /** How many events to keep; undefined keeps all. */
+  private readonly keep?: number;
+  /** Where each running iterator is (an absolute event index). */
+  private readonly cursors = new Set<{ index: number }>();
   private readonly waiters = new Set<() => void>();
   private finished?: { ok: true; result: TurnResult } | { ok: false; error: unknown };
   private resolveDone!: (result: TurnResult) => void;
@@ -50,10 +69,15 @@ export class Turn implements AsyncIterable<TurnEvent> {
   private open?: TextEvent;
 
   /** @internal */
-  constructor(id: string, onCancel: () => Promise<void>, view?: TurnView) {
+  constructor(id: string, onCancel: () => Promise<void>, view?: TurnView, history: TurnHistory = 'all') {
     this.id = id;
     this.onCancel = onCancel;
     this.view = view;
+    if (history === 'none') this.keep = 0;
+    else if (typeof history === 'number') {
+      if (!Number.isInteger(history) || history < 0) throw new RangeError(`history must be 'all', 'none' or a whole number >= 0, not ${history}`);
+      this.keep = history;
+    }
     this.done = new Promise<TurnResult>((resolve, reject) => {
       this.resolveDone = resolve;
       this.rejectDone = reject;
@@ -66,9 +90,14 @@ export class Turn implements AsyncIterable<TurnEvent> {
     return this.finished !== undefined;
   }
 
-  /** Events so far. */
+  /** Events so far (the ones kept, with the `history` option). */
   get history(): readonly TurnEvent[] {
-    return this.events;
+    return this.head ? this.events.slice(this.head) : this.events;
+  }
+
+  /** How many events the turn has had, kept or not. */
+  private get total(): number {
+    return this.dropped + this.events.length - this.head;
   }
 
   /** Agent message text so far (the whole turn's, once done). */
@@ -93,14 +122,26 @@ export class Turn implements AsyncIterable<TurnEvent> {
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<TurnEvent> {
-    let index = 0;
-    for (;;) {
-      while (index < this.events.length) yield this.events[index++]!;
-      if (this.finished) {
-        if (!this.finished.ok) throw this.finished.error;
-        return;
+    const cursor = { index: this.dropped };
+    this.cursors.add(cursor);
+    try {
+      for (;;) {
+        while (cursor.index < this.total) {
+          const event = this.events[this.head + cursor.index - this.dropped]!;
+          cursor.index++;
+          yield event;
+        }
+        if (this.finished) {
+          if (!this.finished.ok) throw this.finished.error;
+          return;
+        }
+        // Caught up: what this reader held back can go.
+        this.trim();
+        await new Promise<void>((resolve) => this.waiters.add(resolve));
       }
-      await new Promise<void>((resolve) => this.waiters.add(resolve));
+    } finally {
+      this.cursors.delete(cursor);
+      this.trim();
     }
   }
 
@@ -112,7 +153,24 @@ export class Turn implements AsyncIterable<TurnEvent> {
       if (isText(event)) this.open = event;
       this.events.push(event);
     }
+    this.trim();
     this.wake();
+  }
+
+  /** Drop events past `history` that every running iterator has had. */
+  private trim(): void {
+    if (this.keep === undefined) return;
+    let until = this.total - this.keep;
+    for (const cursor of this.cursors) until = Math.min(until, cursor.index);
+    if (until <= this.dropped) return;
+    for (let i = this.head; i < this.head + until - this.dropped; i++) this.events[i] = undefined as unknown as TurnEvent;
+    this.head += until - this.dropped;
+    this.dropped = until;
+    // A new array once most of it is dropped, so dropping stays cheap.
+    if (this.head > 64 && this.head * 2 > this.events.length) {
+      this.events = this.events.slice(this.head);
+      this.head = 0;
+    }
   }
 
   /** End the open message, if any. */
@@ -127,6 +185,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
   finish(result: TurnResult): void {
     if (this.finished) return;
     this.close(result.stopReason === 'end_turn' && !result.cancelled);
+    this.trim();
     this.finished = { ok: true, result };
     this.wake();
     this.settle(() => this.resolveDone(result));
@@ -136,6 +195,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
   fail(error: unknown): void {
     if (this.finished) return;
     this.close(false);
+    this.trim();
     this.finished = { ok: false, error };
     this.wake();
     this.settle(() => this.rejectDone(error));
@@ -177,7 +237,7 @@ export class Turn implements AsyncIterable<TurnEvent> {
    */
   async caughtUp(maxMs = 1000): Promise<void> {
     if (!this.observer || this.observerEnded || this.finished) return;
-    const target = this.events.length;
+    const target = this.total;
     if (this.dispatched >= target) return;
     await new Promise<void>((resolve) => {
       const done = () => {

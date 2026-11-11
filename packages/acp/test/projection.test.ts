@@ -4,8 +4,9 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { TurnEvent } from '@deft-subspace/acp';
+import type { TurnEvent, TurnResult } from '@deft-subspace/acp';
 import { TurnProjection } from '../src/projection.ts';
+import { Turn } from '../src/turn.ts';
 
 type ToolEvent = Extract<TurnEvent, { type: 'tool_call' }>;
 type MessageEvent = Extract<TurnEvent, { type: 'message' }>;
@@ -43,6 +44,36 @@ test('tool call snapshots: content chunks append without changing earlier snapsh
   assert.equal(failed.length, 1);
   assert.equal((failed[0] as ToolEvent).toolCall.status, 'failed');
   assert.equal(events.at(-1)!.toolCall.status, 'in_progress');
+});
+
+test('turn history: a number keeps the last events, none keeps none, a running reader misses nothing', async () => {
+  const usage = (n: number): TurnEvent => ({ type: 'usage', used: n, size: 100 });
+  const result: TurnResult = { stopReason: 'end_turn', text: '', toolCalls: [], cancelled: false };
+  // Kept: the last 3.
+  const capped = new Turn('a', async () => {}, undefined, 3);
+  for (let i = 0; i < 10; i++) capped.push(usage(i));
+  assert.deepEqual(capped.history.map((e) => (e as { used: number }).used), [7, 8, 9]);
+  // A reader that is behind holds events until it has had them; then they go.
+  const turn = new Turn('b', async () => {}, undefined, 'none');
+  const seen: number[] = [];
+  const reader = (async () => {
+    for await (const event of turn) seen.push((event as { used: number }).used);
+  })();
+  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 200; i++) turn.push(usage(i));
+  assert.ok(turn.history.length > 0, 'the reader has not run yet');
+  await new Promise((r) => setImmediate(r));
+  turn.push(usage(200));
+  turn.finish({ ...result });
+  await reader;
+  assert.deepEqual(seen, Array.from({ length: 201 }, (_, i) => i));
+  assert.equal(turn.history.length, 0);
+  assert.equal((turn as unknown as { events: unknown[] }).events.length < 100, true);
+  // The default keeps everything.
+  const all = new Turn('c', async () => {}, undefined);
+  for (let i = 0; i < 10; i++) all.push(usage(i));
+  assert.equal(all.history.length, 10);
+  assert.throws(() => new Turn('d', async () => {}, undefined, -1), RangeError);
 });
 
 test('message events: text is the message as it was, without a copy per event', () => {

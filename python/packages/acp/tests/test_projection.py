@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import asdict
 from typing import Any
 
-from deft_subspace.acp import MessageEvent, TerminalEvent, ToolCallEvent, terminal_text
+import pytest
+
+from deft_subspace.acp import MessageEvent, TerminalEvent, ToolCallEvent, TurnResult, UsageEvent, terminal_text
 from deft_subspace.acp.projection import TurnProjection
 from deft_subspace.acp.terminals import Terminals
+from deft_subspace.acp.turn import Turn
 
 
 def _b64(data: bytes | str) -> str:
@@ -53,6 +57,46 @@ def test_terminal_output_is_stored_once_and_events_share_it():
     # One chunk larger than the cap keeps its tail.
     projection.apply({"sessionUpdate": "terminal_output_chunk", "terminalId": "T", "data": _b64(b"x" * (70 * 1024))})
     assert len(live.output) == cap and live.output.endswith(b"x")
+
+
+async def test_turn_history_a_number_keeps_the_last_events_none_keeps_none_a_running_reader_misses_nothing():
+    def usage(n: int) -> UsageEvent:
+        return UsageEvent(used=n, size=100)
+
+    async def nothing() -> None:
+        return None
+
+    capped = Turn("a", nothing, history=3)
+    for i in range(10):
+        capped.push(usage(i))
+    assert [e.used for e in capped.history if isinstance(e, UsageEvent)] == [7, 8, 9]
+    # A reader that is behind holds events until it has had them; then they go.
+    turn = Turn("b", nothing, history="none")
+    seen: list[float] = []
+
+    async def read() -> None:
+        async for event in turn:
+            assert isinstance(event, UsageEvent)
+            seen.append(event.used)
+
+    reader = asyncio.ensure_future(read())
+    await asyncio.sleep(0)
+    for i in range(200):
+        turn.push(usage(i))
+    assert turn.history, "the reader has not run yet"
+    await asyncio.sleep(0)
+    turn.push(usage(200))
+    turn.finish(TurnResult(stop_reason="end_turn", text="", tool_calls=[], cancelled=False))
+    await reader
+    assert seen == list(range(201))
+    assert turn.history == [] and len(turn._events) < 100
+    # The default keeps everything.
+    everything = Turn("c", nothing)
+    for i in range(10):
+        everything.push(usage(i))
+    assert len(everything.history) == 10
+    with pytest.raises(ValueError):
+        Turn("d", nothing, history=-1)
 
 
 def _text(t: str) -> dict[str, Any]:
