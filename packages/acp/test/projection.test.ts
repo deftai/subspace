@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { TurnEvent, TurnResult } from '@deft-subspace/acp';
+import type { ToolCall, TurnEvent, TurnResult } from '@deft-subspace/acp';
 import { TurnProjection } from '../src/projection.ts';
 import { Turn } from '../src/turn.ts';
 
@@ -100,4 +100,58 @@ test('message events: text is the message as it was, without a copy per event', 
   assert.equal(projection.text, `${events[49]!.text}\n\nbye`);
   apply({ sessionUpdate: 'agent_message_chunk', messageId: 'm', content: { type: 'text', text: '!' } });
   assert.equal(projection.text, `${events[49]!.text}\n\nbye!`);
+});
+
+test('event snapshots: writable like plain objects, and each owns its copy once read', () => {
+  const projection = new TurnProjection('t');
+  const tools: ToolEvent[] = [];
+  const messages: MessageEvent[] = [];
+  const terminals: Array<Extract<TurnEvent, { type: 'terminal' }>> = [];
+  const apply = (update: Record<string, unknown>) => {
+    for (const event of projection.apply(update).events) {
+      if (event.type === 'tool_call') tools.push(event);
+      if (event.type === 'message') messages.push(event);
+      if (event.type === 'terminal') terminals.push(event);
+    }
+  };
+  // Two snapshots at the same content length (a status change adds no content).
+  apply({ sessionUpdate: 'tool_call_update', toolCallId: 'c', title: 'x', status: 'pending', content: [text('a')] });
+  apply({ sessionUpdate: 'tool_call_update', toolCallId: 'c', status: 'in_progress' });
+  const [one, two] = tools.map((e) => e.toolCall);
+  // Reading twice gives the same array; changing one snapshot's changes no other, nor the live call.
+  assert.equal(one!.content, one!.content);
+  (one!.content as unknown[]).push('mine');
+  assert.equal(two!.content.length, 1);
+  assert.equal(projection.toolCalls.get('c')!.content.length, 1);
+  assert.equal(one!.content.length, 2);
+  // A snapshot taken later at the same length does not see the change either.
+  apply({ sessionUpdate: 'tool_call_update', toolCallId: 'c', title: 'y' });
+  assert.equal(tools[2]!.toolCall.content.length, 1);
+  // Assigning works, before or after reading (the event type is Readonly, as on main).
+  apply({ sessionUpdate: 'tool_call_update', toolCallId: 'c', title: 'z' });
+  const unread = tools[3]!.toolCall as ToolCall;
+  unread.content = [];
+  assert.deepEqual(unread.content, []);
+  (one as ToolCall).content = [text('z')] as ToolCall['content'];
+  assert.deepEqual(one!.content, [text('z')]);
+  // Once read, the field is a plain data property.
+  const read = Object.getOwnPropertyDescriptor(two!, 'content')!;
+  assert.equal(read.writable, true);
+  assert.equal(read.enumerable, true);
+  // Message text: assignable too.
+  apply({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } });
+  const message = messages[0]!;
+  message.text = 'changed';
+  assert.equal(message.text, 'changed');
+  assert.equal(projection.text, 'hi');
+  // Terminal output: two snapshots of the same output are two copies.
+  apply({ sessionUpdate: 'terminal_output_chunk', terminalId: 'term', data: btoa('abc') });
+  apply({ sessionUpdate: 'terminal_update', terminalId: 'term', command: 'ls' });
+  const [first, second] = terminals.map((e) => e.terminal);
+  (first!.output as Uint8Array)[0] = 0;
+  assert.equal(second!.output[0], 'a'.charCodeAt(0));
+  assert.equal(projection.terminals.get('term')!.output[0], 'a'.charCodeAt(0));
+  (second as { output: Uint8Array }).output = new Uint8Array([1]);
+  assert.deepEqual([...second!.output], [1]);
+  assert.equal(projection.terminals.get('term')!.output.length, 3);
 });

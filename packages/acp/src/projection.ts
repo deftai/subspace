@@ -8,6 +8,7 @@
  * state and title updates do not split it. Either way the app gets the same events.
  */
 import type { BackgroundItem, PlanEntry, StopReason, ToolCall, TurnEvent } from './model.ts';
+import { defineLazy } from './lazy.ts';
 import { Terminals } from './terminals.ts';
 
 type Update = Record<string, unknown> & { sessionUpdate?: unknown };
@@ -61,29 +62,17 @@ export function backgroundOf(update: Record<string, unknown>): BackgroundItem[] 
   });
 }
 
-/** The last copy made of each content list, by list: reading a snapshot twice gives the same array. */
-const contentCopies = new WeakMap<object, { length: number; copy: ToolCall['content'] }>();
-
 /**
  * A tool call as it is now, unchanged by later updates. A tool call's
  * content list only grows by appending (a replacement is a new list), so the
- * snapshot keeps the list and its length and copies that much when read.
+ * snapshot keeps the list and its length and copies that much the first time
+ * its `content` is read. From then on `content` is the snapshot's own array.
  */
 export function snapshotToolCall(call: Readonly<ToolCall>): ToolCall {
   const { content, ...rest } = call;
   const length = content.length;
   const snapshot = rest as ToolCall;
-  Object.defineProperty(snapshot, 'content', {
-    get: () => {
-      const last = contentCopies.get(content);
-      if (last?.length === length) return last.copy;
-      const copy = content.slice(0, length);
-      contentCopies.set(content, { length, copy });
-      return copy;
-    },
-    enumerable: true,
-    configurable: true,
-  });
+  defineLazy(snapshot, 'content', () => content.slice(0, length));
   return snapshot;
 }
 
@@ -120,14 +109,9 @@ class TextLog {
 /** A message, thought or user message event whose `text` is read from the log. */
 function textEvent(kind: TextKind, messageId: string, delta: string, log: TextLog): TurnEvent {
   const length = log.length;
-  return {
-    type: kind,
-    messageId,
-    delta,
-    get text() {
-      return log.text(length);
-    },
-  };
+  const event = { type: kind, messageId, delta } as TurnEvent;
+  defineLazy(event, 'text', () => log.text(length));
+  return event;
 }
 
 export class TurnProjection {
