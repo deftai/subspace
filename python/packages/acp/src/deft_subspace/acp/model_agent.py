@@ -62,6 +62,10 @@ class ToolResult:
 @dataclass(frozen=True)
 class PromptInput:
     prompt: list[ContentBlock]
+    #: Results of the previous turn's tool calls that ran but the model never heard back
+    #: about (the turn hit `max_steps` or was cancelled); put them before the prompt. A
+    #: call with no result never ran.
+    tool_results: list[ToolResult] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,8 @@ def model_agent(
     tool_set = tools or {}
     conversations: dict[str, ModelConversation] = {}
     cwds: dict[str, str] = {}
+    #: Results of tool calls that ran after the model last heard back, for the next prompt.
+    unsent: dict[str, list[ToolResult]] = {}
     model_tools = [
         ModelTool(name, d.description, tool_input_schema(d), d.schema is not None) for name, d in tool_set.items()
     ]
@@ -136,6 +142,7 @@ def model_agent(
     async def on_close(session_id: str) -> None:
         conversations.pop(session_id, None)
         cwds.pop(session_id, None)
+        unsent.pop(session_id, None)
         if close_session is not None:
             result = close_session(session_id)
             if inspect.isawaitable(result):
@@ -144,7 +151,14 @@ def model_agent(
     async def prompt(turn: AgentTurn) -> str:
         conversation = conversation_for(turn)
         stream = ModelStream(on_text=turn.say, on_thinking=turn.think, signal=turn.signal)
-        nxt: ModelInput = PromptInput(list(turn.prompt))
+        nxt: ModelInput = PromptInput(list(turn.prompt), unsent.pop(turn.session_id, []))
+
+        def stop_with(stop: str, results: list[ToolResult]) -> str:
+            # Tools that ran but whose results the model has not had yet: kept for the next prompt.
+            if results:
+                unsent[turn.session_id] = results
+            return stop
+
         for _step in range(max_steps):
             reply = await conversation.send(nxt, stream)
             if turn.signal.aborted:
@@ -154,10 +168,13 @@ def model_agent(
             results: list[ToolResult] = []
             for call in reply.tool_calls:
                 if turn.signal.aborted:
-                    return "cancelled"
+                    return stop_with("cancelled", results)
                 results.append(await _run_tool_call(turn, tool_set, call))
+            if turn.signal.aborted:
+                return stop_with("cancelled", results)
             nxt = ToolResultsInput(results)
-        return "max_turn_requests"
+        # The last input was never sent.
+        return stop_with("max_turn_requests", nxt.tool_results)
 
     return {**agent_options, "new_session": new_session, "close_session": on_close, "prompt": prompt}
 

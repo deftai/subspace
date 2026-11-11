@@ -65,6 +65,49 @@ async def test_max_steps_stops_a_looping_model():
     await client.close()
 
 
+async def test_results_of_tools_that_ran_when_the_turn_ended_go_with_the_next_prompt():
+    cancel_next = []
+
+    async def slow_run(_args, _ctx):
+        for cancel in cancel_next:
+            await cancel()
+        return "slow done"
+
+    slow = tool(description="Slow", run=slow_run)
+    replies = [
+        ModelReply("tool_use", [ModelToolCall("a", "add", {"a": 1, "b": 2})]),
+        ModelReply("end_turn"),
+        ModelReply("tool_use", [ModelToolCall("b", "slow", {}), ModelToolCall("c", "add", {"a": 1, "b": 1})]),
+        ModelReply("end_turn"),
+    ]
+    sent = []
+
+    class Model:
+        def conversation(self, setup):
+            class Conversation:
+                async def send(self, value, stream):
+                    sent.append(value)
+                    return replies.pop(0)
+
+            return Conversation()
+
+    client = await connect(model_agent(model=Model(), tools={"add": add, "slow": slow}, max_steps=1), permissions="allow")
+    session = await client.new_session("/work")
+    # max_steps: the tool ran, but the model never heard back.
+    assert (await session.prompt("one")).stop_reason == "max_turn_requests"
+    assert (await session.prompt("two")).stop_reason == "end_turn"
+    assert isinstance(sent[1], PromptInput)
+    assert [(r.id, r.content) for r in sent[1].tool_results] == [("a", "3")]
+    # A cancel while the first of two tools runs: its result is kept, the second never ran.
+    three = session.prompt("three")
+    cancel_next.append(three.cancel)
+    assert (await three).stop_reason == "cancelled"
+    cancel_next.clear()
+    await session.prompt("four")
+    assert [(r.id, r.content) for r in sent[3].tool_results] == [("b", "slow done")]
+    await client.close()
+
+
 async def test_serve_tools_over_mcp_over_acp():
     async def prompt(turn):
         server = turn.mcp("mine")

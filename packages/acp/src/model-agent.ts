@@ -39,10 +39,19 @@ export interface ModelReply {
   toolCalls: ModelToolCall[];
 }
 
-/** What goes to the model next: the user's prompt, or the results of its tool calls. */
-export type ModelInput =
-  | { prompt: ContentBlock[] }
-  | { toolResults: Array<{ id: string; content: string; isError?: boolean }> };
+export interface ModelToolResult {
+  id: string;
+  content: string;
+  isError?: boolean;
+}
+
+/**
+ * What goes to the model next: the user's prompt, or the results of its tool
+ * calls. A prompt carries `toolResults` too when tools of the previous turn
+ * ran but the model never heard back (the turn hit `maxSteps` or was
+ * cancelled); put them before the prompt. A call with no result never ran.
+ */
+export type ModelInput = { prompt: ContentBlock[]; toolResults?: ModelToolResult[] } | { toolResults: ModelToolResult[] };
 
 /** One conversation with a model (one ACP session). It keeps its own history. */
 export interface ModelConversation {
@@ -70,6 +79,8 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
   const { model, system, tools = {}, maxSteps = 50, ...agentOptions } = options;
   const conversations = new Map<string, ModelConversation>();
   const cwds = new Map<string, string>();
+  /** Results of tool calls that ran after the model last heard back, for the next prompt. */
+  const unsent = new Map<string, ModelToolResult[]>();
   const modelTools: ModelTool[] = Object.entries(tools).map(([name, definition]) => ({
     name,
     description: definition.description,
@@ -97,11 +108,19 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
     closeSession: async (sessionId) => {
       conversations.delete(sessionId);
       cwds.delete(sessionId);
+      unsent.delete(sessionId);
       await agentOptions.closeSession?.(sessionId);
     },
     async prompt(turn): Promise<StopReason> {
       const conversation = conversationFor(turn);
-      let input: ModelInput = { prompt: turn.prompt };
+      const carried = unsent.get(turn.sessionId);
+      unsent.delete(turn.sessionId);
+      let input: ModelInput = carried?.length ? { prompt: turn.prompt, toolResults: carried } : { prompt: turn.prompt };
+      // Tools that ran but whose results the model has not had yet: kept for the next prompt if the turn stops here.
+      const stopWith = (stop: StopReason, results: ModelToolResult[]): StopReason => {
+        if (results.length) unsent.set(turn.sessionId, results);
+        return stop;
+      };
       for (let step = 0; step < maxSteps; step++) {
         const reply = await conversation.send(input, {
           onText: (delta) => turn.say(delta),
@@ -110,19 +129,21 @@ export function modelAgent(options: ModelAgentOptions): AgentOptions {
         });
         if (turn.signal.aborted) return 'cancelled';
         if (!reply.toolCalls.length) return stopReasonOf(reply.stopReason);
-        const results: Array<{ id: string; content: string; isError?: boolean }> = [];
+        const results: ModelToolResult[] = [];
         for (const call of reply.toolCalls) {
-          if (turn.signal.aborted) return 'cancelled';
+          if (turn.signal.aborted) return stopWith('cancelled', results);
           results.push(await runToolCall(turn, tools, call));
         }
+        if (turn.signal.aborted) return stopWith('cancelled', results);
         input = { toolResults: results };
       }
-      return 'max_turn_requests';
+      // The last input was never sent.
+      return stopWith('max_turn_requests', input.toolResults ?? []);
     },
   };
 }
 
-async function runToolCall(turn: AgentTurn, tools: ToolSet, call: ModelToolCall): Promise<{ id: string; content: string; isError?: boolean }> {
+async function runToolCall(turn: AgentTurn, tools: ToolSet, call: ModelToolCall): Promise<ModelToolResult> {
   const definition = tools[call.name];
   if (!definition) return { id: call.id, content: `There is no tool named ${call.name}.`, isError: true };
   const checked = await checkToolInput(definition, call.input);

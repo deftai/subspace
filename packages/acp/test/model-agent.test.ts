@@ -108,6 +108,39 @@ test('modelAgent: maxSteps stops a looping model; a cancel stops it', async () =
   await client2.close();
 });
 
+test('modelAgent: results of tools that ran when maxSteps or a cancel ended the turn go to the model with the next prompt', async () => {
+  let cancelNext: (() => void) | undefined;
+  const slowTool = tool({
+    description: 'Slow',
+    run: async () => {
+      cancelNext?.();
+      return 'slow done';
+    },
+  });
+  const { model, sent } = scripted([
+    () => ({ stopReason: 'tool_use', toolCalls: [{ id: 'a', name: 'listFiles', input: { path: 'x' } }] }),
+    () => ({ stopReason: 'end_turn', toolCalls: [] }),
+    () => ({ stopReason: 'tool_use', toolCalls: [{ id: 'b', name: 'slowTool', input: {} }, { id: 'c', name: 'listFiles', input: { path: 'y' } }] }),
+    () => ({ stopReason: 'end_turn', toolCalls: [] }),
+  ]);
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  serveAgent(agentEnd, modelAgent({ name: 'steps', model, tools: { listFiles, slowTool }, maxSteps: 1 }));
+  const client = await AcpClient.connect(clientEnd, { onPermission: 'allow' });
+  const session = await client.newSession({ cwd: '/' });
+  // maxSteps: the tool ran, but the model never heard back.
+  assert.equal((await session.prompt('one').done).stopReason, 'max_turn_requests');
+  assert.equal((await session.prompt('two').done).stopReason, 'end_turn');
+  assert.deepEqual(sent[1], { prompt: [{ type: 'text', text: 'two' }], toolResults: [{ id: 'a', content: JSON.stringify(['x/a.ts', 'x/b.ts'], null, 2) }] });
+  // A cancel while the first of two tools runs: its result is kept, the second never ran (no result: the adapter says so).
+  const three = session.prompt('three');
+  cancelNext = () => void three.cancel();
+  assert.equal((await three.done).stopReason, 'cancelled');
+  cancelNext = undefined;
+  await session.prompt('four').done;
+  assert.deepEqual(sent[3], { prompt: [{ type: 'text', text: 'four' }], toolResults: [{ id: 'b', content: 'slow done' }] });
+  await client.close();
+});
+
 test('turn.useTool() runs a defined tool as a step; client.serveTools() serves tools without an MCP handler', async () => {
   const [agentEnd, clientEnd] = channelPair<unknown>();
   const seen: unknown[] = [];
