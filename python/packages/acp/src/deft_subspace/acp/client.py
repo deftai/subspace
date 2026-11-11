@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import re
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Union
@@ -1112,7 +1113,7 @@ class Session:
                 if not isinstance(resource.get("text"), str):
                     raise CapabilityError("embedded resources in prompts", "agent")
                 uri = resource.get("uri")
-                file_name = re.sub(r"^file://", "", uri) if isinstance(uri, str) else "file"
+                file_name = _local_name(uri) if isinstance(uri, str) else "file"
                 out.append({"type": "text", "text": f"{file_name}:\n\n```\n{resource['text']}\n```"})
                 continue
             out.append(block)
@@ -1352,6 +1353,14 @@ class Session:
         self._stop_timers(active)
         asyncio.get_running_loop().call_soon(self._start_next)
         active.turn.fail(error)
+
+
+def _local_name(uri: str) -> str:
+    """A file URI as this system's path (`file:///D:/a/b` is `D:\\a\\b` on Windows); other URIs as they are."""
+    if not uri.startswith("file://"):
+        return uri
+    parsed = urlparse(uri)
+    return url2pathname(parsed.path) if not parsed.netloc else url2pathname(f"//{parsed.netloc}{parsed.path}")
 
 
 def _answer(outcome: PermissionOutcome) -> dict[str, Any]:
