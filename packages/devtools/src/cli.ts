@@ -36,16 +36,33 @@ export async function main(argv: string[], io: { out: (s: string) => void; err: 
   let service: string | undefined;
   let titles = false;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    let arg = argv[i]!;
+    // --name=value as well as --name value.
+    let inline: string | undefined;
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    if (eq > 0) [arg, inline] = [arg.slice(0, eq), arg.slice(eq + 1)];
+    const value = (): string | undefined => inline ?? argv[++i];
+    const valued = arg === '-o' || arg === '--out' || arg === '--title' || arg === '--service';
+    if (valued) {
+      const v = value();
+      if (v === undefined) {
+        io.err(`${arg} needs a value\n${USAGE}`);
+        return 2;
+      }
+      if (arg === '--title') title = v;
+      else if (arg === '--service') service = v;
+      else out = v;
+      continue;
+    }
+    if (inline !== undefined && arg !== '--otlp') {
+      io.err(`${arg} takes no value\n${USAGE}`);
+      return 2;
+    }
     if (arg === '-h' || arg === '--help') {
       io.out(USAGE);
       return 0;
-    } else if (arg === '-o' || arg === '--out') out = argv[++i];
-    else if (arg === '--title') title = argv[++i];
-    else if (arg === '--summary') summary = true;
-    else if (arg === '--otlp') otlp = argv[i + 1] && /^https?:\/\//.test(argv[i + 1]!) ? argv[++i]! : true;
-    else if (arg.startsWith('--otlp=')) otlp = arg.slice('--otlp='.length);
-    else if (arg === '--service') service = argv[++i];
+    } else if (arg === '--summary') summary = true;
+    else if (arg === '--otlp') otlp = inline ?? (argv[i + 1] && /^https?:\/\//.test(argv[i + 1]!) ? argv[++i]! : true);
     else if (arg === '--titles') titles = true;
     else if (arg.startsWith('-')) {
       io.err(`Unknown option ${arg}\n${USAGE}`);
@@ -56,7 +73,7 @@ export async function main(argv: string[], io: { out: (s: string) => void; err: 
       return 2;
     }
   }
-  if (!input || (out === undefined && argv.some((a) => a === '-o' || a === '--out'))) {
+  if (!input) {
     io.err(USAGE);
     return 2;
   }
