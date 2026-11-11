@@ -146,12 +146,13 @@ Node 22.19 or later runs the TypeScript directly.${
 
 /** A valid npm package name from a folder name; `subspace-project` if nothing is left. */
 function packageName(dir: string): string {
-  return (
-    basename(dir)
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'subspace-project'
-  );
+  const name = basename(dir).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+  // Trim dashes without a regex: `-+$` backtracks on long runs of '-'.
+  let start = 0;
+  let end = name.length;
+  while (start < end && name[start] === '-') start++;
+  while (end > start && name[end - 1] === '-') end--;
+  return name.slice(start, end) || 'subspace-project';
 }
 
 /** A path as a shell would need it typed. */

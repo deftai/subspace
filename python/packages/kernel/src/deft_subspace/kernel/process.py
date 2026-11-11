@@ -435,7 +435,7 @@ class SupervisedProcess:
 
     def _signal_group(self, sig: int) -> bool:
         try:
-            if not _WINDOWS and self.pid is not None:
+            if sys.platform != "win32" and self.pid is not None:
                 os.killpg(self.pid, sig)
             elif sig == signals.SIGTERM:
                 self._proc.terminate()
@@ -499,7 +499,7 @@ class SupervisedProcess:
             self._force_kill()
 
     def _group_alive(self) -> bool:
-        if _WINDOWS or self.pid is None:
+        if sys.platform == "win32" or self.pid is None:
             return self._proc.returncode is None
         try:
             os.killpg(self.pid, 0)
