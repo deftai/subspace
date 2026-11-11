@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
 from typing import Any
 
 from .handlers import TextTracker, TurnHandlers, dispatch
@@ -43,6 +43,16 @@ _ENDS = (*_TEXT, ToolCallEvent, PlanEvent, PermissionEvent, TerminalEvent)
 _END_OF = {MessageEvent: MessageEndEvent, ThoughtEvent: ThoughtEndEvent, UserMessageEvent: UserMessageEndEvent}
 
 
+def _handler_error(error: BaseException) -> BaseException:
+    """What the turn raises for a failed handler: its error, or, for a cancelled one, an error that
+    does not look like the awaiting task being cancelled."""
+    if not isinstance(error, asyncio.CancelledError):
+        return error
+    failure = RuntimeError("A turn handler was cancelled")
+    failure.__cause__ = error
+    return failure
+
+
 class TurnView:
     """What the turn knows so far, for `text` and `tool_calls`."""
 
@@ -52,7 +62,13 @@ class TurnView:
 
 
 class Turn:
-    def __init__(self, turn_id: str, on_cancel: Callable[[], Awaitable[None]], view: TurnView | None = None) -> None:
+    def __init__(
+        self,
+        turn_id: str,
+        on_cancel: Callable[[], Awaitable[None]],
+        view: TurnView | None = None,
+        spawn: Callable[[Coroutine[Any, Any, Any]], Any] | None = None,
+    ) -> None:
         self.id = turn_id
         self._events: list[TurnEvent] = []
         self._waiters: list[asyncio.Future[None]] = []
@@ -60,6 +76,9 @@ class Turn:
         self._on_cancel = on_cancel
         self._view = view
         self._cancelling: asyncio.Task[None] | None = None
+        #: Runs work the turn starts itself (the session's task spawner), keeping a reference to it.
+        self._spawn = spawn or self._keep
+        self._tasks: set[asyncio.Task[Any]] = set()
         loop = asyncio.get_running_loop()
         self._done: asyncio.Future[TurnResult] = loop.create_future()
         # Iterating without awaiting the result must not log "exception was never retrieved".
@@ -190,18 +209,36 @@ class Turn:
                     self._dispatched += 1
                     for notify in list(self._progress):
                         notify()
-            except Exception as error:  # noqa: BLE001
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as error:  # noqa: BLE001
+                task = asyncio.current_task()
+                # This task being cancelled is handled when it ends (`ended`).
+                if isinstance(error, asyncio.CancelledError) and task is not None and task.cancelling():
+                    raise
                 # The turn's own failure ends the loop too; only a handler's error is kept.
                 if self._finished is None or self._finished[0] or self._finished[1] is not error:
-                    self._handler_failed.append(error)
-                    asyncio.ensure_future(self.cancel())
+                    self._handler_failed.append(_handler_error(error))
+                    self._spawn(self.cancel())
+
+        def ended(task: asyncio.Task[None]) -> None:
+            # Handlers that will never run again are a failure, as a handler's error is.
+            if task.cancelled() and not self._handler_failed:
+                self._handler_failed.append(_handler_error(asyncio.CancelledError()))
+                if self._finished is None:
+                    self._spawn(self.cancel())
+            # Nothing waits for handlers that will not run again.
+            for notify in list(self._progress):
+                notify()
 
         self._observer = asyncio.get_running_loop().create_task(run(), name=f"{self.id}:handlers")
+        self._observer.add_done_callback(ended)
 
     async def caught_up(self, max_ms: float = 1000) -> None:
         """Wait until the handlers have run for every event so far (at most `max_ms`), so that
         a question to the user comes after what the agent said before asking it."""
-        if self._observer is None or self._finished is not None:
+        observer = self._observer
+        if observer is None or observer.done() or self._finished is not None:
             return
         target = len(self._events)
         if self._dispatched >= target:
@@ -209,7 +246,7 @@ class Turn:
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         def check() -> None:
-            if (self._dispatched >= target or self._finished is not None) and not future.done():
+            if (self._dispatched >= target or self._finished is not None or observer.done()) and not future.done():
                 future.set_result(None)
 
         self._progress.append(check)
@@ -235,6 +272,12 @@ class Turn:
                 complete()
 
         observer.add_done_callback(after)
+
+    def _keep(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def _wake(self) -> None:
         waiters, self._waiters = self._waiters, []
