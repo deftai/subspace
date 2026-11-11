@@ -1,5 +1,8 @@
 import asyncio
+import inspect
+import json
 import os
+import subprocess
 import sys
 import time
 from typing import Any
@@ -449,3 +452,39 @@ async def test_a_peer_closing_on_a_child_that_stopped_reading_aborts_its_stdin(t
     finally:
         await child.stop()
         await asyncio.wait_for(child.ended(), 3)  # its transport is closed before the loop is
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd launch")
+async def test_windows_the_private_asyncio_hook_we_launch_cmd_files_with_is_still_there():
+    # A .cmd file is launched through loop._make_subprocess_transport (private) to get a verbatim
+    # `cmd.exe /d /s /c` line. If a Python release changes it, fail here rather than at spawn time.
+    hook = getattr(asyncio.get_running_loop(), "_make_subprocess_transport", None)
+    assert hook is not None, "asyncio no longer has loop._make_subprocess_transport"
+    names = list(inspect.signature(hook).parameters)
+    assert names[:7] == ["protocol", "args", "shell", "stdin", "stdout", "stderr", "bufsize"], names
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd launch")
+async def test_windows_a_cmd_file_gets_its_arguments_intact_and_nothing_runs(tmp_path):
+    echo = tmp_path / "echoargs.cmd"
+    echo.write_text(f'@"{PY}" -c "import sys,json; sys.stdout.write(json.dumps(sys.argv[1:])+chr(10))" %*\r\n')
+    marker = tmp_path / "INJECTED"
+    tricky = ["plain", "two words", f'a"&echo x>{marker}&"b', "100%", "%PATH%", "caret^", "bang!", "<>|", "tab\there", ""]
+    child = await spawn_process(str(echo), args=tricky)
+    assert json.loads(await child.channel.receive()) == tricky
+    await asyncio.wait_for(child.ended(), 10)
+    assert not marker.exists()
+    with pytest.raises(SpawnError):
+        await spawn_process(str(echo), args=["line\nbreak"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd launch")
+async def test_windows_stop_ends_a_cmd_files_whole_tree(tmp_path):
+    sleeper = tmp_path / "sleeper.cmd"
+    sleeper.write_text(f'@"{PY}" -c "import os,sys,time; sys.stdout.write(str(os.getpid())+chr(10)); sys.stdout.flush(); time.sleep(120)"\r\n')
+    child = await spawn_process(str(sleeper), kill_grace_ms=1000)
+    grandchild = int((await child.channel.receive()).decode().strip())
+    await asyncio.wait_for(child.stop(), 15)
+    await asyncio.wait_for(child.ended(), 15)
+    listed = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild}"], capture_output=True, text=True).stdout
+    assert str(grandchild) not in listed
