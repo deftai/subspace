@@ -9,7 +9,7 @@ description: Where agent names come from - the ACP registry, Subspace's built-in
 2. **Subspace's built-ins**: `claude`, `codex`, `grok`, `gemini`, `opencode`. Each maps to a registry entry and adds a short name, login and install hints, and **quirks**. Each also has a fallback command for when the registry has no entry.
 3. **Your files**, in this order:
    - `~/.config/subspace/agents.toml` (or `$XDG_CONFIG_HOME/subspace/agents.toml`): yours, everywhere;
-   - the nearest `subspace.toml`, from the current folder up: a project's;
+   - the nearest `subspace.toml`, from the current folder up: a project's, read only if you trust its folder ([below](#trusting-a-projects-subspacetoml));
    - each file in `$SUBSPACE_AGENTS` (separated like `PATH`), then each `--agents-file`.
 
 ```sh
@@ -18,6 +18,25 @@ subspace agents codex      # how it starts, where each setting came from, its qu
 subspace agents --all      # and the registry's other agents
 subspace agents --files    # which files are read
 ```
+
+## Trusting a project's subspace.toml
+
+A `subspace.toml` can say which command an agent name runs, even for a known name such as `claude`. So a project's file is only read when its folder is listed in **your own** `agents.toml`:
+
+```toml
+[trust]
+folders = [
+  "~/work/my-project",       # ~/ is your home folder
+  "/srv/checkouts/agents",
+]
+```
+
+- Each entry is an absolute path or starts with `~/`. Symlinks are resolved on both sides before comparing.
+- An entry trusts that folder only: a `subspace.toml` in a folder below it needs its own entry. (From a subfolder that has no `subspace.toml` of its own, the trusted folder's file is still the nearest.)
+- Only `agents.toml` is read for `[trust]`; the table is ignored in any other file.
+- An untrusted `subspace.toml` is skipped, with a warning on stderr that names it and shows the line to add. Your `agents.toml`, `$SUBSPACE_AGENTS` and `--agents-file` still load. A file named in `$SUBSPACE_AGENTS` or `--agents-file` is read even if it is a project's `subspace.toml`: naming it is trusting it.
+- `subspace run`, `chat`, `check` and `agents` take `--trust-project` to read it for one run, and `subspace agents --files` marks it `✗` while it is not trusted.
+- A scenario that names an agent reads its project's `subspace.toml` without this check: a scenario file can already run any command, so it is trusted as far as that file is.
 
 ## The file
 
@@ -53,7 +72,7 @@ enabled = false
 
 Keys may be `snake_case` or `camelCase`. A misspelt field, or a value of the wrong type, is an error naming the file and the field. Other top-level tables in `subspace.toml` are left alone.
 
-From code: `loadCatalog({ cwd })` reads the same layers; `start(name, { catalog })` takes one; `resolveAgent(catalog, name)` shows what a name resolves to, and `listAgents(catalog)` lists them.
+From code: `loadCatalog({ cwd })` reads the same layers (`trustProject: true` skips the trust check, `onWarning` receives the warning instead of stderr; in Python, `load_catalog(cwd=..., trust_project=..., on_warning=...)`); `start(name, { catalog })` takes one; `resolveAgent(catalog, name)` shows what a name resolves to, and `listAgents(catalog)` lists them.
 
 ## Quirks and fixes
 
