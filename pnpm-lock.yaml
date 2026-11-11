@@ -15,6 +15,18 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  bench:
+    dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 2.4.0
+        version: 2.4.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
+      '@deft-subspace/acp':
+        specifier: workspace:*
+        version: link:../packages/acp
+      '@deft-subspace/kernel':
+        specifier: workspace:*
+        version: link:../packages/kernel
+
   examples:
     dependencies:
       '@deft-subspace/acp':
