@@ -15,7 +15,7 @@ from .channel import (
 )
 from .clock import Clock, SystemClock, system_clock
 from .errors import ErrorCode, LocalError, LocalErrorKind, RpcError
-from .framing import FramingDiagnostic, NdjsonDecoder, NdjsonEncoder, ndjson, ndjson_decoder, ndjson_encoder
+from .framing import EncodeError, FramingDiagnostic, NdjsonDecoder, NdjsonEncoder, ndjson, ndjson_decoder, ndjson_encoder
 from .process import ExitInfo, SpawnError, SupervisedProcess, spawn_process
 from .rpc import (
     NO_ID,
@@ -29,6 +29,7 @@ from .rpc import (
     NotificationHandler,
     OutboundMiddleware,
     PeerDiagnostic,
+    PeerState,
     RequestHandler,
     RpcPeer,
     cancel_request,
@@ -46,6 +47,7 @@ __all__ = [
     "ChannelClosed",
     "Clock",
     "CloseInfo",
+    "EncodeError",
     "EndOfChannel",
     "ErrorCode",
     "ExitInfo",
@@ -62,6 +64,7 @@ __all__ = [
     "NotificationHandler",
     "OutboundMiddleware",
     "PeerDiagnostic",
+    "PeerState",
     "RequestHandler",
     "RpcError",
     "RpcPeer",

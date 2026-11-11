@@ -5,9 +5,11 @@ import {
   channelPair,
   ErrorCode,
   LocalError,
+  ndjson,
   RpcError,
   RpcPeer,
   type Channel,
+  type JsonRpcId,
   type PeerDiagnostic,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
@@ -212,4 +214,146 @@ test('sendRaw writes a message as given, outside request tracking', async () => 
   await tick();
   assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 'never-received', result: 42 }]);
   assert.equal(peer.pendingCount, 0);
+});
+
+test('when the other side ends, running handlers finish and their answers are sent', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  peer.onRequest('x', async (_p, ctx) => {
+    await tick();
+    await ctx.peer.notify('progress', { done: true });
+    return ctx.signal.aborted ? 'aborted' : 'answer';
+  });
+  peer.start();
+  const asked = peer.request('ask');
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'x' });
+  await end.end();
+  await assert.rejects(asked, (e) => LocalError.is(e, 'closed'));
+  assert.equal(peer.state, 'draining');
+  assert.equal(peer.isClosed, false);
+  await assert.rejects(peer.request('later'), (e) => LocalError.is(e, 'closed'));
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+  assert.equal(peer.state, 'closed');
+  await tick();
+  assert.deepEqual(end.sent.slice(1), [
+    { jsonrpc: '2.0', method: 'progress', params: { done: true } },
+    { jsonrpc: '2.0', id: 1, result: 'answer' },
+  ]);
+});
+
+test('handlers still running when the drain time is up are aborted', async () => {
+  const clock = manualClock();
+  const end = raw();
+  const peer = new RpcPeer(end.channel, { clock, drainTimeoutMs: 1000 });
+  let signal: AbortSignal | undefined;
+  peer.onRequest('slow', (_p, ctx) => {
+    signal = ctx.signal;
+    return new Promise(() => {});
+  });
+  assert.equal(peer.state, 'idle');
+  peer.start();
+  assert.equal(peer.state, 'open');
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'slow' });
+  await end.end();
+  await tick();
+  assert.equal(peer.state, 'draining');
+  clock.advance(999);
+  assert.equal(signal?.aborted, false);
+  clock.advance(1);
+  assert.equal(signal?.aborted, true);
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+  assert.equal(clock.pendingTimers, 0);
+});
+
+test('with nothing running, the other side ending closes at once', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel).start();
+  await end.end();
+  assert.deepEqual(await peer.closed, { reason: 'remote-ended' });
+});
+
+/** Two peers talking NDJSON over bytes, as over stdio. */
+function bytePair(b: RpcPeerOptions = {}) {
+  const aToB = new TransformStream<Uint8Array, Uint8Array>();
+  const bToA = new TransformStream<Uint8Array, Uint8Array>();
+  const client = new RpcPeer(ndjson({ readable: bToA.readable, writable: aToB.writable }), { name: 'client' });
+  const server = new RpcPeer(ndjson({ readable: aToB.readable, writable: bToA.writable }), { name: 'server', ...b });
+  return { client, server, start: () => (client.start(), server.start()) };
+}
+
+test('a request that cannot be encoded fails with send-failed, and the stream keeps working', async () => {
+  const { client, server, start } = bytePair();
+  server.onRequest('echo', (p) => p);
+  start();
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  await assert.rejects(client.request('echo', { n: 1n }), (e) => LocalError.is(e, 'send-failed'));
+  await assert.rejects(client.request('echo', cycle), (e) => LocalError.is(e, 'send-failed'));
+  await assert.rejects(client.notify('echo', { n: 1n }));
+  assert.equal(client.pendingCount, 0);
+  assert.deepEqual(await client.request('echo', { ok: true }), { ok: true });
+});
+
+test('a result that cannot be encoded is answered with InternalError', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const { client, server, start } = bytePair({ onDiagnostic: (d) => diagnostics.push(d) });
+  server.onRequest('big', () => ({ n: 10n }));
+  server.onRequest('bad-error', () => {
+    throw new RpcError(ErrorCode.InvalidParams, 'bad', { n: 1n });
+  });
+  start();
+  await assert.rejects(client.request('big'), (e) => RpcError.is(e) && e.code === ErrorCode.InternalError);
+  await assert.rejects(client.request('bad-error'), (e) => RpcError.is(e) && e.code === ErrorCode.InternalError);
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['send-failed', 'send-failed']);
+});
+
+test('a failed write of an answer is a send failure, with no second answer', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const [left, right] = channelPair<unknown>();
+  const writes: unknown[] = [];
+  const writer = left.writable.getWriter();
+  const channel: Channel<unknown> = {
+    readable: left.readable,
+    writable: new WritableStream({
+      write(message) {
+        writes.push(message);
+        if ('result' in (message as object)) throw new Error('pipe broke');
+        return writer.write(message);
+      },
+    }),
+  };
+  const peer = new RpcPeer(channel, { onDiagnostic: (d) => diagnostics.push(d) });
+  peer.onRequest('x', () => 'answer').start();
+  await right.writable.getWriter().write({ jsonrpc: '2.0', id: 1, method: 'x' });
+  await tick();
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['send-failed']);
+  assert.equal(writes.length, 1);
+});
+
+test('a cancel id extractor that throws is reported, and the connection stays open', async () => {
+  const diagnostics: PeerDiagnostic[] = [];
+  const end = raw();
+  const peer = new RpcPeer(end.channel, {
+    cancelInbound: { method: 'cancel', id: (params) => (params as { requestId: JsonRpcId }).requestId },
+    onDiagnostic: (d) => diagnostics.push(d),
+  });
+  peer.onRequest('ping', () => 'pong').start();
+  await end.send({ jsonrpc: '2.0', method: 'cancel' });
+  await end.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  await tick();
+  assert.equal(peer.isClosed, false);
+  assert.deepEqual(diagnostics.map((d) => d.kind), ['invalid-message']);
+  assert.deepEqual(end.sent, [{ jsonrpc: '2.0', id: 1, result: 'pong' }]);
+});
+
+test('start() after close() does nothing', async () => {
+  const end = raw();
+  const peer = new RpcPeer(end.channel);
+  let handled = false;
+  peer.onNotification('hello', () => void (handled = true));
+  await peer.close();
+  void end.send({ jsonrpc: '2.0', method: 'hello' }).catch(() => {});
+  peer.start();
+  await tick();
+  assert.equal(handled, false);
 });

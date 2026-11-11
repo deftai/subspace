@@ -28,6 +28,9 @@ TraceRecord = dict[str, Any]
 """`{"v": 1, "kind": "header" | "message" | "note", ...}`; see the module docstring."""
 
 
+_NO_DATA: Any = object()
+
+
 def _iso(ms: float) -> str:
     stamp = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z"
@@ -65,10 +68,10 @@ class TraceTap:
         # Copy, so later mutation of the message does not change the record.
         self._write({"v": TRACE_VERSION, "kind": "message", "t": self._elapsed(), "dir": direction, "msg": copy.deepcopy(msg)})
 
-    def note(self, text: str, data: Any = None) -> None:
-        """Add a note at the current time."""
+    def note(self, text: str, data: Any = _NO_DATA) -> None:
+        """Add a note at the current time. `data=None` is recorded as null; leave it out for no data."""
         record: TraceRecord = {"v": TRACE_VERSION, "kind": "note", "t": self._elapsed(), "text": text}
-        if data is not None:
+        if data is not _NO_DATA:
             record["data"] = data
         self._write(record)
 

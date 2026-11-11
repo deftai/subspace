@@ -48,7 +48,8 @@ class NdjsonDecoder:
     ) -> None:
         self._max = max_line_length
         self._on_diagnostic = on_diagnostic
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # utf-8-sig: a byte order mark at the very start is skipped, as TextDecoder does.
+        self._decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._pieces: list[str] = []
         self._pending = 0
         self._skipping = False  # inside an over-long line; drop until the next newline
@@ -115,8 +116,16 @@ class NdjsonDecoder:
         return out
 
 
+class EncodeError(ValueError):
+    """A value that has no JSON form (a cycle, a datetime, NaN)."""
+
+
 class NdjsonEncoder:
-    """JSON values as lines of UTF-8. A value that cannot be serialized is dropped and reported."""
+    """JSON values as lines of UTF-8.
+
+    A value that cannot be serialized is reported and raises `EncodeError`, so
+    that one send fails; nothing is written and later values still go out.
+    """
 
     def __init__(self, *, on_error: Callable[[BaseException, Any], None] | None = None) -> None:
         self._on_error = on_error
@@ -126,8 +135,11 @@ class NdjsonEncoder:
             text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         except (TypeError, ValueError, RecursionError) as error:
             if self._on_error is not None:
-                self._on_error(error, value)
-            return ()
+                try:
+                    self._on_error(error, value)
+                except Exception:  # noqa: BLE001 - a broken error hook must not break the stream
+                    pass
+            raise EncodeError(f"Value cannot be encoded as JSON: {error}") from error
         return ((text + "\n").encode("utf-8"),)
 
     def flush(self) -> Iterable[bytes]:

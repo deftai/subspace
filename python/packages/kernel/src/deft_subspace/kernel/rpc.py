@@ -10,6 +10,10 @@ the other side never stops other messages from being read. Notification
 handlers start in arrival order (a synchronous handler runs to completion
 before the next message is read).
 
+When the other side ends its stream, outbound requests fail with `closed` at
+once, but inbound requests already running may still answer (see
+`drain_timeout_ms`), so `printf '{"id":1,"method":"x"}\n' | agent` is answered.
+
 Handlers and middleware may be plain functions or coroutine functions.
 """
 
@@ -27,6 +31,7 @@ from .abort import AbortController, AbortSignal
 from .channel import Channel, ChannelClosed, EndOfChannel
 from .clock import Clock, system_clock
 from .errors import ErrorCode, LocalError, RpcError
+from .framing import EncodeError
 
 JsonRpcId = str | int | float | None
 """JSON-RPC ids are opaque. `0` and `""` are as valid as any other id, and
@@ -65,7 +70,14 @@ InboundMiddleware = Callable[[Call, Callable[[], Awaitable[Any]], InboundContext
 OutboundMiddleware = Callable[[Call, Callable[[Any], Awaitable[Any]]], Awaitable[Any]]
 """Wraps outbound calls. `await next(params)` sends; it returns the result (requests) or None (notifications)."""
 
-DiagnosticKind = Literal["invalid-message", "late-response", "handler-failed", "duplicate-request-id"]
+PeerState = Literal["idle", "open", "draining", "closed"]
+"""`idle`: not started. `open`: reading and writing. `draining`: the other side
+ended its stream; running handlers finish and answer, then the peer closes.
+`closed`: nothing more is read or written."""
+
+DEFAULT_DRAIN_MS = 1000
+
+DiagnosticKind = Literal["invalid-message", "late-response", "handler-failed", "duplicate-request-id", "send-failed"]
 
 
 @dataclass(frozen=True)
@@ -163,6 +175,7 @@ class RpcPeer:
         outbound: list[OutboundMiddleware] | None = None,
         tap: Callable[[Literal["in", "out"], Any], None] | None = None,
         on_diagnostic: Callable[[PeerDiagnostic], None] | None = None,
+        drain_timeout_ms: float = DEFAULT_DRAIN_MS,
     ) -> None:
         """Options:
 
@@ -171,6 +184,9 @@ class RpcPeer:
           e.g. `$/cancel_request` (see `cancel_request`). Default: nothing is sent.
         - `cancel_inbound`: which inbound notification cancels one of our handlers, and how to find its id.
         - `tap`: sees every message in both directions, e.g. for tracing. Must not raise.
+        - `drain_timeout_ms`: when the other side ends its stream, how long request handlers
+          still running may take to answer before they are aborted. 0 aborts them at once;
+          infinity waits for them. Default 1000.
         """
         self.name = name
         self._channel = channel
@@ -182,13 +198,16 @@ class RpcPeer:
         self._outbound_chain = list(outbound or [])
         self._tap_fn = tap
         self._on_diagnostic = on_diagnostic
+        self._drain_ms = drain_timeout_ms
         self._request_handlers: dict[str, RequestHandler] = {}
         self._notification_handlers: dict[str, NotificationHandler] = {}
         self._pending: dict[Any, _Pending] = {}
         self._inbound: dict[Any, AbortController] = {}
         self._connection = AbortController()
         self._next_id = 0
-        self._started = False
+        self._state: PeerState = "idle"
+        self._running = 0  # inbound request handlers still running
+        self._drain_timer: Any = None
         self._close_info: CloseInfo | None = None
         self._closed_future: asyncio.Future[CloseInfo] | None = None
         self._close_listeners: list[Callable[[CloseInfo], None]] = []
@@ -204,7 +223,11 @@ class RpcPeer:
     @property
     def is_closed(self) -> bool:
         """True once the connection has closed for any reason."""
-        return self._close_info is not None
+        return self._state == "closed"
+
+    @property
+    def state(self) -> PeerState:
+        return self._state
 
     @property
     def close_info(self) -> CloseInfo | None:
@@ -250,9 +273,9 @@ class RpcPeer:
 
     def start(self) -> RpcPeer:
         """Start reading. Register handlers first. Needs a running event loop."""
-        if self._started:
+        if self._state != "idle":
             return self
-        self._started = True
+        self._state = "open"
         self._read_task = asyncio.get_running_loop().create_task(self._read_loop(), name=f"{self.name}:read")
         return self
 
@@ -280,7 +303,10 @@ class RpcPeer:
         call = Call("notification", method, params)
 
         async def send(final: Any) -> None:
-            await self._write(self._message(method=method, params=final))
+            message = self._message(method=method)
+            if final is not None:
+                message["params"] = final
+            await self._write(message)
 
         await self._run_outbound(call, send)
 
@@ -293,7 +319,7 @@ class RpcPeer:
 
     async def close(self) -> CloseInfo:
         """Close the connection. Pending requests fail with `closed`; running handlers are aborted."""
-        self._finish(CloseInfo("local"))
+        self._finish(CloseInfo("remote-ended" if self._state == "draining" else "local"))
         task = self._read_task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -304,10 +330,32 @@ class RpcPeer:
         writer = self._writer_task
         if writer is not None and not writer.done() and writer is not asyncio.current_task():
             try:
-                await asyncio.wait_for(asyncio.shield(writer), 1.0)
-            except BaseException:  # noqa: BLE001
+                await asyncio.wait_for(asyncio.shield(writer), self._close_wait_s)
+            except TimeoutError:
+                # The channel is not taking writes (a full pipe nobody reads): drop them.
+                writer.cancel()
+                try:
+                    await writer
+                except BaseException:  # noqa: BLE001
+                    pass
+                await self._abort_channel()
+            except Exception:  # noqa: BLE001
                 pass
         return self._close_info  # type: ignore[return-value]
+
+    #: How long close() waits for queued writes before it drops them.
+    _close_wait_s = 1.0
+
+    async def _abort_channel(self) -> None:
+        while self._outbox:
+            _message, future = self._outbox.popleft()
+            if not future.done():
+                future.set_exception(LocalError("closed", f"{self.name}: connection closed"))
+        abort = getattr(self._channel, "abort", None)
+        try:
+            await _resolve(abort() if abort is not None else self._channel.close())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_outbound(self, call: Call, send: Callable[[Any], Awaitable[Any]]) -> Awaitable[Any]:
         chain = self._outbound_chain
@@ -321,7 +369,8 @@ class RpcPeer:
         return dispatch(0, call.params)
 
     async def _send_request(self, method: str, params: Any, signal: AbortSignal | None, timeout_ms: float | None) -> Any:
-        if self._close_info is not None:
+        # While draining nothing more is read, so no answer could arrive.
+        if self._state in ("draining", "closed"):
             raise LocalError("closed", f"{self.name}: connection closed before {method} was sent", method=method)
         if signal is not None and signal.aborted:
             raise LocalError("aborted", f"{self.name}: {method} aborted before it was sent", method=method, cause=signal.reason)
@@ -357,7 +406,7 @@ class RpcPeer:
         def on_written(written: asyncio.Future[None]) -> None:
             error = written.exception() if not written.cancelled() else None
             if error is not None:
-                self._settle(request_id, error=LocalError("send-failed", f"{self.name}: could not send {method}", method=method, cause=error))
+                self._settle(key, error=LocalError("send-failed", f"{self.name}: could not send {method}", method=method, cause=error))
 
         self._write(message).add_done_callback(on_written)
         try:
@@ -369,17 +418,17 @@ class RpcPeer:
 
     def _give_up(self, request_id: JsonRpcId, error: LocalError) -> None:
         """We stopped waiting: settle, then tell the other side if configured."""
-        if not self._settle(request_id, error=error):
+        if not self._settle(_id_key(request_id), error=error):
             return
         cancel = self._cancel_outbound
-        if cancel is not None and self._close_info is None:
+        if cancel is not None and self._state == "open":
             self._write_quiet(self._message(method=cancel.method, params=cancel.params(request_id)))
 
     _UNSET: Any = object()
 
-    def _settle(self, request_id: Any, value: Any = _UNSET, error: BaseException | None = None) -> bool:
-        """The only place a pending request ends. Returns False if it had already ended."""
-        pending = self._pending.pop(_id_key(request_id), None)
+    def _settle(self, key: Any, value: Any = _UNSET, error: BaseException | None = None) -> bool:
+        """The only place a pending request ends (`key` is `_id_key(id)`). Returns False if it had already ended."""
+        pending = self._pending.pop(key, None)
         if pending is None:
             return False
         for cleanup in pending.cleanups:
@@ -404,12 +453,24 @@ class RpcPeer:
                 except EndOfChannel:
                     break
                 self._receive(message)
-            self._finish(CloseInfo("remote-ended"))
+            self._drain()
         except asyncio.CancelledError:
             self._finish(self._close_info or CloseInfo("local"))
             raise
         except Exception as error:  # noqa: BLE001
             self._finish(self._close_info or CloseInfo("error", error))
+
+    def _drain(self) -> None:
+        """The other side ended its stream: fail what waits on it, let running handlers answer, then close."""
+        if self._state != "open":
+            return
+        self._state = "draining"
+        self._fail_pending(CloseInfo("remote-ended"))
+        limit = self._drain_ms
+        if self._running == 0 or not limit > 0:
+            self._finish(CloseInfo("remote-ended"))
+        elif math.isfinite(limit):
+            self._drain_timer = self._clock.set_timeout(lambda: self._finish(CloseInfo("remote-ended")), limit)
 
     def _receive(self, message: Any) -> None:
         self._tap("in", message)
@@ -452,15 +513,15 @@ class RpcPeer:
                 and isinstance(error.get("message"), str)
             ):
                 rpc = RpcError(error["code"], error["message"], error["data"]) if "data" in error else RpcError(error["code"], error["message"])
-                self._settle(message_id, error=rpc)
+                self._settle(key, error=rpc)
             else:
                 method = self._pending[key].method
                 self._settle(
-                    message_id,
+                    key,
                     error=LocalError("invalid-response", f"{self.name}: malformed error for {method}", method=method, cause=error),
                 )
             return
-        self._settle(message_id, value=message.get("result"))
+        self._settle(key, value=message.get("result"))
 
     def _handle_request(self, request_id: JsonRpcId, method: str, params: Any) -> None:
         key = _id_key(request_id)
@@ -480,33 +541,44 @@ class RpcPeer:
                         raise RpcError.method_not_found(method)
                     return await _resolve(handler(params, context))
 
-                result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
-                await self._write(self._message(id=request_id, result=result))
-            except asyncio.CancelledError:
-                if self._close_info is None:
-                    self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
-                raise
-            except BaseException as error:  # noqa: BLE001
-                if self._close_info is not None:
-                    return
-                if isinstance(error, RpcError):
-                    self._write_quiet(self._message(id=request_id, error=error.to_json()))
-                elif controller.signal.aborted:
-                    self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
-                else:
-                    self._diagnose("handler-failed", f"Handler for {method} raised", error)
-                    self._reply_error(request_id, ErrorCode.INTERNAL_ERROR, str(error) or type(error).__name__)
+                try:
+                    result = await self._run_inbound(Call("request", method, params, request_id), context, handle)
+                    reply = self._message(id=request_id, result=result)
+                except asyncio.CancelledError:
+                    if self._state != "closed":
+                        self._reply_error(request_id, ErrorCode.REQUEST_CANCELLED, "Request cancelled")
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    if self._state == "closed":
+                        return
+                    if isinstance(error, RpcError):
+                        reply = self._message(id=request_id, error=error.to_json())
+                    elif controller.signal.aborted:
+                        reply = self._message(id=request_id, error={"code": ErrorCode.REQUEST_CANCELLED, "message": "Request cancelled"})
+                    else:
+                        self._diagnose("handler-failed", f"Handler for {method} raised", error)
+                        message = str(error) or type(error).__name__
+                        reply = self._message(id=request_id, error={"code": ErrorCode.INTERNAL_ERROR, "message": message})
+                await self._answer(request_id, method, reply)
             finally:
                 if self._inbound.get(key) is controller:
                     del self._inbound[key]
                 remove_close()
+                self._running -= 1
+                if self._running == 0 and self._state == "draining":
+                    self._finish(CloseInfo("remote-ended"))
 
+        self._running += 1
         self._spawn(run(), f"{self.name}:{method}")
 
     def _handle_notification(self, method: str, params: Any) -> None:
         cancel = self._cancel_inbound
         if cancel is not None and method == cancel.method:
-            target = cancel.id(params)
+            try:
+                target = cancel.id(params)
+            except Exception as error:  # noqa: BLE001
+                self._diagnose("invalid-message", f"Could not read the request id from {method}", error)
+                target = NO_ID
             if target is not NO_ID:
                 controller = self._inbound.get(_id_key(target))
                 if controller is not None:
@@ -564,13 +636,24 @@ class RpcPeer:
     def _message(**body: Any) -> dict[str, Any]:
         return {"jsonrpc": "2.0", **body}
 
+    async def _answer(self, request_id: JsonRpcId, method: str, reply: dict[str, Any]) -> None:
+        """Send the answer to a request. One that cannot be encoded becomes an InternalError."""
+        try:
+            await self._write(reply)
+        except Exception as error:  # noqa: BLE001
+            if isinstance(error, LocalError) and error.kind == "closed":
+                return
+            self._diagnose("send-failed", f"Could not send the answer for {method}", error)
+            if isinstance(error, EncodeError):
+                self._reply_error(request_id, ErrorCode.INTERNAL_ERROR, f"The answer for {method} could not be encoded")
+
     def _reply_error(self, request_id: JsonRpcId, code: int, message: str) -> None:
         self._write_quiet(self._message(id=request_id, error={"code": code, "message": message}))
 
     def _write(self, message: dict[str, Any]) -> asyncio.Future[None]:
         """Queue a message. The future settles once it was handed to the channel (or could not be)."""
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        if self._close_info is not None:
+        if self._state == "closed":
             future.set_exception(LocalError("closed", f"{self.name}: connection closed"))
             return future
         self._tap("out", message)
@@ -604,6 +687,9 @@ class RpcPeer:
                 except BaseException as error:  # noqa: BLE001
                     if not future.done():
                         future.set_exception(error if isinstance(error, Exception) else ChannelClosed(str(error)))
+                    if isinstance(error, ChannelClosed) and self._state == "draining":
+                        # The other side stopped reading too: no answer can get through.
+                        self._finish(CloseInfo("remote-ended"))
                 else:
                     if not future.done():
                         future.set_result(None)
@@ -633,22 +719,15 @@ class RpcPeer:
             pass
 
     def _finish(self, info: CloseInfo) -> None:
-        if self._close_info is not None:
+        if self._state == "closed":
             return
+        self._state = "closed"
         self._close_info = info
+        if self._drain_timer is not None:
+            self._clock.clear_timeout(self._drain_timer)
+            self._drain_timer = None
         self._connection.abort(LocalError("closed", f"{self.name}: connection closed"))
-        if info.reason == "remote-ended":
-            text = f"{self.name}: the other side closed the connection"
-        elif info.reason == "error":
-            text = f"{self.name}: the connection failed"
-        else:
-            text = f"{self.name}: connection closed"
-        for key in list(self._pending):
-            pending = self._pending.get(key)
-            if pending is None:
-                continue
-            method = pending.method
-            self._settle_key(key, LocalError("closed", f"{text} while waiting for {method}", method=method, cause=info.error))
+        self._fail_pending(info)
         # Flush what was queued, then end our side.
         try:
             self._ensure_writer()
@@ -663,15 +742,16 @@ class RpcPeer:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _settle_key(self, key: Any, error: BaseException) -> None:
-        pending = self._pending.pop(key, None)
-        if pending is None:
-            return
-        for cleanup in pending.cleanups:
-            try:
-                cleanup()
-            except Exception:  # noqa: BLE001
-                pass
-        if not pending.future.done():
-            pending.future.set_exception(error)
-
+    def _fail_pending(self, info: CloseInfo) -> None:
+        if info.reason == "remote-ended":
+            text = f"{self.name}: the other side closed the connection"
+        elif info.reason == "error":
+            text = f"{self.name}: the connection failed"
+        else:
+            text = f"{self.name}: connection closed"
+        for key in list(self._pending):
+            pending = self._pending.get(key)
+            if pending is None:
+                continue
+            method = pending.method
+            self._settle(key, error=LocalError("closed", f"{text} while waiting for {method}", method=method, cause=info.error))

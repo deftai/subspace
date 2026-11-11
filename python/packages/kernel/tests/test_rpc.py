@@ -1,17 +1,21 @@
 import asyncio
+import datetime
 from typing import Any
 
 import pytest
 
 from deft_subspace.kernel import (
     AbortController,
+    CancelInbound,
     ErrorCode,
     LocalError,
     PeerDiagnostic,
     RpcError,
     RpcPeer,
+    ChannelClosed,
     cancel_request,
     channel_pair,
+    ndjson,
 )
 from deft_subspace.kernel.testing import manual_clock, tick
 
@@ -310,3 +314,230 @@ async def test_writes_keep_their_order():
         asyncio.ensure_future(peer.notify("n", {"i": i}))
     await tick(10)
     assert [m["params"]["i"] for m in end.sent] == list(range(20))
+
+
+async def test_notify_without_params_omits_params():
+    end = Raw()
+    peer = RpcPeer(end.channel).start()
+    await peer.notify("ping")
+    await tick()
+    assert end.sent == [{"jsonrpc": "2.0", "method": "ping"}]
+
+
+async def test_a_cancel_id_extractor_that_raises_is_reported_and_the_connection_stays_open():
+    diagnostics: list[PeerDiagnostic] = []
+    end = Raw()
+    peer = RpcPeer(
+        end.channel,
+        cancel_inbound=CancelInbound("cancel", lambda params: params["requestId"]),
+        on_diagnostic=diagnostics.append,
+    )
+    peer.on_request("ping", lambda _p, _c: "pong").start()
+    await end.send({"jsonrpc": "2.0", "method": "cancel"})
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    await tick(10)
+    assert not peer.is_closed
+    assert [d.kind for d in diagnostics] == ["invalid-message"]
+    assert end.sent == [{"jsonrpc": "2.0", "id": 1, "result": "pong"}]
+
+
+async def test_start_after_close_does_nothing():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+    handled: list[bool] = []
+    peer.on_notification("hello", lambda _p, _c: handled.append(True))
+    await peer.close()
+    await end.send({"jsonrpc": "2.0", "method": "hello"})
+    peer.start()
+    await tick(10)
+    assert handled == []
+
+
+async def test_a_base_exception_in_a_handler_is_not_turned_into_a_reply():
+    # Like SystemExit or KeyboardInterrupt: not an error to answer, so it propagates.
+    class Stop(BaseException):
+        pass
+
+    end = Raw()
+    peer = RpcPeer(end.channel)
+
+    def stop(_p, _c):
+        raise Stop
+
+    peer.on_request("stop", stop)
+    peer.start()
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "stop"})
+    await tick(10)
+    assert end.sent == []
+    for task in list(peer._tasks):
+        task.cancel()
+
+
+def byte_pair(b: dict[str, Any] | None = None):
+    """Two peers talking NDJSON over bytes, as over stdio."""
+    left, right = channel_pair()
+    client = RpcPeer(ndjson(left), name="client")
+    server = RpcPeer(ndjson(right), **{"name": "server", **(b or {})})
+
+    def start() -> None:
+        client.start()
+        server.start()
+
+    return client, server, start
+
+
+async def test_a_request_that_cannot_be_encoded_fails_with_send_failed():
+    client, server, start = byte_pair()
+    server.on_request("echo", lambda p, _c: p)
+    start()
+    cycle: dict[str, Any] = {}
+    cycle["self"] = cycle
+    for params in ({"t": datetime.datetime.now()}, cycle):
+        with pytest.raises(LocalError) as info:
+            await asyncio.wait_for(client.request("echo", params), 1)
+        assert info.value.kind == "send-failed"
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(client.notify("echo", {"t": datetime.datetime.now()}), 1)
+    assert client.pending_count == 0
+    assert await client.request("echo", {"ok": True}) == {"ok": True}
+
+
+async def test_a_result_that_cannot_be_encoded_is_answered_with_internal_error():
+    diagnostics: list[PeerDiagnostic] = []
+    client, server, start = byte_pair({"on_diagnostic": diagnostics.append})
+    server.on_request("dt", lambda _p, _c: {"t": datetime.datetime.now()})
+
+    def bad_error(_p, _c):
+        raise RpcError(ErrorCode.INVALID_PARAMS, "bad", {"t": datetime.datetime.now()})
+
+    server.on_request("bad-error", bad_error)
+    start()
+    for method in ("dt", "bad-error"):
+        with pytest.raises(RpcError) as info:
+            await asyncio.wait_for(client.request(method), 1)
+        assert info.value.code == ErrorCode.INTERNAL_ERROR
+    assert [d.kind for d in diagnostics] == ["send-failed", "send-failed"]
+
+
+async def test_a_failed_write_of_an_answer_is_a_send_failure_with_no_second_answer():
+    diagnostics: list[PeerDiagnostic] = []
+    left, right = channel_pair()
+    writes: list[Any] = []
+
+    class Breaks:
+        async def receive(self) -> Any:
+            return await left.receive()
+
+        async def send(self, item: Any) -> None:
+            writes.append(item)
+            if "result" in item:
+                raise ChannelClosed("pipe broke")
+            await left.send(item)
+
+        async def close(self) -> None:
+            await left.close()
+
+    peer = RpcPeer(Breaks(), on_diagnostic=diagnostics.append)
+    peer.on_request("x", lambda _p, _c: "answer").start()
+    await right.send({"jsonrpc": "2.0", "id": 1, "method": "x"})
+    await tick(10)
+    assert [d.kind for d in diagnostics] == ["send-failed"]
+    assert len(writes) == 1
+
+
+async def test_when_the_other_side_ends_running_handlers_finish_and_their_answers_are_sent():
+    end = Raw()
+    peer = RpcPeer(end.channel)
+
+    async def x(_p, ctx):
+        await tick()
+        await ctx.peer.notify("progress", {"done": True})
+        return "aborted" if ctx.signal.aborted else "answer"
+
+    peer.on_request("x", x)
+    peer.start()
+    asked = asyncio.ensure_future(peer.request("ask"))
+    await tick()
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "x"})
+    await end.end()
+    with pytest.raises(LocalError) as info:
+        await asked
+    assert info.value.kind == "closed"
+    assert peer.state == "draining"
+    assert not peer.is_closed
+    with pytest.raises(LocalError) as info:
+        await peer.request("later")
+    assert info.value.kind == "closed"
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"
+    assert peer.state == "closed"
+    await tick()
+    assert end.sent[1:] == [
+        {"jsonrpc": "2.0", "method": "progress", "params": {"done": True}},
+        {"jsonrpc": "2.0", "id": 1, "result": "answer"},
+    ]
+
+
+async def test_handlers_still_running_when_the_drain_time_is_up_are_aborted():
+    clock = manual_clock()
+    end = Raw()
+    peer = RpcPeer(end.channel, clock=clock, drain_timeout_ms=1000)
+    seen: dict[str, Any] = {}
+
+    def slow(_p, ctx):
+        seen["signal"] = ctx.signal
+        return asyncio.get_running_loop().create_future()
+
+    peer.on_request("slow", slow)
+    assert peer.state == "idle"
+    peer.start()
+    assert peer.state == "open"
+    await end.send({"jsonrpc": "2.0", "id": 1, "method": "slow"})
+    await end.end()
+    await tick()
+    assert peer.state == "draining"
+    clock.advance(999)
+    assert not seen["signal"].aborted
+    clock.advance(1)
+    assert seen["signal"].aborted
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"
+    assert clock.pending_timers == 0
+    for task in list(peer._tasks):
+        task.cancel()
+
+
+async def test_close_gives_up_on_a_stuck_writer_and_aborts_the_channel():
+    left, _right = channel_pair()
+    aborted: list[bool] = []
+
+    class Stuck:
+        async def receive(self) -> Any:
+            return await left.receive()
+
+        async def send(self, item: Any) -> None:
+            await asyncio.get_running_loop().create_future()  # a full pipe nobody reads
+
+        async def close(self) -> None:
+            pass
+
+        async def abort(self) -> None:
+            aborted.append(True)
+
+    peer = RpcPeer(Stuck())
+    peer._close_wait_s = 0.05
+    peer.start()
+    first = asyncio.ensure_future(peer.notify("a"))
+    second = asyncio.ensure_future(peer.notify("b"))
+    await tick()
+    await asyncio.wait_for(peer.close(), 1)
+    assert peer._writer_task is not None and peer._writer_task.done()
+    assert aborted == [True]
+    for write in (first, second):
+        with pytest.raises(LocalError):
+            await asyncio.wait_for(write, 1)
+
+
+async def test_with_nothing_running_the_other_side_ending_closes_at_once():
+    end = Raw()
+    peer = RpcPeer(end.channel).start()
+    await end.end()
+    assert (await asyncio.wait_for(peer.closed, 1)).reason == "remote-ended"

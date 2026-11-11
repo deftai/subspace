@@ -1,7 +1,10 @@
+import datetime
 import time
 from typing import Any
 
-from deft_subspace.kernel import FramingDiagnostic, ndjson_decoder, ndjson_encoder
+import pytest
+
+from deft_subspace.kernel import EncodeError, FramingDiagnostic, ndjson_decoder, ndjson_encoder
 from deft_subspace.kernel.testing import merge, rechunk
 
 
@@ -66,17 +69,26 @@ def test_large_lines_cost_linear_time():
     assert elapsed < 3, f"took {elapsed:.2f} s"
 
 
+def test_a_leading_byte_order_mark_is_skipped():
+    diagnostics: list[FramingDiagnostic] = []
+    data = '﻿{"a":1}\n{"b":"﻿"}\n'.encode()
+    assert decode([data[:2], data[2:]], on_diagnostic=diagnostics.append) == [{"a": 1}, {"b": "﻿"}]
+    assert diagnostics == []
+
+
 def test_encoder_writes_one_line_per_value():
     encoder = ndjson_encoder()
     text = b"".join(b for value in ({"text": "a\nb"}, 0) for b in encoder.feed(value)).decode()
     assert text == '{"text":"a\\nb"}\n0\n'
 
 
-def test_encoder_drops_an_unserializable_value():
+def test_encoder_raises_for_an_unserializable_value_and_keeps_working():
     errors: list[Any] = []
     cycle: dict[str, Any] = {}
     cycle["self"] = cycle
     encoder = ndjson_encoder(on_error=lambda e, _v: errors.append(e))
-    text = b"".join(b for value in ({"a": 1}, cycle, {"b": 2}) for b in encoder.feed(value)).decode()
-    assert text == '{"a":1}\n{"b":2}\n'
-    assert len(errors) == 1
+    for value in (cycle, {"t": datetime.datetime.now()}, float("nan")):
+        with pytest.raises(EncodeError):
+            encoder.feed(value)
+    assert b"".join(encoder.feed({"b": 2})) == b'{"b":2}\n'
+    assert len(errors) == 3

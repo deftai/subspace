@@ -26,6 +26,15 @@ async def test_trace_tap_records_every_message_and_round_trips():
     assert parse_trace(format_trace(records)) == records
 
 
+def test_a_note_keeps_explicit_none_data_and_leaves_out_missing_data():
+    records = []
+    tap = trace_tap(records.append, peer="client", clock=manual_clock())
+    tap.note("none", None)
+    tap.note("missing")
+    assert records[1] == {"v": 1, "kind": "note", "t": 0, "text": "none", "data": None}
+    assert records[2] == {"v": 1, "kind": "note", "t": 0, "text": "missing"}
+
+
 def test_parse_trace_names_a_bad_line_and_requires_a_header():
     with pytest.raises(ValueError, match="line 2 is not JSON"):
         parse_trace('{"v":1,"kind":"header","started":"x","peer":"c"}\nnope\n')
