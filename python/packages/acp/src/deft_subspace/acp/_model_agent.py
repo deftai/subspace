@@ -60,7 +60,7 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
-class PromptInput:
+class ModelPromptInput:
     prompt: list[ContentBlock]
     #: Results of the previous turn's tool calls that ran but the model never heard back
     #: about (the turn hit `max_steps` or was cancelled): give them to the model before the
@@ -74,7 +74,7 @@ class ToolResultsInput:
     tool_results: list[ToolResult]
 
 
-ModelInput = Union[PromptInput, ToolResultsInput]
+ModelInput = Union[ModelPromptInput, ToolResultsInput]
 """What goes to the model next: the user's prompt, or the results of its tool calls."""
 
 
@@ -165,7 +165,7 @@ def model_agent(
     async def prompt(turn: AgentTurn) -> str:
         conversation = conversation_for(turn)
         stream = ModelStream(on_text=turn.say, on_thinking=turn.think, signal=turn.signal)
-        nxt: ModelInput = PromptInput(list(turn.prompt), unsent.pop(turn.session_id, []))
+        nxt: ModelInput = ModelPromptInput(list(turn.prompt), unsent.pop(turn.session_id, []))
 
         def stop_with(stop: str, results: list[ToolResult]) -> str:
             # Tools that ran but whose results the model has not had yet: kept for the next prompt,

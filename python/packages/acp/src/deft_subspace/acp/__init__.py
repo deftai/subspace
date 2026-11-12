@@ -25,13 +25,17 @@ from ._mcp_connector import (
     mcp_connector,
 )
 from ._model_agent import (
+    ConversationSetup,
     ModelAdapter,
     ModelConversation,
+    ModelInput,
+    ModelPromptInput,
     ModelReply,
     ModelStream,
     ModelTool,
     ModelToolCall,
     ToolResult,
+    ToolResultsInput,
     model_agent,
 )
 from ._start import (
@@ -302,6 +306,10 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "ConversationSetup",
+    "ModelInput",
+    "ModelPromptInput",
+    "ToolResultsInput",
     "AcpClient",
     "AcpMcpServer",
     "AgentCatalog",
