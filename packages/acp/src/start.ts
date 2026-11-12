@@ -232,7 +232,12 @@ function traceFromEnv(name: string): string | undefined {
   const folder = process.env.SUBSPACE_TRACE;
   if (!folder) return undefined;
   mkdirSync(folder, { recursive: true });
-  const label = name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
+  const dashed = name.replace(/[^A-Za-z0-9._-]+/g, '-');
+  let from = 0;
+  let to = dashed.length;
+  while (from < to && dashed[from] === '-') from++;
+  while (to > from && dashed[to - 1] === '-') to--;
+  const label = dashed.slice(from, to) || 'agent';
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
