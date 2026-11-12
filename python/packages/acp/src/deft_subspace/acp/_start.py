@@ -37,6 +37,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import signal as signals
 import sys
 import threading
@@ -160,7 +161,7 @@ def _trace_from_env(name: str) -> str | None:
         return None
     os.makedirs(folder, exist_ok=True)
     label = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "agent"
-    return os.path.join(folder, f"{label}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{next(_trace_numbers)}.jsonl")
+    return os.path.join(folder, f"{label}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{next(_trace_numbers)}-{secrets.token_hex(3)}.jsonl")
 
 
 class StartedAgent(SessionConveniences):
