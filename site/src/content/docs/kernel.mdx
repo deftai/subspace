@@ -5,10 +5,11 @@ description: Channels, framing, and a JSON-RPC peer with timeouts and cancellati
 
 import Example from '../../components/Example.astro';
 import kernel from '../../../../examples/kernel.ts?raw';
+import kernelPy from '../../../../python/examples/kernel.py?raw';
 
 `@deft-subspace/kernel` is the protocol-neutral layer under the ACP package. It is written for Node, Bun, Deno and browsers (CI tests it on Node), and fits other JSON-RPC protocols too.
 
-<Example file="kernel.ts" ts={kernel} />
+<Example file="kernel.ts" ts={kernel} py={kernelPy} />
 
 - **`Channel`**: a readable and a writable stream of messages. `channelPair()` joins two ends in memory; `pipeChannel()` connects one to another.
 - **`ndjson(byteChannel)`**: newline-delimited JSON framing over bytes. Lines that are not JSON are skipped and reported (`onDiagnostic`), split multi-byte characters are kept, and over-long lines are dropped without buffering them.

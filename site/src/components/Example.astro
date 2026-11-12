@@ -1,6 +1,6 @@
 ---
 /**
- * A code example from the examples/ folder of each SDK, in language tabs.
+ * A code example from the examples/ folder of each SDK (python/examples/ for Python), in language tabs.
  * Pass the file's text (import it with `?raw`); each language is a prop, so
  * a Python or Rust SDK adds its own without touching the pages. One language
  * shows as plain code; several show as tabs synced across the site.
@@ -16,12 +16,14 @@ interface Props {
 }
 
 const { file, ts, py, rs } = Astro.props;
-// The marker the example runner reads is not for readers.
-const clean = (code: string) => code.replace(/^\s*\*\s*@typecheck-only.*\n/m, '').trimEnd();
+// The marker the example runners read is not for readers (in a JSDoc comment or a docstring).
+const clean = (code: string) => code.replace(/^\s*(\*\s*)?@typecheck-only.*\n/m, '').trimEnd();
+// Python examples live in python/examples/, with underscores: first-turn.ts is first_turn.py.
+const stem = file.replace(/\.ts$/, '');
 const languages = [
-  { label: 'TypeScript', lang: 'ts', code: ts },
-  ...(py ? [{ label: 'Python', lang: 'py', code: py }] : []),
-  ...(rs ? [{ label: 'Rust', lang: 'rs', code: rs }] : []),
+  { label: 'TypeScript', lang: 'ts', code: ts, title: `examples/${file}` },
+  ...(py ? [{ label: 'Python', lang: 'py', code: py, title: `python/examples/${stem.replaceAll('-', '_')}.py` }] : []),
+  ...(rs ? [{ label: 'Rust', lang: 'rs', code: rs, title: `examples/${file}` }] : []),
 ];
 ---
 
@@ -32,7 +34,7 @@ const languages = [
     <Tabs syncKey="language">
       {languages.map((l) => (
         <TabItem label={l.label}>
-          <Code code={clean(l.code)} lang={l.lang} title={`examples/${file}`} />
+          <Code code={clean(l.code)} lang={l.lang} title={l.title} />
         </TabItem>
       ))}
     </Tabs>

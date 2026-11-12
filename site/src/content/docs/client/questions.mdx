@@ -5,10 +5,11 @@ description: Form and URL elicitation, and how answers are checked against the a
 
 import Example from '../../../components/Example.astro';
 import elicitation from '../../../../../examples/elicitation.ts?raw';
+import elicitationPy from '../../../../../python/examples/elicitation.py?raw';
 
 An agent can ask the user a question through the client (`elicitation/create`): a **form** described by a JSON Schema, or a **URL** to open (for example, to authorize something).
 
-<Example file="elicitation.ts" ts={elicitation} />
+<Example file="elicitation.ts" ts={elicitation} py={elicitationPy} />
 
 - Without an `elicitation` handler, the client advertises none, and agents should not ask.
 - `elicitationModes` limits what is advertised (default both). Requests in other modes are declined without calling your handler.

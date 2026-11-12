@@ -5,11 +5,13 @@ description: Give a session MCP servers, checked against the transports the agen
 
 import Example from '../../../components/Example.astro';
 import servers from '../../../../../examples/mcp-servers.ts?raw';
+import serversPy from '../../../../../python/examples/mcp_servers.py?raw';
 import agentMcp from '../../../../../examples/agent-mcp.ts?raw';
+import agentMcpPy from '../../../../../python/examples/agent_mcp.py?raw';
 
 A client can give each session [MCP](https://modelcontextprotocol.io) servers for the agent to use: a program it starts (`stdio`), a URL it connects to (`http`, or `sse` on v1), or tools the client serves itself (`acp`, see [MCP-over-ACP](../over-acp/)).
 
-<Example file="mcp-servers.ts" ts={servers} />
+<Example file="mcp-servers.ts" ts={servers} py={serversPy} />
 
 - Each server is written in the agent's protocol: v1 stdio has no `type` and needs `args` and `env`; v2 stdio needs an absolute command.
 - `client.supports.mcp` says which transports the agent takes. A server of another transport throws a `CapabilityError` before `session/new` is sent. v1 agents always take stdio; v2 agents say so.
@@ -24,7 +26,7 @@ A client can give each session [MCP](https://modelcontextprotocol.io) servers fo
 
 In this example the client gives the session a stdio server (the same file, started with `mcp-server`), and the agent lists its tools and calls one:
 
-<Example file="agent-mcp.ts" ts={agentMcp} />
+<Example file="agent-mcp.ts" ts={agentMcp} py={agentMcpPy} />
 
 - **Advertised:** with a connector, `initialize` advertises its transports (stdio, http and sse by default), unless you set `mcpTransports`. Add `acp` to `mcpTransports` to take those too.
 - **Connected on first use:** a server is connected the first time a turn uses it, then kept for the session's later turns. It is closed when the session closes, when a load or resume sends new servers, or when the connection ends. A stdio server is stopped then.
