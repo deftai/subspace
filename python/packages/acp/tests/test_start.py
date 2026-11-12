@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from deft_subspace.acp._start import AgentCommand, run, start
 from deft_subspace.acp.agent import serve_agent
 from deft_subspace.acp.client import AcpClient
 from deft_subspace.acp.open import connect_session, open_session, require_permission_answer
-from deft_subspace.acp.start import AgentCommand, run, start
 from deft_subspace.kernel import channel_pair, parse_trace
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -151,7 +151,7 @@ async def test_stdio_writes_go_through_one_writer_whole_and_in_order_even_when_a
     import asyncio
     import threading
 
-    from deft_subspace.acp.start import _StdioChannel
+    from deft_subspace.acp._start import _StdioChannel
 
     class Out:
         def __init__(self) -> None:
@@ -190,7 +190,7 @@ async def test_stdio_writes_go_through_one_writer_whole_and_in_order_even_when_a
 async def test_start_trace_is_buffered_and_flushed_soon_after(tmp_path):
     import asyncio
 
-    from deft_subspace.acp.start import _Trace
+    from deft_subspace.acp._start import _Trace
 
     trace = _Trace(str(tmp_path / "t.jsonl"), "x", "/").open()
     for i in range(100):
@@ -205,9 +205,9 @@ async def test_stdio_send_returns_once_queued_waits_past_the_window_and_raises_a
     import importlib
     import threading
 
-    from deft_subspace.acp.start import _StdioChannel
+    from deft_subspace.acp._start import _StdioChannel
 
-    start = importlib.import_module("deft_subspace.acp.start")  # the package's `start` is the function
+    start = importlib.import_module("deft_subspace.acp._start")
 
     class Blocked:
         def __init__(self) -> None:
@@ -275,7 +275,7 @@ def test_stdio_frames_queued_when_the_program_ends_are_still_written():
 
     script = """
 import asyncio, sys, time
-from deft_subspace.acp.start import _StdioChannel
+from deft_subspace.acp._start import _StdioChannel
 
 class Slow:
     def __init__(self, out): self.out = out

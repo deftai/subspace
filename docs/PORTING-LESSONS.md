@@ -312,6 +312,16 @@ after each change; keep the benchmark script.
   pickling and `deepcopy()` must keep working; test each.
 - **pydantic models from the SDK** are good for validation, too heavy per
   message. Load them lazily.
+- **Don't name a module after a function it exports.** `start.py` exported
+  `start()`, and the package's `start` was the function, so
+  `deft_subspace.acp.start` could not reach the module (tests needed
+  `importlib`). Four modules had this. Name such modules privately
+  (`_start.py`) and export from the package; a test now checks that no
+  module is hidden.
+- **Give every exception one base class.** TS code catches `Error`, so the
+  TS port never needed one. Python users write `except`, and fourteen
+  unrelated classes left them catching `Exception`. `SubspaceError` is the
+  base; keep existing bases (`EncodeError` is still a `ValueError`).
 
 ### Windows
 
@@ -500,3 +510,11 @@ writer thread on every frame. Sends now return once queued (streaming about
 7× faster, 20 concurrent sessions about 2.7×). Review then caught what that
 broke: a reply still queued at exit died with the daemon writer thread. An
 `atexit` hook now drains it.
+
+### 2026-11-11: API fixes before the first PyPI release
+
+A look at the Python API for developer experience found two cheap breaking
+fixes, best made before anyone depends on the package: one exception base
+class, and four modules hidden by their own functions. Both are guarded by
+`tests/test_api.py`.
+

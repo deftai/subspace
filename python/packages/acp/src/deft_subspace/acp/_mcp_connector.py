@@ -83,9 +83,9 @@ class _StdioConnection:
 
 def _load_sdk() -> Any:
     try:
+        import httpx2
         import mcp
         from mcp.client.sse import sse_client
-        import httpx2
         from mcp.client.streamable_http import streamable_http_client
         from mcp.shared.exceptions import MCPError
         from mcp.types import Request, RequestParams

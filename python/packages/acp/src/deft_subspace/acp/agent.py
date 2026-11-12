@@ -33,6 +33,7 @@ from deft_subspace.kernel import (
     LocalError,
     RpcError,
     RpcPeer,
+    SubspaceError,
     cancel_request,
 )
 
@@ -98,7 +99,7 @@ DEFAULT_OPTIONS: list[PermissionOption] = [
 ]
 
 
-class PermissionDenied(Exception):
+class PermissionDenied(SubspaceError):
     """Raised by `turn.tool()` when the user refused a tool that asked first.
     A prompt handler that lets it escape ends the turn `end_turn`: the agent
     stopped because it was not allowed, which is not an error."""

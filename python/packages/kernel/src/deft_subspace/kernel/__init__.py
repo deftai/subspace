@@ -14,7 +14,7 @@ from .channel import (
     stream_channel,
 )
 from .clock import Clock, SystemClock, system_clock
-from .errors import ErrorCode, LocalError, LocalErrorKind, RpcError
+from .errors import ErrorCode, LocalError, LocalErrorKind, RpcError, SubspaceError
 from .framing import EncodeError, FramingDiagnostic, NdjsonDecoder, NdjsonEncoder, ndjson, ndjson_decoder, ndjson_encoder
 from .process import ExitInfo, SpawnError, SupervisedProcess, spawn_process
 from .rpc import (
@@ -37,6 +37,7 @@ from .rpc import (
 from .trace import TRACE_VERSION, TraceRecord, TraceTap, format_trace, parse_trace, trace_tap
 
 __all__ = [
+    "SubspaceError",
     "AbortController",
     "AbortError",
     "AbortSignal",

@@ -45,12 +45,14 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any, Literal, NamedTuple
 
+from deft_subspace.kernel import SubspaceError
+
 from .agents import AgentCatalog, AgentDefinition, CatalogLayer, builtin_catalog
 from .install import Env, installed_binaries, iso_now
 from .registry import REGISTRY_SNAPSHOT, REGISTRY_SNAPSHOT_DATE, REGISTRY_URL, Registry, trim_registry
 
 
-class AgentFileError(Exception):
+class AgentFileError(SubspaceError):
     pass
 
 

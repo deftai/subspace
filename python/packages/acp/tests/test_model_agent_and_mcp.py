@@ -2,13 +2,12 @@ import asyncio
 import sys
 from pathlib import Path
 
-from link import connect
-
+from deft_subspace.acp import ModelPromptInput, ModelReply, ModelToolCall, ToolResultsInput, model_agent
+from deft_subspace.acp._mcp_connector import mcp_connector
 from deft_subspace.acp.mcp import StdioMcpServer
-from deft_subspace.acp.mcp_connector import mcp_connector
-from deft_subspace.acp.model_agent import ModelReply, ModelToolCall, PromptInput, ToolResultsInput, model_agent
 from deft_subspace.acp.policies import read_only
 from deft_subspace.acp.tools import tool
+from link import connect
 
 
 class ScriptedModel:
@@ -27,7 +26,7 @@ class ScriptedModel:
         class Conversation:
             async def send(self, value, stream):
                 model.inputs.append(value)
-                if isinstance(value, PromptInput) or model.loop:
+                if isinstance(value, ModelPromptInput) or model.loop:
                     await stream.on_thinking("hmm")
                     return ModelReply("tool_use", model.calls)
                 assert isinstance(value, ToolResultsInput)
@@ -98,7 +97,7 @@ async def test_results_of_tools_that_ran_when_the_turn_ended_go_with_the_next_pr
     assert (await session.prompt("one")).stop_reason == "max_turn_requests"
     assert (await session.prompt("two")).stop_reason == "end_turn"
     # The prompt keeps its own shape (a conversation that checks for `tool_results` still sees a prompt).
-    assert isinstance(sent[1], PromptInput) and not hasattr(sent[1], "tool_results")
+    assert isinstance(sent[1], ModelPromptInput) and not hasattr(sent[1], "tool_results")
     assert [(r.id, r.content) for r in sent[1].interrupted_tool_results] == [("a", "3")]
     # A cancel while the first of two tools runs: its result is kept, the second never ran.
     three = session.prompt("three")
@@ -146,7 +145,7 @@ async def test_a_turn_unwinding_when_its_connection_closes_keeps_no_tool_results
             class Conversation:
                 async def send(self, value, stream):
                     sent.append(value)
-                    if isinstance(value, PromptInput) and "one" in str(value.prompt):
+                    if isinstance(value, ModelPromptInput) and "one" in str(value.prompt):
                         return ModelReply("tool_use", [ModelToolCall("a", "blocking", {})])
                     return ModelReply("end_turn")
 
@@ -180,7 +179,7 @@ async def test_a_turn_unwinding_when_its_connection_closes_keeps_no_tool_results
     resumed = await second.resume_session(session.id, "/work")
     await resumed.prompt("two")
     await second.close()
-    assert isinstance(sent[-1], PromptInput) and sent[-1].interrupted_tool_results == []
+    assert isinstance(sent[-1], ModelPromptInput) and sent[-1].interrupted_tool_results == []
 
 
 async def until_true(check, ms=2000):
@@ -268,7 +267,6 @@ async def _serve_http(kind: str):
 
 
 import pytest  # noqa: E402
-
 from deft_subspace.acp.mcp import HttpMcpServer, SseMcpServer  # noqa: E402
 
 

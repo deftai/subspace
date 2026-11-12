@@ -17,8 +17,10 @@ import asyncio
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from .errors import SubspaceError
 
-class AbortError(Exception):
+
+class AbortError(SubspaceError):
     """The default reason of a signal aborted without one."""
 
     def __init__(self, message: str = "This operation was aborted") -> None:

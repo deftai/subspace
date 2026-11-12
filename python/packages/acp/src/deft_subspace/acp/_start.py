@@ -44,10 +44,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from deft_subspace.kernel import ChannelClosed, EndOfChannel, ErrorCode, RpcError, RpcPeer, SpawnError, ndjson, trace_tap
 
+from ._conveniences import SessionConveniences
 from .agents import AgentCatalog, ResolvedAgent, list_agents, resolve_agent
 from .catalog import load_catalog_async
 from .client import PromptInput, Session, SessionMcpServers
-from .conveniences import SessionConveniences
 from .handlers import HANDLER_KEYS, TurnHandlers, merge_handlers
 from .model import TurnLimits, TurnResult
 from .open import open_session, require_permission_answer

@@ -21,8 +21,8 @@ from typing import Any
 
 from deft_subspace.kernel import Channel, ErrorCode, RpcError
 
+from ._conveniences import SessionConveniences
 from .client import AcpClient, Session, SessionMcpServers
-from .conveniences import SessionConveniences
 from .handlers import merge_handlers
 
 

@@ -15,6 +15,37 @@ The official SDK's pydantic schemas are `v1` and `v2` (loaded on first use).
 
 from typing import TYPE_CHECKING, Any
 
+from ._conveniences import (
+    JsonAnswerError,
+    SessionConveniences,
+    conveniences,
+    find_json,
+)
+from ._mcp_connector import (
+    mcp_connector,
+)
+from ._model_agent import (
+    ConversationSetup,
+    ModelAdapter,
+    ModelConversation,
+    ModelInput,
+    ModelPromptInput,
+    ModelReply,
+    ModelStream,
+    ModelTool,
+    ModelToolCall,
+    ToolResult,
+    ToolResultsInput,
+    model_agent,
+)
+from ._start import (
+    AgentCommand,
+    StartedAgent,
+    agent_by_name,
+    run,
+    serve_stdio,
+    start,
+)
 from .agent import (
     AgentTurn,
     ElicitAnswer,
@@ -83,12 +114,6 @@ from .content import (
     file,
     image,
 )
-from .conveniences import (
-    JsonAnswerError,
-    SessionConveniences,
-    conveniences,
-    find_json,
-)
 from .elicitation import (
     validate_elicitation,
 )
@@ -148,9 +173,6 @@ from .mcp_connections import (
     McpConnection,
     McpConnector,
 )
-from .mcp_connector import (
-    mcp_connector,
-)
 from .model import (
     BackgroundItem,
     ContentBlock,
@@ -189,16 +211,6 @@ from .model import (
     UserMessageEndEvent,
     UserMessageEvent,
     turn_end,
-)
-from .model_agent import (
-    ModelAdapter,
-    ModelConversation,
-    ModelReply,
-    ModelStream,
-    ModelTool,
-    ModelToolCall,
-    ToolResult,
-    model_agent,
 )
 from .modes import (
     SessionMode,
@@ -250,14 +262,6 @@ from .registry import (
     registry_target,
     trim_registry,
 )
-from .start import (
-    AgentCommand,
-    StartedAgent,
-    agent_by_name,
-    run,
-    serve_stdio,
-    start,
-)
 from .telemetry import (
     OtelTap,
     otel_tap,
@@ -302,6 +306,10 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "ConversationSetup",
+    "ModelInput",
+    "ModelPromptInput",
+    "ToolResultsInput",
     "AcpClient",
     "AcpMcpServer",
     "AgentCatalog",

@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from deft_subspace.kernel import SubspaceError
+
 from .model import ProtocolVersion
 
 
@@ -69,7 +71,7 @@ class ClientSupport:
     elicitation: ElicitationSupport
 
 
-class CapabilityError(Exception):
+class CapabilityError(SubspaceError):
     def __init__(self, capability: str, who: Literal["agent", "client"]) -> None:
         super().__init__(f"The {who} does not offer {capability}")
         self.capability = capability

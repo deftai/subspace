@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from deft_subspace.kernel import SubspaceError
+
 from .agents import _host_arch, _host_platform
 from .registry import RegistryAgent, registry_target
 
@@ -34,7 +36,7 @@ MARKER = ".subspace-install.json"
 Env = Mapping[str, str | None]
 
 
-class InstallError(Exception):
+class InstallError(SubspaceError):
     pass
 
 

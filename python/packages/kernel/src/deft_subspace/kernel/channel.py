@@ -21,6 +21,8 @@ from collections import deque
 from collections.abc import AsyncIterator, Iterable
 from typing import Any, Generic, Protocol, TypeVar
 
+from .errors import SubspaceError
+
 T = TypeVar("T")
 A = TypeVar("A")
 B = TypeVar("B")
@@ -28,11 +30,11 @@ In = TypeVar("In", contravariant=True)
 Out = TypeVar("Out", covariant=True)
 
 
-class EndOfChannel(Exception):
+class EndOfChannel(SubspaceError):
     """The other side ended its stream: nothing more will arrive."""
 
 
-class ChannelClosed(Exception):
+class ChannelClosed(SubspaceError):
     """Sending on a channel whose sending side was closed (or whose reader went away)."""
 
 
