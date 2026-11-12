@@ -15,6 +15,33 @@ The official SDK's pydantic schemas are `v1` and `v2` (loaded on first use).
 
 from typing import TYPE_CHECKING, Any
 
+from ._conveniences import (
+    JsonAnswerError,
+    SessionConveniences,
+    conveniences,
+    find_json,
+)
+from ._mcp_connector import (
+    mcp_connector,
+)
+from ._model_agent import (
+    ModelAdapter,
+    ModelConversation,
+    ModelReply,
+    ModelStream,
+    ModelTool,
+    ModelToolCall,
+    ToolResult,
+    model_agent,
+)
+from ._start import (
+    AgentCommand,
+    StartedAgent,
+    agent_by_name,
+    run,
+    serve_stdio,
+    start,
+)
 from .agent import (
     AgentTurn,
     ElicitAnswer,
@@ -83,12 +110,6 @@ from .content import (
     file,
     image,
 )
-from ._conveniences import (
-    JsonAnswerError,
-    SessionConveniences,
-    conveniences,
-    find_json,
-)
 from .elicitation import (
     validate_elicitation,
 )
@@ -148,9 +169,6 @@ from .mcp_connections import (
     McpConnection,
     McpConnector,
 )
-from ._mcp_connector import (
-    mcp_connector,
-)
 from .model import (
     BackgroundItem,
     ContentBlock,
@@ -189,16 +207,6 @@ from .model import (
     UserMessageEndEvent,
     UserMessageEvent,
     turn_end,
-)
-from ._model_agent import (
-    ModelAdapter,
-    ModelConversation,
-    ModelReply,
-    ModelStream,
-    ModelTool,
-    ModelToolCall,
-    ToolResult,
-    model_agent,
 )
 from .modes import (
     SessionMode,
@@ -249,14 +257,6 @@ from .registry import (
     RegistryAgent,
     registry_target,
     trim_registry,
-)
-from ._start import (
-    AgentCommand,
-    StartedAgent,
-    agent_by_name,
-    run,
-    serve_stdio,
-    start,
 )
 from .telemetry import (
     OtelTap,

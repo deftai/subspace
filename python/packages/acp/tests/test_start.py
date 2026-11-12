@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from deft_subspace.acp._start import AgentCommand, run, start
 from deft_subspace.acp.agent import serve_agent
 from deft_subspace.acp.client import AcpClient
 from deft_subspace.acp.open import connect_session, open_session, require_permission_answer
-from deft_subspace.acp._start import AgentCommand, run, start
 from deft_subspace.kernel import channel_pair, parse_trace
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -426,6 +426,8 @@ def workspace_terminals(
     return WorkspaceTerminals(root, allow=allow, default_output_byte_limit=default_output_byte_limit, kill_grace_ms=kill_grace_ms)
 
 
+from ._mcp_connector import mcp_connector
+from ._start import StartedAgent, agent_by_name, run, serve_stdio, start
 from .catalog import (
     AgentFileError,
     agent_files,
@@ -439,6 +441,4 @@ from .catalog import (
 )
 from .content import file, image
 from .install import Installed, InstallError, binaries_path, install_agent, installed_binaries
-from ._mcp_connector import mcp_connector
-from ._start import StartedAgent, agent_by_name, run, serve_stdio, start
 from .terminal_ui import ask_in_terminal, terminal

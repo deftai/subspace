@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 
 import pytest
+from deft_subspace.acp._conveniences import JsonAnswerError, find_json
 from deft_subspace.acp.agent import serve_agent
 from deft_subspace.acp.content import file, image
-from deft_subspace.acp._conveniences import JsonAnswerError, find_json
 from deft_subspace.acp.open import connect_session
 from deft_subspace.kernel import AbortController, channel_pair
 from pydantic import BaseModel
