@@ -1155,6 +1155,7 @@ class Session:
         # write the agent never reads, or a caller cancelled while it waits, must not keep the turn open.
         deadline = asyncio.get_running_loop().call_later(self.client._options.timeouts.cancel_grace_ms / 1000, lambda: self._force_end(active))
         self._enter(_Cancelling(state.turn, state.answered, state.started, state.idle_seen, deadline))
+        active.turn._cancel_sent = True
         # Open permission questions are answered `cancelled`, as the spec requires.
         active.questions.abort()
 

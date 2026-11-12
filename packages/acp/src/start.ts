@@ -30,6 +30,7 @@
  * ask before writing and running, and a silent refusal surprises everyone.
  */
 import { Readable, Writable } from 'node:stream';
+import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ErrorCode, ndjson, RpcError, traceTap, type RpcPeer } from '@deft-subspace/kernel';
@@ -232,11 +233,17 @@ function traceFromEnv(name: string): string | undefined {
   const folder = process.env.SUBSPACE_TRACE;
   if (!folder) return undefined;
   mkdirSync(folder, { recursive: true });
-  const label = name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
+  const dashed = name.replace(/[^A-Za-z0-9._-]+/g, '-');
+  let from = 0;
+  let to = dashed.length;
+  while (from < to && dashed[from] === '-') from++;
+  while (to > from && dashed[to - 1] === '-') to--;
+  const label = dashed.slice(from, to) || 'agent';
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  return join(folder, `${label}-${stamp}-${process.pid}-${++traceNumber}.jsonl`);
+  // The random part keeps worker threads (same pid, a counter each) from picking the same name.
+  return join(folder, `${label}-${stamp}-${process.pid}-${++traceNumber}-${randomBytes(3).toString('hex')}.jsonl`);
 }
 
 /** A trace written to `path` as it happens (JSON Lines, the kernel's trace format). */

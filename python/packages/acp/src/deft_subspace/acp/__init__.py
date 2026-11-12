@@ -10,6 +10,17 @@ permissions that fail closed. Both sides: `AcpClient` (and `start()`) for client
     finally:
         await agent.close()
 
+Where to start (everything is imported from `deft_subspace.acp`):
+
+- Run an agent: `start()`, `run()`, `StartedAgent`; blocking: `deft_subspace.acp.sync.run()`.
+- Client: `AcpClient`, `Session`, `Turn`, `TurnResult`, `TurnHandlers`; events: `TurnEvent`,
+  `MessageEvent`, `ToolCallEvent`, `PermissionEvent`.
+- Permissions: `allow`, `reject`, `read_only`, `allow_inside`, `first_of`, `PermissionRequest`.
+- Agents: `serve_stdio()`, `serve_agent()`, `AgentTurn`, `tool()`, `model_agent()`.
+- Agent names: `list_agents()`, `load_catalog()`.
+- MCP: `mcp_connector()`, `StdioMcpServer`, `HttpMcpServer`.
+- Errors: every exception class is a `deft_subspace.kernel.SubspaceError`.
+
 The official SDK's pydantic schemas are `v1` and `v2` (loaded on first use).
 """
 
@@ -297,12 +308,15 @@ if TYPE_CHECKING:
     from acp.experimental.v2 import schema as v2
 
 
-def __getattr__(name: str) -> Any:
-    if name in ("v1", "v2"):
-        from . import model
+if not TYPE_CHECKING:
+    # Hidden from type checkers, which see `v1` and `v2` above: a module `__getattr__` makes them
+    # accept any name imported from the package, typos included.
+    def __getattr__(name: str) -> Any:
+        if name in ("v1", "v2"):
+            from . import model
 
-        return getattr(model, name)
-    raise AttributeError(name)
+            return getattr(model, name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
