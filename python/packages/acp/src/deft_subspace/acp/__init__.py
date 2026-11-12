@@ -308,12 +308,15 @@ if TYPE_CHECKING:
     from acp.experimental.v2 import schema as v2
 
 
-def __getattr__(name: str) -> Any:
-    if name in ("v1", "v2"):
-        from . import model
+if not TYPE_CHECKING:
+    # Hidden from type checkers, which see `v1` and `v2` above: a module `__getattr__` makes them
+    # accept any name imported from the package, typos included.
+    def __getattr__(name: str) -> Any:
+        if name in ("v1", "v2"):
+            from . import model
 
-        return getattr(model, name)
-    raise AttributeError(name)
+            return getattr(model, name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

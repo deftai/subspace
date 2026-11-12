@@ -296,7 +296,7 @@ async def start(
     - `handlers`, or flat `on_message=...` etc.: handlers for every turn.
     - `mcp_servers`, `additional_directories`: for the session.
     - `handle_signals`: cancel and stop the agent on Ctrl-C (SIGINT) before exiting. Default True.
-    - `trace`: record the whole connection to this file (a trace; view it with `deft-subspace-trace`).
+    - `trace`: record the whole connection to this file (a trace; view it with the TypeScript `deft-subspace-trace`).
       Without it, `$SUBSPACE_TRACE` names a folder to write one trace per connection to.
     - `quiet`: no notices on stderr (such as "the first start downloads the adapter").
     - Other options are `connect_agent()`'s (and so `AcpClient.connect()`'s and `spawn_process()`'s).

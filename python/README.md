@@ -98,6 +98,8 @@ await peer.closed
 - **Options** are keyword arguments, not option objects.
 - **Cancellation:** `AbortController` and `AbortSignal` (in the kernel) work like the Web ones. Cancelling a task that awaits a request also gives up on it and tells the other side.
 - **Validators** (`schema=` on tools, `json()`, extensions) are pydantic models, `TypeAdapter`s, or objects with `parse()`, in place of Standard Schema.
+- **Patterns** in permission rules (`titles=`, `commands=`): a string matches if it is contained, as in TypeScript; for a regex, pass `re.compile(...)` where TypeScript writes `/.../`.
+- **OpenTelemetry:** `otel_tap()` and `spans_from_trace()` take a `tracer_provider=`, where TypeScript takes the OpenTelemetry API module.
 - **Protocol types** are the official SDK's pydantic models, as `deft_subspace.acp.v1` and `.v2`. They are loaded on first use, because importing them is slow.
 - **`mcp_connector()`** connects to `stdio` MCP servers by itself, with no MCP SDK. `http` and `sse` servers go through the official MCP SDK, the `mcp` extra (`pip install 'deft-subspace-acp[mcp]'`), which negotiates MCP 2026-07-28 and older versions.
 

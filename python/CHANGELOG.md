@@ -4,6 +4,7 @@ Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released
 
 ## Unreleased
 
+- acp: type checkers now reject a misspelled name imported from `deft_subspace.acp`. The lazy `v1`/`v2` loader, a module `__getattr__`, made them accept any name.
 - acp: `deft_subspace.acp.sync.run()` and `.text()`: blocking versions of `run()`, for scripts and the REPL. Inside a running event loop they say to `await deft_subspace.acp.run()` instead.
 - acp: `$SUBSPACE_TRACE`: when set to a folder, every `start()` without `trace=` writes a trace there, one file per connection. The TypeScript `start()` does the same.
 - acp: `AcpClient`, `Session`, `Turn` and `StartedAgent` have readable `repr()`s, such as `<Turn s1#3 done: end_turn, 4 events, 21 chars>`.
