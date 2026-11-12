@@ -43,6 +43,18 @@ To see what went over the wire, set `SUBSPACE_TRACE` to a folder: every `start()
 
 The testkit, devtools, CLI and the Claude model adapter are not ported yet. Traces are the same JSON Lines format as the TypeScript packages, so the TypeScript trace viewer reads them.
 
+### Where to start
+
+`deft_subspace.acp` exports everything from one place, as the TypeScript package does. The names most programs need:
+
+- Run an agent: `start()`, `run()`, `StartedAgent`; blocking: `deft_subspace.acp.sync.run()`.
+- Client: `AcpClient`, `Session`, `Turn`, `TurnResult`, `TurnHandlers`; events: `TurnEvent`, `MessageEvent`, `ToolCallEvent`, `PermissionEvent`.
+- Permissions: `allow`, `reject`, `read_only`, `allow_inside`, `first_of`, `PermissionRequest`.
+- Agents: `serve_stdio()`, `serve_agent()`, `AgentTurn`, `tool()`, `model_agent()`.
+- Agent names: `list_agents()`, `load_catalog()`.
+- MCP: `mcp_connector()`, `StdioMcpServer`, `HttpMcpServer`.
+- Errors: every exception class is a `deft_subspace.kernel.SubspaceError`.
+
 ## The model
 
 ### Clients
