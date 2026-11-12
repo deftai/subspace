@@ -2,7 +2,19 @@
 
 Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
 
-## Unreleased
+## 0.1.0a1
+
+First release, an alpha (the API may still change): a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.
+
+- Kernel: channels, NDJSON framing, the JSON-RPC peer, abort signals, traces (the same format as the TypeScript packages), supervised processes.
+- ACP client: `AcpClient`, `Session`, `Turn`; v1 and v2; permissions and permission rules; turn limits; modes and config options; login; elicitation; MCP-over-ACP serving; extensions.
+- ACP agent: `serve_agent`, `agent_endpoint` and its layers, `serve_stdio`, v2 background work, `model_agent()`, tools.
+- `start()`, `run()`, the agent catalog and the ACP registry, agent install, workspace files and terminals, a terminal renderer.
+- OpenTelemetry spans (`otel` extra); MCP servers over stdio, and over http and sse (`mcp` extra).
+
+### Changes made before the first publish
+
+These landed after 0.1.0a1 was versioned and before it was published; they are part of it.
 
 - acp: type checkers now reject a misspelled name imported from `deft_subspace.acp`. The lazy `v1`/`v2` loader, a module `__getattr__`, made them accept any name.
 - acp: `deft_subspace.acp.sync.run()` and `.text()`: blocking versions of `run()`, for scripts and the REPL. Inside a running event loop they say to `await deft_subspace.acp.run()` instead.
@@ -14,16 +26,6 @@ Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released
 - acp: a project's `subspace.toml` is only read if its folder is trusted. It can choose the command an agent name runs (even `claude`), so opening an untrusted checkout and starting an agent by name there could run a command the checkout chose. Trusted folders are listed in your own `~/.config/subspace/agents.toml` (`[trust] folders = ["~/work/my-project"]`): absolute or `~/` paths, that folder only (not the folders below it), symlinks resolved. An untrusted file is skipped with a warning on stderr (once per file) that names it and shows how to trust it; your `agents.toml`, `$SUBSPACE_AGENTS` and `files` still load, and a file named in those is read as given. New `load_catalog(trust_project=True)` reads it anyway; `on_warning=` receives the warning instead of stderr. A bad `[trust]` table in `agents.toml` is an `AgentFileError`. The TypeScript packages and the `subspace` CLI (`--trust-project`) behave the same, and so do TypeScript `acp-testkit` scenarios that name an agent (`subspace test --trust-project`, `runScenario(..., { trustProject: true })`; the testkit is not ported to Python yet).
 - acp: `AgentFile` (from `agent_files()`) has a third field, `trusted` (default `True`); code that unpacks it as `path, exists` needs `path, exists, _`.
 - acp: `serve_stdio` no longer waits for each frame to be written before the next can be sent: a send returns once its frame is queued for the writer thread, and waits only while more than 1 MiB is unwritten, or for a frame of 64 KiB or more. Frames are still written whole and in order; a failed write is raised by the next send instead of by its own. Each message cost a round trip to the writer thread before, so concurrent sessions were answered one message at a time: streaming small chunks is about 7× faster, 20 concurrent sessions about 2.7× (`bench/`), and sequential turns and large chunks are unchanged. Frames still queued when the program ends are written before it exits.
-
-## 0.1.0a1
-
-First release, an alpha (the API may still change): a Python port of the TypeScript `@deft-subspace/kernel` and `@deft-subspace/acp`.
-
-- Kernel: channels, NDJSON framing, the JSON-RPC peer, abort signals, traces (the same format as the TypeScript packages), supervised processes.
-- ACP client: `AcpClient`, `Session`, `Turn`; v1 and v2; permissions and permission rules; turn limits; modes and config options; login; elicitation; MCP-over-ACP serving; extensions.
-- ACP agent: `serve_agent`, `agent_endpoint` and its layers, `serve_stdio`, v2 background work, `model_agent()`, tools.
-- `start()`, `run()`, the agent catalog and the ACP registry, agent install, workspace files and terminals, a terminal renderer.
-- OpenTelemetry spans (`otel` extra); MCP servers over stdio, and over http and sse (`mcp` extra).
 
 ### Fixes and changes made after the port first landed
 
