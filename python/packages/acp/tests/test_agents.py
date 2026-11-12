@@ -12,7 +12,7 @@ import pytest
 from deft_subspace.acp.agents import BUILTIN_AGENTS, builtin_catalog, list_agents, resolve_agent
 from deft_subspace.acp.catalog import AgentFileError, agent_files, load_catalog, load_registry, parse_agent_file, refresh_registry
 from deft_subspace.acp.registry import REGISTRY_SNAPSHOT, REGISTRY_SNAPSHOT_DATE, Registry, registry_target, trim_registry
-from deft_subspace.acp.start import start
+from deft_subspace.acp._start import start
 
 REGISTRY: Registry = {
     "version": "1.0.0",

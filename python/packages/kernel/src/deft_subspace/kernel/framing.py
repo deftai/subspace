@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .channel import Channel, pipe_channel
+from .errors import SubspaceError
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ class NdjsonDecoder:
         return out
 
 
-class EncodeError(ValueError):
+class EncodeError(ValueError, SubspaceError):
     """A value that has no JSON form (a cycle, a datetime, NaN)."""
 
 

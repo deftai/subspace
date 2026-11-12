@@ -5,11 +5,18 @@
   waiting: the caller aborted, a deadline passed, the connection closed, ...
 
 Code that cares should look at `error.kind`, never at message text.
+
+Every exception Subspace raises (both packages) is a `SubspaceError`, so `except SubspaceError`
+catches them all.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
+
+
+class SubspaceError(Exception):
+    """The base of every exception the Subspace packages raise."""
 
 
 class ErrorCode:
@@ -31,7 +38,7 @@ class ErrorCode:
 _MISSING: Any = object()
 
 
-class RpcError(Exception):
+class RpcError(SubspaceError):
     """An error the remote side returned, or one a handler raises to return."""
 
     kind: Literal["remote"] = "remote"
@@ -87,7 +94,7 @@ LocalErrorKind = Literal["aborted", "timeout", "closed", "invalid-response", "se
 """
 
 
-class LocalError(Exception):
+class LocalError(SubspaceError):
     def __init__(self, kind: LocalErrorKind, message: str, *, cause: Any = None, method: str | None = None) -> None:
         super().__init__(message)
         self.kind: LocalErrorKind = kind

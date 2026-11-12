@@ -439,6 +439,6 @@ from .catalog import (
 )
 from .content import file, image
 from .install import Installed, InstallError, binaries_path, install_agent, installed_binaries
-from .mcp_connector import mcp_connector
-from .start import StartedAgent, agent_by_name, run, serve_stdio, start
+from ._mcp_connector import mcp_connector
+from ._start import StartedAgent, agent_by_name, run, serve_stdio, start
 from .terminal_ui import ask_in_terminal, terminal

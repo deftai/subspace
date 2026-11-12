@@ -2,7 +2,7 @@
 
 import asyncio
 
-from deft_subspace.acp.start import serve_stdio
+from deft_subspace.acp._start import serve_stdio
 
 
 async def prompt(turn) -> None:

@@ -83,7 +83,7 @@ from .content import (
     file,
     image,
 )
-from .conveniences import (
+from ._conveniences import (
     JsonAnswerError,
     SessionConveniences,
     conveniences,
@@ -148,7 +148,7 @@ from .mcp_connections import (
     McpConnection,
     McpConnector,
 )
-from .mcp_connector import (
+from ._mcp_connector import (
     mcp_connector,
 )
 from .model import (
@@ -190,7 +190,7 @@ from .model import (
     UserMessageEvent,
     turn_end,
 )
-from .model_agent import (
+from ._model_agent import (
     ModelAdapter,
     ModelConversation,
     ModelReply,
@@ -250,7 +250,7 @@ from .registry import (
     registry_target,
     trim_registry,
 )
-from .start import (
+from ._start import (
     AgentCommand,
     StartedAgent,
     agent_by_name,

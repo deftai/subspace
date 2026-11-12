@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from deft_subspace.kernel import AbortSignal, RpcError
+from deft_subspace.kernel import AbortSignal, RpcError, SubspaceError
 
 from .mcp import MCP_PROTOCOL_VERSION, META_CAPABILITIES, META_CLIENT_INFO, META_VERSION, AcpMcpServer, McpOutcome, McpServer
 
@@ -39,7 +39,7 @@ class McpCallOptions:
     timeout_ms: float | None = None
 
 
-class McpError(Exception):
+class McpError(SubspaceError):
     """An inner MCP error: the server answered, with an MCP (not ACP) error."""
 
     def __init__(self, code: int, message: str, data: Any = None) -> None:

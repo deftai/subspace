@@ -24,6 +24,8 @@ from collections import deque
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from deft_subspace.kernel import SubspaceError
+
 from . import schemas
 
 if TYPE_CHECKING:
@@ -32,7 +34,7 @@ if TYPE_CHECKING:
     from .turn import Turn
 
 
-class JsonAnswerError(Exception):
+class JsonAnswerError(SubspaceError):
     """A JSON value can't be found in the reply, or it never fit the schema."""
 
     def __init__(self, message: str, reply: str, problems: list[str] | None = None) -> None:

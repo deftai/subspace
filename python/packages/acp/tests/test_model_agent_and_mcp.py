@@ -5,8 +5,8 @@ from pathlib import Path
 from link import connect
 
 from deft_subspace.acp.mcp import StdioMcpServer
-from deft_subspace.acp.mcp_connector import mcp_connector
-from deft_subspace.acp.model_agent import ModelReply, ModelToolCall, PromptInput, ToolResultsInput, model_agent
+from deft_subspace.acp._mcp_connector import mcp_connector
+from deft_subspace.acp._model_agent import ModelReply, ModelToolCall, PromptInput, ToolResultsInput, model_agent
 from deft_subspace.acp.policies import read_only
 from deft_subspace.acp.tools import tool
 

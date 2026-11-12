@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from types import FrameType
 
 from .channel import ChannelClosed, EndOfChannel
+from .errors import SubspaceError
 
 _WINDOWS = sys.platform == "win32"
 
@@ -63,7 +64,7 @@ class ExitInfo:
     signal: str | None
 
 
-class SpawnError(Exception):
+class SpawnError(SubspaceError):
     def __init__(self, command: str, code: str | None, hint: str) -> None:
         super().__init__(f"Could not start {command}{f' ({code})' if code else ''}. {hint}")
         self.command = command
