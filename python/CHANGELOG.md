@@ -4,6 +4,10 @@ Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released
 
 ## Unreleased
 
+- acp: type checkers now reject a misspelled name imported from `deft_subspace.acp`. The lazy `v1`/`v2` loader, a module `__getattr__`, made them accept any name.
+- acp: `deft_subspace.acp.sync.run()` and `.text()`: blocking versions of `run()`, for scripts and the REPL. Inside a running event loop they say to `await deft_subspace.acp.run()` instead.
+- acp: `$SUBSPACE_TRACE`: when set to a folder, every `start()` without `trace=` writes a trace there, one file per connection (`<agent>-<time>-<pid>-<n>-<random>.jsonl`). The TypeScript `start()` does the same.
+- acp: `AcpClient`, `Session`, `Turn` and `StartedAgent` have readable `repr()`s, such as `<Turn s1#3 done: end_turn, 4 events, 21 chars>`.
 - kernel, acp: every exception class the packages define is a `SubspaceError` (`from deft_subspace.kernel import SubspaceError`), so `except SubspaceError` catches all of them. `EncodeError` is still a `ValueError` too. Built-in errors (`TypeError`, `ValueError`, `OSError`, and the `RuntimeError` from `refresh_registry()`) are not wrapped.
 - acp: the model adapter's input types are exported: `ModelInput`, `ModelPromptInput` (it was `PromptInput` in the model agent module, a name the client already uses), `ToolResultsInput` and `ConversationSetup`.
 - acp: the modules `start`, `conveniences`, `mcp_connector` and `model_agent` are now private (`_start` and so on). Each was hidden by the function of the same name, so `deft_subspace.acp.start` was the function and the module could not be imported by that name. Import from `deft_subspace.acp`: `from deft_subspace.acp import serve_stdio` instead of `from deft_subspace.acp.start import serve_stdio`.

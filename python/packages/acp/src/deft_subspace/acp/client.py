@@ -233,6 +233,11 @@ class AcpClient:
 
         peer.on_close(on_close)
 
+    def __repr__(self) -> str:
+        agent = " ".join(part for part in (self.agent.name, self.agent.version) if part) or "agent"
+        closed = ", closed" if self.peer.is_closed else ""
+        return f"<AcpClient {agent}, ACP v{self.protocol}{closed}>"
+
     @classmethod
     async def connect(
         cls,
@@ -922,6 +927,19 @@ class Session:
         """A turn is running (or being cancelled)."""
         return self._current is not None
 
+    def __repr__(self) -> str:
+        state = self._state
+        if isinstance(state, _Cancelling):
+            status = "cancelling"
+        elif isinstance(state, _Running):
+            status = "running"
+        elif isinstance(state, _Draining):
+            status = "draining"
+        else:
+            status = "idle"
+        queued = f", {len(self._queued)} queued" if self._queued else ""
+        return f"<Session {self.id} {status}{queued}>"
+
     @property
     def draining(self) -> bool:
         """A turn ended here without the agent's confirmation (`forced`) is still waited for:
@@ -1137,6 +1155,7 @@ class Session:
         # write the agent never reads, or a caller cancelled while it waits, must not keep the turn open.
         deadline = asyncio.get_running_loop().call_later(self.client._options.timeouts.cancel_grace_ms / 1000, lambda: self._force_end(active))
         self._enter(_Cancelling(state.turn, state.answered, state.started, state.idle_seen, deadline))
+        active.turn._cancel_sent = True
         # Open permission questions are answered `cancelled`, as the spec requires.
         active.questions.abort()
 
