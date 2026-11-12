@@ -1,13 +1,18 @@
 # Publishes deft-subspace-kernel and deft-subspace-acp to PyPI when a python-v<version> tag is pushed.
 #
-# Nothing runs until such a tag exists. Before the first release:
-# - On PyPI, add a trusted publisher for each project (owner deftai, repository subspace,
-#   workflow python-release.yml, environment pypi). PyPI keeps only one *pending* publisher per
-#   configuration, so for the very first release: add the kernel's, push the tag (the kernel
-#   uploads, acp fails), then add acp's and re-run the failed job.
-# - In this repository, create the `pypi` environment, with required reviewers.
+# Nothing runs until such a tag exists. Both projects exist on PyPI (0.1.0a1, 2026-11-12) and each
+# has a trusted publisher: owner deftai, repository subspace, workflow python-release.yml,
+# environment pypi. The `pypi` environment here needs a reviewer and only deploys python-v* tags.
+#
+# A NEW distribution can't be created by this workflow while another project already uses the same
+# publisher settings: PyPI matches the run to the existing publisher, which may not create projects
+# ("Non-user identities cannot create new projects"). Upload a new package's first release by hand
+# (`uv publish` with a one-time account token), then add its trusted publisher on its project page.
+#
 # To release: python/scripts/set_version.py <version>, add a "## <version>" section to
-# python/CHANGELOG.md, merge, then tag the merge commit python-v<version> and push the tag.
+# python/CHANGELOG.md, merge, then tag the merge commit python-v<version> and push the tag. Approve
+# the deployment in the run. skip-existing lets a failed run be re-run without failing on files
+# already uploaded.
 name: python-release
 
 on:

@@ -124,5 +124,8 @@ Both distributions are released together, at the same version, by `.github/workf
 1. `python scripts/set_version.py <version>`, then `uv lock`.
 2. Add a `## <version>` section to `CHANGELOG.md`.
 3. Merge, then tag the merge commit `python-v<version>` and push the tag.
+4. Approve the `pypi` deployment in the workflow run.
+
+A new distribution's first release has to be uploaded by hand; the header of `python-release.yml` says how.
 
 `python scripts/check_versions.py --tag python-v<version>` runs the same checks locally.
