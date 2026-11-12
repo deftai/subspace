@@ -3,6 +3,8 @@ title: How Subspace models ACP
 description: Connections, sessions, turns, events and results, and how one model covers protocol v1 and v2.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
 ACP connects a **client** (an editor, a terminal, an orchestrator) to an **agent** (a coding agent) over JSON-RPC, usually on the agent's stdio. Subspace gives each side a small model of it.
 
 ## Three layers
@@ -15,12 +17,29 @@ ACP connects a **client** (an editor, a terminal, an orchestrator) to an **agent
 - **`Session`**: one conversation. It keeps what the agent reports between turns: modes, config options, the title, the agent's terminals and its background work.
 - **`Turn`**: one prompt and everything the agent does for it. A turn is async-iterable, so you can stream its **events**, and has `done`, its **result**.
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 const session = await client.newSession({ cwd });
 const turn = session.prompt('Fix the failing test');
 for await (const event of turn) render(event);
 const result = await turn.done;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+session = await client.new_session(cwd)
+turn = session.prompt("Fix the failing test")
+async for event in turn:
+    render(event)
+result = await turn
+```
+
+</TabItem>
+</Tabs>
 
 ## The agent side
 

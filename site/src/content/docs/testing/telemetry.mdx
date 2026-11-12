@@ -3,7 +3,12 @@ title: OpenTelemetry
 description: Spans for every request, turn, tool call and permission question, live on either side of a connection or from a saved trace.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
 `otelTap()` turns an ACP connection's messages into OpenTelemetry spans. It works on a client and on an agent, and `spansFromTrace()` makes the same spans from a saved trace.
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 import * as otel from '@opentelemetry/api';
@@ -13,6 +18,19 @@ const client = await AcpClient.connect(channel, {
   telemetry: otelTap(otel, { attributes: { 'acp.agent': 'claude' } }),
 });
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import AcpClient, otel_tap
+
+# Spans go to OpenTelemetry's global tracer provider, or pass tracer_provider=.
+client = await AcpClient.connect(channel, telemetry=otel_tap(attributes={"acp.agent": "claude"}))
+```
+
+</TabItem>
+</Tabs>
 
 The same option works on `serveAgent(channel, { telemetry, ... })` and `start(agent, { telemetry })`, alongside `trace`. Its open spans end when the connection closes.
 
@@ -54,11 +72,29 @@ subspace trace run.jsonl --otlp https://otel.example.com/v1/traces --service ci-
 
 To make the spans with your own SDK instead:
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 import { parseTrace } from '@deft-subspace/kernel';
 import { spansFromTrace } from '@deft-subspace/acp';
 
 spansFromTrace(parseTrace(await readFile('run.jsonl', 'utf8')), otel);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from pathlib import Path
+
+from deft_subspace.acp import spans_from_trace
+from deft_subspace.kernel import parse_trace
+
+spans_from_trace(parse_trace(Path("run.jsonl").read_text(encoding="utf-8")))
+```
+
+</TabItem>
+</Tabs>
 
 The spans get the times the trace recorded. Use this for scenario failure bundles, the recorded corpus, or any run made with `trace` but without OpenTelemetry set up.

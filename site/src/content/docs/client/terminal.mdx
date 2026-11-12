@@ -3,12 +3,30 @@ title: Terminal output
 description: terminal() renders a turn in the terminal; askInTerminal() asks the user there.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 import { askInTerminal, firstOf, readOnly, start, terminal } from '@deft-subspace/acp/node';
 
 const agent = await start('claude', { ...terminal(), onPermission: firstOf(readOnly, askInTerminal()) });
 await agent.run('Fix the failing test');
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import ask_in_terminal, first_of, read_only, start, terminal
+
+agent = await start("claude", **terminal(), on_permission=first_of(read_only, ask_in_terminal()))
+await agent.run("Fix the failing test")
+```
+
+</TabItem>
+</Tabs>
 
 `terminal()` returns [handlers](../handlers/): spread it into `start()`, `connectSession()`, `AcpClient.connect()` or a single prompt. It shows:
 

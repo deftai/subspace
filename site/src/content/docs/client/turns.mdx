@@ -3,7 +3,12 @@ title: Turns, events and results
 description: What a turn emits, what its result holds, and how to tell a refused turn from a cancelled one.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
 A turn is async-iterable: iterate it to get its events in order. Iterating it again later gives the same events. `turn.done` resolves with the result.
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 const turn = session.prompt('Add a test for parse()');
@@ -13,13 +18,40 @@ for await (const event of turn) {
 const result = await turn.done;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+turn = session.prompt("Add a test for parse()")
+async for event in turn:
+    if isinstance(event, MessageEvent):
+        print(event.delta, end="")
+result = await turn
+```
+
+</TabItem>
+</Tabs>
+
 ## Long turns
 
 A turn keeps every event, so `turn.history` and a second iteration see them all. For a long turn whose events you only stream, bound that with the `history` prompt option (Python: `history=`):
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 const turn = session.prompt('Watch the build', { history: 1000 }); // or 'none'
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+turn = session.prompt("Watch the build", history=1000)  # or "none"
+```
+
+</TabItem>
+</Tabs>
 
 `'all'` (the default) keeps every event, a number keeps the last that many, and `'none'` keeps none. An event is dropped only after every iterator running at the time, and the turn's handlers, have had it, so a running reader misses nothing; an iterator started later begins at the oldest event kept. An iterator you stop reading without ending it (`break`, `return()`) holds events back until it is garbage collected. `text`, `toolCalls` and the result are not affected.
 
@@ -59,6 +91,9 @@ The same on v1 and v2.
 
 Some agents end a turn whose write you refused with stop reason `cancelled`, though nobody cancelled: Grok Build and the Codex adapter do (see [Quirks](../../behaviour/quirks/)). `turnEnd(result)` reads the whole result and tells them apart:
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 import { turnEnd } from '@deft-subspace/acp';
 switch (turnEnd(result)) {
@@ -69,3 +104,20 @@ switch (turnEnd(result)) {
   case 'error':
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import turn_end
+
+match turn_end(result):
+    case "completed": ...
+    case "refused": ...  # the agent stopped after a refused permission
+    case "cancelled": ...  # you cancelled
+    case "limit": ...  # a turn limit fired
+    case "error": ...
+```
+
+</TabItem>
+</Tabs>
