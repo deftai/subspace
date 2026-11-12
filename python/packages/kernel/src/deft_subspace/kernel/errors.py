@@ -6,8 +6,9 @@
 
 Code that cares should look at `error.kind`, never at message text.
 
-Every exception Subspace raises (both packages) is a `SubspaceError`, so `except SubspaceError`
-catches them all.
+Every exception class the Subspace packages define is a `SubspaceError`, so `except SubspaceError`
+catches all of them. Built-in errors still come through as they are: `TypeError` and `ValueError` for
+wrong arguments or malformed input (such as `parse_trace()`), `OSError` from the file system.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any, Literal
 
 
 class SubspaceError(Exception):
-    """The base of every exception the Subspace packages raise."""
+    """The base of every exception class the Subspace packages define."""
 
 
 class ErrorCode:

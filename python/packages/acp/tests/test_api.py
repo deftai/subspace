@@ -33,3 +33,19 @@ def test_no_public_module_is_hidden_by_an_exported_name():
         if not isinstance(getattr(package, info.name, types), types.ModuleType)
     ]
     assert hidden == []
+
+
+def test_what_the_private_modules_define_is_exported_by_the_package():
+    # Their names are reachable only through `deft_subspace.acp`, so each public one must be there.
+    # (`_util` is helpers, not API.)
+    import importlib
+
+    missing = [
+        f"{name_of_module}.{name}"
+        for name_of_module in ("_start", "_conveniences", "_mcp_connector", "_model_agent")
+        for module in [importlib.import_module(f"{acp.__name__}.{name_of_module}")]
+        for name, value in vars(module).items()
+        if not name.startswith("_") and (inspect.isclass(value) or inspect.isfunction(value)) and value.__module__ == module.__name__
+        if name not in acp.__all__
+    ]
+    assert missing == []
