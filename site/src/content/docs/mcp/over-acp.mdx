@@ -5,10 +5,11 @@ description: Serve MCP tools from the client over the ACP connection itself, and
 
 import Example from '../../../components/Example.astro';
 import overAcp from '../../../../../examples/mcp-over-acp.ts?raw';
+import overAcpPy from '../../../../../python/examples/mcp_over_acp.py?raw';
 
 A client can serve MCP tools over the ACP connection it already has: no extra process, no network port. This follows the ACP RFD "MCP-over-ACP: Stateless MCP Requests over ACP" (MCP 2026-07-28). The agent sends `mcp/message` requests addressed by `serverId`; each is one self-contained MCP request, with its own protocol version and capabilities in `params._meta`, and no MCP handshake.
 
-<Example file="mcp-over-acp.ts" ts={overAcp} />
+<Example file="mcp-over-acp.ts" ts={overAcp} py={overAcpPy} />
 
 ## Serving (client)
 

@@ -5,8 +5,11 @@ description: Install Subspace and run a first turn, in one process and then with
 
 import Example from '../../components/Example.astro';
 import inProcess from '../../../../examples/in-process.ts?raw';
+import inProcessPy from '../../../../python/examples/in_process.py?raw';
 import firstTurn from '../../../../examples/first-turn.ts?raw';
+import firstTurnPy from '../../../../python/examples/first_turn.py?raw';
 import oneLiner from '../../../../examples/one-liner.ts?raw';
+import oneLinerPy from '../../../../python/examples/one_liner.py?raw';
 
 ## Packages
 
@@ -40,23 +43,45 @@ From another project, link them (pnpm shown), and run `pnpm run build` in Subspa
 
 Inside the repository, examples and tests run the TypeScript sources directly: `node --conditions=subspace-source file.ts` (Node 22.19 or later).
 
+## Python
+
+The Python port is in [`python/`](https://github.com/deftai/subspace/tree/main/python): `deft_subspace.kernel` and `deft_subspace.acp`, on `asyncio`, Python 3.11 or later. The examples on this site have a Python tab where the port can express them. The testkit, devtools, CLI and the Claude model adapter are not ported yet.
+
+The packages are not on PyPI yet. Use them from a checkout, with [uv](https://docs.astral.sh/uv/):
+
+```sh
+cd subspace/python
+uv sync
+uv run python examples/in_process.py
+```
+
+The names are snake_case (`new_session`, `on_permission`), options are keyword arguments, and events are frozen dataclasses. Await a turn for its result, or iterate it with `async for`. Without an event loop, `deft_subspace.acp.sync.run()` blocks until the turn ends:
+
+```python
+from deft_subspace.acp.sync import run
+
+print(run("codex", "What does this repo do?", permissions="reject").text)
+```
+
+The [Python README](https://github.com/deftai/subspace/blob/main/python/README.md) lists every difference from the TypeScript packages.
+
 ## A first turn
 
 `start()` starts a known agent (`claude`, `codex`, `grok`, `gemini`, `opencode`, or any `{ command, args }`) in the mode where it asks before acting, opens a session in the current folder, and runs turns with handler options:
 
-<Example file="first-turn.ts" ts={firstTurn} />
+<Example file="first-turn.ts" ts={firstTurn} py={firstTurnPy} />
 
 It needs one thing from you: how to answer the agent's permission questions (`onPermission`, or `permissions: 'allow'` / `'reject'`). See [Starting agents](../client/starting-agents/) for what else it does for you.
 
 ## One prompt, one line
 
-<Example file="one-liner.ts" ts={oneLiner} />
+<Example file="one-liner.ts" ts={oneLiner} py={oneLinerPy} />
 
 ## In one process
 
 An agent and a client joined by an in-memory channel: nothing to install, and the way most tests are written.
 
-<Example file="in-process.ts" ts={inProcess} />
+<Example file="in-process.ts" ts={inProcess} py={inProcessPy} />
 
 ## Start a project
 
@@ -74,4 +99,4 @@ The packages are not on npm yet: until they are, add `--subspace <path to a chec
 - **Handler options** on any turn: `session.prompt(text, { onMessage, onToolCall, onPermission })`. See [Handlers](../client/handlers/).
 - **The model underneath**: `AcpClient`, `Session`, `Turn` (async-iterable events and a result), for full control. The rest of these pages.
 
-Every example on this site is a file in [`examples/`](https://github.com/deftai/subspace/tree/experiment/deft-subspace-prototype/examples). All of them are typechecked, and those that need no outside agent run as part of `pnpm test`, so the code here keeps working.
+Every example on this site is a file in [`examples/`](https://github.com/deftai/subspace/tree/experiment/deft-subspace-prototype/examples). All of them are typechecked, and those that need no outside agent run as part of `pnpm test`, so the code here keeps working. The Python ones are in [`python/examples/`](https://github.com/deftai/subspace/tree/main/python/examples), checked with pyright and run by `examples/run_examples.py` in the same way.

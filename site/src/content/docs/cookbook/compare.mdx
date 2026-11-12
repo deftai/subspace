@@ -5,7 +5,8 @@ description: The same question to several agents at once.
 
 import Example from '../../../components/Example.astro';
 import compare from '../../../../../examples/compare.ts?raw';
+import comparePy from '../../../../../python/examples/compare.py?raw';
 
 `Promise.allSettled` keeps one agent failing (not installed, not logged in) from hiding the others; `timeoutMs` bounds each.
 
-<Example file="compare.ts" ts={compare} />
+<Example file="compare.ts" ts={compare} py={comparePy} />

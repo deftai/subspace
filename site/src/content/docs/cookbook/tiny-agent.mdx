@@ -5,15 +5,17 @@ description: An agent that counts words, asking before it reads, and a client fo
 
 import Example from '../../../components/Example.astro';
 import agent from '../../../../../examples/word-count-agent.ts?raw';
+import agentPy from '../../../../../python/examples/word_count_agent.py?raw';
 import client from '../../../../../examples/word-count.ts?raw';
+import clientPy from '../../../../../python/examples/word_count.py?raw';
 
 The agent:
 
-<Example file="word-count-agent.ts" ts={agent} />
+<Example file="word-count-agent.ts" ts={agent} py={agentPy} />
 
 A client for it:
 
-<Example file="word-count.ts" ts={client} />
+<Example file="word-count.ts" ts={client} py={clientPy} />
 
 Output:
 

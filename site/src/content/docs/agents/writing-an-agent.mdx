@@ -5,8 +5,9 @@ description: Serve ACP with one prompt handler; the library speaks v1 or v2 on t
 
 import Example from '../../../components/Example.astro';
 import agent from '../../../../../examples/agent-stdio.ts?raw';
+import agentPy from '../../../../../python/examples/agent_stdio.py?raw';
 
-<Example file="agent-stdio.ts" ts={agent} />
+<Example file="agent-stdio.ts" ts={agent} py={agentPy} />
 
 `serveStdio(options)` (from `./node`) serves the agent on stdin and stdout, and sends `console.log` to stderr so a stray log line cannot corrupt the protocol. Use `serveAgent(channel, options)` for any other channel.
 

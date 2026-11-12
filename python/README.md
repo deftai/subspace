@@ -112,6 +112,7 @@ cd python
 uv sync
 uv run pytest        # every package
 uv run pyright
+uv run python examples/run_examples.py   # the examples, as the docs site shows them
 ```
 
 Python 3.11 or later. CI runs Linux, macOS and Windows on 3.11 and 3.13.

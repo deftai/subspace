@@ -3,16 +3,34 @@ title: Text, streams and JSON
 description: text(), stream() and json() on a started agent, files and images in prompts, and stopping a turn.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 import Example from '../../../components/Example.astro';
 import review from '../../../../../examples/review.ts?raw';
+import reviewPy from '../../../../../python/examples/review.py?raw';
 
 `start()` and `connectSession()` give the session a few shortcuts besides `run()`:
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 const answer = await agent.text('What does this repo do?');            // just the text
 for await (const chunk of agent.stream('Explain parse()')) process.stdout.write(chunk); // the text as it streams
 const files = await agent.json('Which files need changing?', { schema: z.array(z.string()) }); // typed data
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+answer = await agent.text("What does this repo do?")  # just the text
+async for chunk in agent.stream("Explain parse()"):  # the text as it streams
+    print(chunk, end="")
+files = await agent.json("Which files need changing?", schema=TypeAdapter(list[str]))  # typed data (pydantic)
+```
+
+</TabItem>
+</Tabs>
 
 ## JSON answers
 
@@ -21,14 +39,29 @@ const files = await agent.json('Which files need changing?', { schema: z.array(z
 - `schema`: any [Standard Schema](https://standardschema.dev) validator (zod, valibot, arktype, ...); it also types the result.
 - `shape`: what the JSON should look like, told to the agent: a description, an example, or a JSON Schema.
 
-<Example file="review.ts" ts={review} />
+<Example file="review.ts" ts={review} py={reviewPy} />
 
 ## Files and images
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 import { file, image } from '@deft-subspace/acp/node';
 await agent.run(['Review this change', file('src/parse.ts'), image('screenshot.png')]);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import file, image
+
+await agent.run(["Review this change", file("src/parse.py"), image("screenshot.png")])
+```
+
+</TabItem>
+</Tabs>
 
 `file()` embeds a text file. An agent that cannot take embedded files gets it as text instead (its path, then its contents) rather than an error. `image()` needs an agent that takes images.
 

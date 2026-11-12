@@ -3,12 +3,14 @@ title: Handlers
 description: Handler options on any turn - callbacks per event kind instead of a for-await loop.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 import Example from '../../../components/Example.astro';
 import handlers from '../../../../../examples/handlers.ts?raw';
+import handlersPy from '../../../../../python/examples/handlers.py?raw';
 
 Every turn takes handler options. They work with `start()`, and with `session.prompt()` on any client:
 
-<Example file="handlers.ts" ts={handlers} />
+<Example file="handlers.ts" ts={handlers} py={handlersPy} />
 
 ## How they run
 
@@ -41,9 +43,22 @@ Two handlers answer rather than observe:
 
 An agent often sends more than one message in a turn ("I'll check the README.", then tool calls, then the answer). Write `separator` before each chunk and the stream reads like `result.text`: a blank line before each later message, unless the previous one already ended a line.
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 onMessage: (delta, { separator }) => process.stdout.write(separator + delta),
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+on_message=lambda delta, info, _event: print(info.separator + delta, end=""),
+```
+
+</TabItem>
+</Tabs>
 
 For messages streamed one after another, which is what agents do, the concatenated stream is exactly `result.text`.
 
@@ -51,9 +66,22 @@ For messages streamed one after another, which is what agents do, the concatenat
 
 When you want each message once it is finished (to log it, store it, or swap streamed text for rendered markdown), use the end handlers:
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 onMessageEnd: (text, { index, complete }) => transcript.push({ index, text, complete }),
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+on_message_end=lambda text, info, _event: transcript.append({"index": info.index, "text": text, "complete": info.complete}),
+```
+
+</TabItem>
+</Tabs>
 
 ACP has no "message finished" signal, so Subspace infers one. A message ends when other text, a tool call, a plan, a permission question or a terminal comes after it, or when the turn ends. Usage, state and title updates do not end it. The end handler always runs before `turn.done` settles.
 

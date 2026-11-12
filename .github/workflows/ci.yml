@@ -70,6 +70,8 @@ jobs:
         run: uv run pyright
       - name: Test
         run: uv run pytest -q
+      - name: Examples
+        run: uv run python examples/run_examples.py
 
   python-dist:
     name: python dist (build, check, install, smoke)

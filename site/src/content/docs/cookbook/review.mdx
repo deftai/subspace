@@ -5,7 +5,8 @@ description: Typed review findings with json(), and an exit code for CI.
 
 import Example from '../../../components/Example.astro';
 import review from '../../../../../examples/review.ts?raw';
+import reviewPy from '../../../../../python/examples/review.py?raw';
 
 A read-only agent reviews `git diff --staged` and returns findings checked against a zod schema. The exit code is 1 when there are findings, so it can gate a commit or a CI job.
 
-<Example file="review.ts" ts={review} />
+<Example file="review.ts" ts={review} py={reviewPy} />

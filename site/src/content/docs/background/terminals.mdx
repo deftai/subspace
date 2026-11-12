@@ -3,11 +3,16 @@ title: Agent terminals
 description: Terminals a v2 agent runs and shows the client, display only.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
 In ACP v2 the agent runs commands itself and may show the client their terminals (`terminal_update`, `terminal_output_chunk`). They are display only: the client cannot type into them. v2 removed v1's client-run terminals.
 
 ## On the client
 
 Each change is a `terminal` event; the session keeps every terminal, across turns, because a terminal can outlive the turn that started it and its updates can arrive before the tool call that shows it.
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 for await (const event of turn) {
@@ -18,6 +23,22 @@ for await (const event of turn) {
 }
 const terminal = session.terminals.get(terminalId); // { command, cwd, size, output, exitStatus, cancellable }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async for event in turn:
+    if isinstance(event, TerminalEvent):
+        if event.replaced:
+            redraw(event.terminal.id, event.terminal.output)  # a snapshot replaced the output
+        elif event.appended:
+            append(event.terminal.id, event.appended)  # new bytes
+terminal = session.terminals.get(terminal_id)  # command, cwd, size, output, exit_status, cancellable
+```
+
+</TabItem>
+</Tabs>
 
 A tool call shows a terminal with content `{ type: 'terminal', terminalId }`. Output is bytes, kept up to 1 MB per terminal; a chunk may split a UTF-8 character or an escape sequence. `terminalText(terminal)` decodes the whole output for a transcript.
 

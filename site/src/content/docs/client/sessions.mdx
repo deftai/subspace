@@ -3,12 +3,17 @@ title: Sessions, modes, config and login
 description: Open, list, load, resume, close and delete sessions; switch modes and models; log in.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 import Example from '../../../components/Example.astro';
 import sessions from '../../../../../examples/sessions.ts?raw';
+import sessionsPy from '../../../../../python/examples/sessions.py?raw';
 
-<Example file="sessions.ts" ts={sessions} />
+<Example file="sessions.ts" ts={sessions} py={sessionsPy} />
 
 ## Sessions
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
 
 ```ts
 const session = await client.newSession({ cwd, additionalDirectories: ['/data'] });
@@ -18,6 +23,21 @@ const resumed = await client.resumeSession({ sessionId, cwd });                 
 await session.close();
 await client.deleteSession(sessionId);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+session = await client.new_session(cwd, additional_directories=["/data"])
+sessions, next_cursor = await client.list_sessions(cwd=cwd)
+loaded, replayed = await client.load_session(session_id, cwd)  # with its history as events
+resumed = await client.resume_session(session_id, cwd)  # without
+await session.close()
+await client.delete_session(session_id)
+```
+
+</TabItem>
+</Tabs>
 
 `client.supports` says what the agent offers. A call it did not offer throws a `CapabilityError` before anything is sent, and so does prompt content it does not take (images, audio, embedded resources).
 
@@ -31,6 +51,9 @@ A prompt sent while a turn is running throws, unless you pass `{ queue: true }` 
 
 `session.configOptions` lists the agent's options (model, reasoning effort, mode, on/off switches), kept current as the agent reports changes. Narrow on `type`:
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 for (const option of session.configOptions) {
   if (option.type === 'select') console.log(option.id, option.choices.map((c) => c.value));
@@ -40,6 +63,23 @@ await session.setConfigOption('effort', 'high');
 await session.setConfigOption('fast', true);
 await session.setModel('opus'); // the select option with category "model"
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for option in session.config_options:
+    if option.type == "select":
+        print(option.id, [c.value for c in option.choices])
+    if option.type == "boolean":
+        print(option.id, option.current_value)
+await session.set_config_option("effort", "high")
+await session.set_config_option("fast", True)
+await session.set_model("opus")  # the select option with category "model"
+```
+
+</TabItem>
+</Tabs>
 
 A value the agent did not offer is refused before anything is sent. Option types this client does not know are listed as `type: 'other'` and cannot be set.
 
@@ -54,6 +94,9 @@ A value the agent did not offer is refused before anything is sent. Option types
 
 ACP v1 lets an agent ask the client to read and write files and run commands. The `./node` helpers confine both to a workspace:
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 import { workspaceFiles, workspaceTerminals } from '@deft-subspace/acp/node';
 const client = await AcpClient.connect(channel, {
@@ -61,6 +104,22 @@ const client = await AcpClient.connect(channel, {
   terminals: workspaceTerminals(repo), // process groups, capped output, kill
 });
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import AcpClient, workspace_files, workspace_terminals
+
+client = await AcpClient.connect(
+    channel,
+    files=workspace_files(repo),  # paths cannot leave repo, symbolic links included
+    terminals=workspace_terminals(repo),  # process groups, capped output, kill
+)
+```
+
+</TabItem>
+</Tabs>
 
 Without these options the client advertises neither. ACP v2 removes these methods; there, a client offers its own tools through [MCP](../../mcp/servers/).
 

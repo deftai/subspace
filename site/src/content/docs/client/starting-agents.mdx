@@ -3,10 +3,12 @@ title: Starting agents
 description: start() and run() - known agents, sensible defaults, and what they do for you.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 import Example from '../../../components/Example.astro';
 import firstTurn from '../../../../../examples/first-turn.ts?raw';
+import firstTurnPy from '../../../../../python/examples/first_turn.py?raw';
 
-<Example file="first-turn.ts" ts={firstTurn} />
+<Example file="first-turn.ts" ts={firstTurn} py={firstTurnPy} />
 
 ## Known agents
 
@@ -41,6 +43,9 @@ Any [ACP registry](/subspace/client/agents-file/) id works too, and so do agents
 
 `connectSession(channel, options)` is `start()` for any channel: a socket, a pipe, an in-process agent. It connects, opens a ready session (logging in once if needed, switching to `mode` if offered), and gives the same `run`, `prompt` and `close`. It needs a permission answer too, and `cwd` defaults to `process.cwd()` where there is one.
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
 ```ts
 import { connectSession } from '@deft-subspace/acp';
 
@@ -52,6 +57,25 @@ const { run, close } = await connectSession(channel, {
 await run('What does this repo do?');
 await close();
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import connect_session
+
+connected = await connect_session(
+    channel,
+    cwd="/work",
+    on_permission=lambda request, _signal: "allow" if request.tool_call and request.tool_call.kind == "read" else "reject",
+    on_message=lambda delta, info, _event: print(info.separator + delta, end=""),
+)
+await connected.run("What does this repo do?")
+await connected.close()
+```
+
+</TabItem>
+</Tabs>
 
 ## Which entry point do I want
 

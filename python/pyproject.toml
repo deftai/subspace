@@ -29,5 +29,5 @@ target-version = "py311"
 
 [tool.pyright]
 pythonVersion = "3.11"
-include = ["packages/kernel/src", "packages/acp/src"]
+include = ["packages/kernel/src", "packages/acp/src", "examples"]
 typeCheckingMode = "standard"

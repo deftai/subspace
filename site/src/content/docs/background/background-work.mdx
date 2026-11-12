@@ -5,10 +5,11 @@ description: Work that keeps running after a turn ends, and stopping it one item
 
 import Example from '../../../components/Example.astro';
 import background from '../../../../../examples/background.ts?raw';
+import backgroundPy from '../../../../../python/examples/background.py?raw';
 
 An agent may keep work running after a turn ends: a dev server, a log watcher, a scheduled job. ACP v2 (the "Background work" RFD) lists it on every state update, and lets the client stop one item without cancelling the turn.
 
-<Example file="background.ts" ts={background} />
+<Example file="background.ts" ts={background} py={backgroundPy} />
 
 ## On the client
 
