@@ -205,6 +205,16 @@ the library can work around them.
 - **Publish from CI with trusted publishing** (OIDC, no stored tokens),
   from a protected environment that needs a reviewer, triggered by a
   `python-v*` tag. Pin every third-party action to a commit SHA.
+- **The first release of several packages from one workflow needs a hand
+  upload.** PyPI keeps one *pending* trusted publisher per (owner, repo,
+  workflow, environment), so only the first package can use one. Once it
+  exists, a run with those claims is matched to its publisher, which may
+  not create projects, so the second package's first upload fails with
+  "Non-user identities cannot create new projects". Upload that one by hand
+  with a one-time token, then attach the same publisher to it; later
+  releases work from CI for both. Use `skip-existing` so a half-failed run
+  can be re-run. Expect the same shape on crates.io, Maven Central or any
+  registry where a project must exist before CI can publish to it.
 - **Mark the package typed** (`py.typed`), give each distribution its own
   README and LICENSE, and keep dependency ranges bounded above (`<2`).
 
@@ -526,3 +536,13 @@ Three small things for whoever uses the Python package by hand:
 - A `repr()` for each long-lived object (client, session, turn, started agent) that names it and its state. Python users debug in the REPL and in logs; TS users less so.
 - `SUBSPACE_TRACE=<folder>` in both ports. Tracing that needs a code change doesn't get turned on when it's needed.
 - `deft_subspace.acp.sync.run()`. A Python script without `asyncio` is common; a blocking call has to refuse inside a running loop (Jupyter) and say to `await` instead, because `asyncio.run()` there only raises a confusing error.
+
+### 2026-11-12: published to PyPI
+
+`deft-subspace-kernel` and `deft-subspace-acp` 0.1.0a1 are on PyPI. The
+version was never uploaded before, so the work since it was versioned went
+into its changelog rather than a new version. The kernel came out of CI via
+a pending trusted publisher; acp needed a hand upload (see Packaging and
+release). A tag pushed earlier, before PyPI was set up, had failed at the
+upload step and was moved to the release commit.
+
