@@ -2,7 +2,9 @@
 #
 # Nothing runs until such a tag exists. Before the first release:
 # - On PyPI, add a trusted publisher for each project (owner deftai, repository subspace,
-#   workflow python-release.yml, environment pypi).
+#   workflow python-release.yml, environment pypi). PyPI keeps only one *pending* publisher per
+#   configuration, so for the very first release: add the kernel's, push the tag (the kernel
+#   uploads, acp fails), then add acp's and re-run the failed job.
 # - In this repository, create the `pypi` environment, with required reviewers.
 # To release: python/scripts/set_version.py <version>, add a "## <version>" section to
 # python/CHANGELOG.md, merge, then tag the merge commit python-v<version> and push the tag.
@@ -65,9 +67,12 @@ jobs:
       # The kernel first: acp depends on it.
       - name: Order
         run: mkdir kernel acp && mv dist/deft_subspace_kernel-* kernel/ && mv dist/deft_subspace_acp-* acp/
+      # skip-existing: a re-run (say, after the acp upload failed) skips files already on PyPI.
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: kernel/
+          skip-existing: true
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: acp/
+          skip-existing: true
