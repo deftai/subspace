@@ -282,3 +282,28 @@ async def test_a_mode_change_replaces_session_modes_instead_of_changing_the_obje
     assert before is not None and before.current == "auto", "unchanged since it was read"
     assert after_set.current == "plan", "unchanged since it was read"
     await client.close()
+
+
+async def test_a_turns_repr_shows_a_session_cancel_and_a_failed_handler():
+    async def prompt(turn):
+        await turn.say("hi")
+        await turn.signal.wait()
+
+    client = await connect({"prompt": prompt})
+    session = await client.new_session("/tmp")
+    turn = session.prompt("go")
+    await asyncio.sleep(0.05)
+    assert " running, " in repr(turn)
+    await session.cancel()  # not turn.cancel(): the session's own path
+    assert " cancelling, " in repr(turn), repr(turn)
+    await asyncio.wait_for(turn.done, 3)
+    assert " done: cancelled, " in repr(turn), repr(turn)
+
+    def on_message(_delta, _info, _event):
+        raise ValueError("boom")
+
+    failing = session.prompt("go", on_message=on_message)
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(failing.done, 3)
+    assert " failed: ValueError, " in repr(failing), repr(failing)
+    await client.close()

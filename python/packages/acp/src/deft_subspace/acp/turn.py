@@ -109,6 +109,8 @@ class Turn:
         self._on_cancel = on_cancel
         self._view = view
         self._cancelling: asyncio.Task[None] | None = None
+        #: The session sent `session/cancel` for this turn (by `turn.cancel()`, `session.cancel()` or a limit).
+        self._cancel_sent = False
         #: Runs work the turn starts itself (the session's task spawner), keeping a reference to it.
         self._spawn = spawn or self._keep
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -128,12 +130,18 @@ class Turn:
     # ---- state -------------------------------------------------------------
 
     def __repr__(self) -> str:
-        if self._finished is None:
-            status = "cancelling" if self._cancelling is not None else "running"
-        elif self._finished[0]:
-            status = f"done: {self._finished[1].stop_reason}"
+        # What `await turn` gives: the result, or the error (a failed handler's included).
+        if self._done.cancelled():
+            status = "cancelled"
+        elif self._done.done():
+            error = self._done.exception()
+            status = f"failed: {type(error).__name__}" if error is not None else f"done: {self._done.result().stop_reason}"
+        elif self._finished is not None:
+            status = "finishing"  # ended; its handlers are still running
+        elif self._cancelling is not None or self._cancel_sent:
+            status = "cancelling"
         else:
-            status = f"failed: {type(self._finished[1]).__name__}"
+            status = "running"
         return f"<Turn {self.id} {status}, {self._total} events, {len(self.text)} chars>"
 
     @property
