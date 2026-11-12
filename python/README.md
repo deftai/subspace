@@ -24,6 +24,16 @@ asyncio.run(main())
 
 Or in one line: `await run("codex", "What does this repo do?", permissions="reject")`.
 
+Without an event loop, in a script or the REPL:
+
+```python
+from deft_subspace.acp.sync import run
+
+print(run("codex", "What does this repo do?", permissions="reject").text)
+```
+
+To see what went over the wire, set `SUBSPACE_TRACE` to a folder: every `start()` writes a trace there, one file per connection, with no code change (`SUBSPACE_TRACE=traces python app.py`). `start(..., trace="run.jsonl")` traces one connection. The TypeScript trace viewer reads both.
+
 ## Packages
 
 | Distribution | Import | What it is |

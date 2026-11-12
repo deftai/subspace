@@ -291,3 +291,45 @@ asyncio.run(main())
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=30)
     assert done.returncode == 0, done.stderr
     assert done.stdout == b"last reply\n"
+
+
+async def test_reprs_say_what_each_object_is_and_where_it_is():
+    async with await start(python("login_agent.py"), permissions="allow", handle_signals=False) as agent:
+        assert repr(agent).startswith("<StartedAgent login-agent, session ")
+        assert repr(agent.client).startswith("<AcpClient login-agent") and ", ACP v" in repr(agent.client)
+        assert repr(agent.session) == f"<Session {agent.session.id} idle>"
+        turn = agent.session.prompt("go")
+        assert repr(turn).startswith(f"<Turn {turn.id} running, ")
+        await turn
+        assert repr(turn).startswith(f"<Turn {turn.id} done: end_turn, ")
+        assert repr(turn).endswith(f", {len('mode=auto allowed=true')} chars>")
+    assert repr(agent.client).endswith(", closed>")
+
+
+async def test_subspace_trace_writes_one_trace_per_connection_without_code_changes(tmp_path, monkeypatch):
+    folder = tmp_path / "traces"
+    monkeypatch.setenv("SUBSPACE_TRACE", str(folder))
+    await run(python("login_agent.py"), "go", permissions="allow", handle_signals=False)
+    await run(python("login_agent.py"), "go", permissions="allow", handle_signals=False)
+    files = sorted(folder.iterdir())
+    assert len(files) == 2 and all(f.suffix == ".jsonl" and f.name.startswith("python") for f in files)
+    records = parse_trace(files[0].read_text())
+    assert "session/prompt" in [r["msg"].get("method") for r in records if r["kind"] == "message"]
+    # An explicit trace= wins.
+    explicit = tmp_path / "one.jsonl"
+    await run(python("login_agent.py"), "go", permissions="allow", handle_signals=False, trace=str(explicit))
+    assert explicit.exists() and len(list(folder.iterdir())) == 2
+
+
+def test_sync_run_blocks_and_returns_the_result():
+    from deft_subspace.acp import sync
+
+    assert sync.run(python("login_agent.py"), "go", permissions="allow", handle_signals=False).text == "mode=auto allowed=true"
+    assert sync.text(python("login_agent.py"), "go", permissions="reject", handle_signals=False) == "mode=auto allowed=false"
+
+
+async def test_sync_run_inside_an_event_loop_says_to_await_instead():
+    from deft_subspace.acp import sync
+
+    with pytest.raises(RuntimeError, match=r"Use `await deft_subspace\.acp\.run\(\.\.\.\)` there"):
+        sync.run(python("login_agent.py"), "go", permissions="allow")

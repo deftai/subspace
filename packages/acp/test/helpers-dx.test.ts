@@ -3,7 +3,7 @@
  * prompt, tracing, and errors that say what to do next.
  */
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -155,6 +155,34 @@ test('start({ trace }) records the connection; errors say what to do next', asyn
     ),
     /needs a login\. Run `agent login`/
   );
+});
+
+test('$SUBSPACE_TRACE writes one trace per connection, without code changes; trace: wins', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'subspace-trace-env-'));
+  const folder = join(dir, 'traces');
+  const agentCommand = { command: process.execPath, args: ['--conditions=subspace-source', fixture('login-agent.ts')] };
+  const before = process.env.SUBSPACE_TRACE;
+  process.env.SUBSPACE_TRACE = folder;
+  try {
+    for (let i = 0; i < 2; i++) {
+      const agent = await start(agentCommand, { permissions: 'allow', handleSignals: false, quiet: true });
+      await agent.run('go');
+      await agent.close();
+    }
+    const files = (await readdir(folder)).sort();
+    assert.equal(files.length, 2);
+    assert.ok(files.every((f) => f.endsWith('.jsonl') && f.startsWith('node') && f.includes('login-agent.ts-')), files.join(', '));
+    const records = parseTrace(await readFile(join(folder, files[0]!), 'utf8'));
+    assert.ok(records.some((r) => r.kind === 'message' && (r.msg as { method?: unknown }).method === 'session/prompt'));
+    const explicit = join(dir, 'one.jsonl');
+    const agent = await start(agentCommand, { permissions: 'allow', handleSignals: false, quiet: true, trace: explicit });
+    await agent.close();
+    assert.equal((await readdir(folder)).length, 2);
+    assert.ok((await readFile(explicit, 'utf8')).length > 0);
+  } finally {
+    if (before === undefined) delete process.env.SUBSPACE_TRACE;
+    else process.env.SUBSPACE_TRACE = before;
+  }
 });
 
 test('a permission question waits until what the agent said before it has been handled', async () => {

@@ -127,6 +127,15 @@ class Turn:
 
     # ---- state -------------------------------------------------------------
 
+    def __repr__(self) -> str:
+        if self._finished is None:
+            status = "cancelling" if self._cancelling is not None else "running"
+        elif self._finished[0]:
+            status = f"done: {self._finished[1].stop_reason}"
+        else:
+            status = f"failed: {type(self._finished[1]).__name__}"
+        return f"<Turn {self.id} {status}, {self._total} events, {len(self.text)} chars>"
+
     @property
     def is_done(self) -> bool:
         return self._finished is not None

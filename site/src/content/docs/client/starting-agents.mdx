@@ -67,6 +67,7 @@ await close();
 ## Seeing what happened, and errors that help
 
 - `trace: 'run.jsonl'` records the whole connection; open it with `deft-subspace-trace run.jsonl` (or `subspace trace run.jsonl`) to see every request, answer, tool call and permission, with timing.
+- Without `trace`, setting `SUBSPACE_TRACE=<folder>` traces every `start()` in the program, one file per connection, with no code change: `SUBSPACE_TRACE=traces node app.js`.
 - A missing program says how to install it; an agent that needs a login says how to log in (`codex login`, ...); a slow first start through `npx` says it is downloading the adapter (`quiet: true` to silence notices).
 
 ## Options

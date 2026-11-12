@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import itertools
 import json
 import os
 import queue
+import re
 import signal as signals
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -147,6 +150,19 @@ class _Trace:
             self.file.close()
 
 
+_trace_numbers = itertools.count(1)
+
+
+def _trace_from_env(name: str) -> str | None:
+    """A file in the folder `$SUBSPACE_TRACE` names, for one connection: tracing without changing code."""
+    folder = os.environ.get("SUBSPACE_TRACE")
+    if not folder:
+        return None
+    os.makedirs(folder, exist_ok=True)
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "agent"
+    return os.path.join(folder, f"{label}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{next(_trace_numbers)}.jsonl")
+
+
 class StartedAgent(SessionConveniences):
     """An agent started by `start()`, with a session open: `run()`, `text()`, `stream()`, `json()`."""
 
@@ -169,6 +185,10 @@ class StartedAgent(SessionConveniences):
         self._close = close
         #: Why the agent's mode was not applied, if it was not.
         self.mode_warning: str | None = None
+
+    def __repr__(self) -> str:
+        name = self.agent.id if self.agent is not None else (self.client.agent.name or "agent")
+        return f"<StartedAgent {name}, session {self.session.id}, pid {self.process.pid}>"
 
     async def new_session(self, *, mcp_servers: SessionMcpServers | None = None, additional_directories: list[str] | None = None) -> Session:
         """Another session with the same agent (switched to the same mode)."""
@@ -277,6 +297,7 @@ async def start(
     - `mcp_servers`, `additional_directories`: for the session.
     - `handle_signals`: cancel and stop the agent on Ctrl-C (SIGINT) before exiting. Default True.
     - `trace`: record the whole connection to this file (a trace; view it with `deft-subspace-trace`).
+      Without it, `$SUBSPACE_TRACE` names a folder to write one trace per connection to.
     - `quiet`: no notices on stderr (such as "the first start downloads the adapter").
     - Other options are `connect_agent()`'s (and so `AcpClient.connect()`'s and `spawn_process()`'s).
     """
@@ -293,6 +314,7 @@ async def start(
     # A label for messages and traces: the preset's name, or the program (and the script it runs).
     script = next((a for a in preset.args if not a.startswith("-")), None)
     name = resolved.id if resolved is not None else " ".join([os.path.basename(preset.command), *([os.path.basename(script)] if script else [])])
+    trace = trace or _trace_from_env(name)
     recording = _Trace(trace, name, folder).open() if trace else None
     combined: Callable[[Literal["in", "out"], Any], None] | None = tap
     if recording is not None:

@@ -518,3 +518,11 @@ fixes, best made before anyone depends on the package: one exception base
 class, and four modules hidden by their own functions. Both are guarded by
 `tests/test_api.py`.
 
+
+### 2026-11-11: reprs, a trace switch, a blocking run()
+
+Three small things for whoever uses the Python package by hand:
+
+- A `repr()` for each long-lived object (client, session, turn, started agent) that names it and its state. Python users debug in the REPL and in logs; TS users less so.
+- `SUBSPACE_TRACE=<folder>` in both ports. Tracing that needs a code change doesn't get turned on when it's needed.
+- `deft_subspace.acp.sync.run()`. A Python script without `asyncio` is common; a blocking call has to refuse inside a running loop (Jupyter) and say to `await` instead, because `asyncio.run()` there only raises a confusing error.

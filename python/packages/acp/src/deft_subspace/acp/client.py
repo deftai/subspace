@@ -233,6 +233,11 @@ class AcpClient:
 
         peer.on_close(on_close)
 
+    def __repr__(self) -> str:
+        agent = " ".join(part for part in (self.agent.name, self.agent.version) if part) or "agent"
+        closed = ", closed" if self.peer.is_closed else ""
+        return f"<AcpClient {agent}, ACP v{self.protocol}{closed}>"
+
     @classmethod
     async def connect(
         cls,
@@ -921,6 +926,19 @@ class Session:
     def busy(self) -> bool:
         """A turn is running (or being cancelled)."""
         return self._current is not None
+
+    def __repr__(self) -> str:
+        state = self._state
+        if isinstance(state, _Cancelling):
+            status = "cancelling"
+        elif isinstance(state, _Running):
+            status = "running"
+        elif isinstance(state, _Draining):
+            status = "draining"
+        else:
+            status = "idle"
+        queued = f", {len(self._queued)} queued" if self._queued else ""
+        return f"<Session {self.id} {status}{queued}>"
 
     @property
     def draining(self) -> bool:
