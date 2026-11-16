@@ -209,7 +209,7 @@ class FaultyChannel(Generic[T]):
                 done, _ = await asyncio.wait({receive, stopper}, return_when=asyncio.FIRST_COMPLETED)
                 if receive not in done:
                     receive.cancel()
-                    return
+                    break
                 try:
                     item = receive.result()
                 except EndOfChannel:

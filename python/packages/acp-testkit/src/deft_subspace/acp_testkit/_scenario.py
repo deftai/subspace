@@ -312,9 +312,10 @@ def outcome_of(result: TurnResult) -> TurnOutcome:
 
 def _read_text(path: str) -> str | None:
     try:
-        with open(path, encoding="utf-8", newline="") as f:
+        # As Node's readFile(path, 'utf8'): bytes that are not UTF-8 become U+FFFD, so a binary file still exists.
+        with open(path, encoding="utf-8", errors="replace", newline="") as f:
             return f.read()
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         return None
 
 
