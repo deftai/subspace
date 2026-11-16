@@ -67,6 +67,12 @@ The Journal at the end gets new entries, dated, as we learn more.
 
 These are language-independent; each one bit us at least once.
 
+- **An empty object is true in JavaScript.** Capabilities are often offered
+  as an empty object (`"session": {"delete": {}}`). `if (caps.delete)` is
+  true in JS; `if caps.get("delete")` is false in Python, so a ported check
+  said the agent did not offer `session/delete`. Test for presence (`is not
+  None`), not truth, wherever the original tests an object. Rust and C++ have
+  no truthiness, but the same mistake can come back as "non-empty".
 - **Absent is not null.** JavaScript has `undefined` (left out of JSON) and
   `null` (written as `null`). Python has only `None`. `notify()` with no
   params sent `"params": null` in Python, while TS left `params` out. Use a
@@ -136,6 +142,9 @@ optimising, and keep it in the suite.
 
 ### Testing
 
+- **asyncio timers may fire one clock tick early** (about 16 ms on
+  Windows): a test that sleeps 300 ms and asserts at least 300 ms passed can
+  fail. Give lower bounds that slack.
 - **Make timing tests event-driven.** Tests that waited a fixed number of
   event-loop ticks or milliseconds were flaky under load and on Windows.
   Wait for the event itself (a promise, a future, a condition), with a
@@ -198,7 +207,9 @@ the library can work around them.
   `deft-subspace-acp` (no `__init__.py` at the namespace level). acp pins
   the kernel to the exact same version; both are always released together.
   Rust crates, Maven artifacts or CMake packages should follow the same
-  split: a kernel with no ACP knowledge, and acp on top.
+  split: a kernel with no ACP knowledge, and acp on top. The testkit
+  (`deft-subspace-acp-testkit`) is a third distribution in the same
+  namespace, pinning both.
 - **Script the version.** `scripts/set_version.py` sets every version and
   the pin; `scripts/check_versions.py` fails CI (and the release) if they
   disagree or do not match the tag.
@@ -299,6 +310,39 @@ interruption rules.
   reads and writes, catalog loading and trace writes run in a thread
   (`asyncio.to_thread`) or are batched. A stdio writer thread does the
   writes, in order, with one flush per batch.
+
+### Streams and transforms
+
+The TS testkit puts faults on a channel with `TransformStream`s joined by
+`pipeThrough`. The Python kernel's channels are pull-based (`receive()`,
+`send()`) and its transforms are synchronous (`feed()`, `flush()`), which is
+enough for framing but not for a fault that waits (`delay`), fires on a timer
+(`coalesce`) or ends the stream (`disconnect_after`).
+
+- **Give each async stage its own task and a queue in front of it**, as
+  `pipeThrough` does. A stage that holds an item holds the ones behind it;
+  order is kept without locks.
+- **Ending a stream goes two ways.** Downstream it is an end marker in the
+  queue, so later stages flush and finish. Upstream it is a "stopped" flag:
+  the reader stops reading the source and sends raise `ChannelClosed`. A
+  `TransformStream`'s `terminate()` does both for free.
+- **No backpressure on the write side**: a send returns once queued, where a
+  TS write waits for the transform. Close flushes what the faults hold.
+- **A reader that is cancelled must not lose what it read.** The source
+  reader races `receive()` against the stopped flag; the `receive()` task
+  gets a done callback that retrieves its result, or asyncio logs "Task
+  exception was never retrieved" for an `EndOfChannel` nobody wanted.
+- Accept the kernel's sync transforms (`rechunk`, `merge`) as faults too, so
+  the two kinds compose in one list.
+
+### Timeouts that leave work running
+
+The TS suites use `within(promise, ms, fallback)`: on timeout the promise
+keeps running. `asyncio.wait_for` cancels instead, and cancelling a pending
+`peer.request()` sends `$/cancel_request`, which changes the conversation
+being checked. The port waits with `asyncio.wait` and leaves the task
+running (with a callback that retrieves its exception), and cancels only
+waits on its own events. In Rust, dropping a future is the same trap.
 
 ### Speed
 
@@ -546,3 +590,37 @@ a pending trusted publisher; acp needed a hand upload (see Packaging and
 release). A tag pushed earlier, before PyPI was set up, had failed at the
 upload step and was moved to the release commit.
 
+
+### 2026-11-16: the testkit
+
+`@deft-subspace/acp-testkit` ported as `deft-subspace-acp-testkit`: record
+and replay, faults, `check_agent` and `check_client`, tool-input checks, the
+scenario runner, and the process helpers. The `subspace` CLI and the scripts
+that record new corpus traces from real agents were left out.
+
+- **The shared corpus paid off.** The Python tests read the nine real-agent
+  traces from the TS package's `corpus/` folder (not a copy) and replay them
+  to the Python `AcpClient`. All nine gave the `TurnResult` recorded live on
+  the first run, quirks included. A shared trace format is the cheapest
+  cross-port test there is.
+- **Faults were the hard part.** See Streams and transforms: Python channels
+  have no `TransformStream`, so each fault runs in its own task. Timing
+  differs from TS in one way: a send through write faults returns once
+  queued, where TS waits for the first transform.
+- **TS tests built agents and clients with the official TS SDK.** The port
+  writes them on a bare kernel `RpcPeer` (the wire is what matters to the
+  checks), plus one official Python SDK agent run as a process through
+  `check_agent_process()`.
+- **A TS test with mocked timers** (`t.mock.timers`) became real short
+  timeouts and a gate released after the timeout. Mocking asyncio's clock
+  for one module is not worth it.
+- **"One timer tick" is not a unit.** `check_client` lets a client that
+  answers a permission request at once (a fixed policy) do so before it
+  cancels; TS waits one `setTimeout(0)` (1 ms or more in Node). Python waits
+  until the answer arrives or 20 ms pass, which does not depend on how many
+  loop iterations the client needs.
+- **Keep file formats in the other port's names.** Scenario files, snapshots
+  and `report.json` keep camelCase, so a scenario and its snapshot are shared
+  between the ports; only the API is snake_case. `pass` is a Python keyword,
+  so a check result's field is `passed` (a scenario's `report.json` still
+  says `pass`).

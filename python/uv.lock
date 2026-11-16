@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "deft-subspace-acp",
+    "deft-subspace-acp-testkit",
     "deft-subspace-kernel",
     "deft-subspace-workspace",
 ]
@@ -270,6 +271,21 @@ requires-dist = [
 provides-extras = ["otel", "mcp"]
 
 [[package]]
+name = "deft-subspace-acp-testkit"
+version = "0.1.0a1"
+source = { editable = "packages/acp-testkit" }
+dependencies = [
+    { name = "deft-subspace-acp" },
+    { name = "deft-subspace-kernel" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deft-subspace-acp", editable = "packages/acp" },
+    { name = "deft-subspace-kernel", editable = "packages/kernel" },
+]
+
+[[package]]
 name = "deft-subspace-kernel"
 version = "0.1.0a1"
 source = { editable = "packages/kernel" }
@@ -280,6 +296,7 @@ version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "deft-subspace-acp" },
+    { name = "deft-subspace-acp-testkit" },
     { name = "deft-subspace-kernel" },
 ]
 
@@ -297,6 +314,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deft-subspace-acp", editable = "packages/acp" },
+    { name = "deft-subspace-acp-testkit", editable = "packages/acp-testkit" },
     { name = "deft-subspace-kernel", editable = "packages/kernel" },
 ]
 
