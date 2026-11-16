@@ -2,7 +2,21 @@
 
 The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-subspace-acp-testkit`, are released together at the same version.
 
-## Unreleased
+## 0.1.0a2
+
+### Faster concurrent sessions
+
+Less work and fewer event-loop wake-ups per message, on both sides. Nothing changes on the wire or in the API. Measured old against new, alternating runs (`bench/`, ACP v1, median of the pairs): 20 concurrent sessions about 1.45× faster with the Subspace TypeScript client and the Python agent, about 1.35× with the Python client and the TypeScript agent, and about 1.4× Python against Python; streaming small chunks from the Python agent about 1.9×; sequential turns 1.25–1.4×; permission requests about 1.1×; large chunks and startup unchanged.
+
+- acp: `serve_stdio`'s writer thread tells the event loop a frame is written only when a send waits for it (past the 1 MiB window, a frame of 64 KiB or more, or `close()`). It used to do so for every frame, waking the loop once per message.
+- acp: an agent turn makes its random message-id prefix only when it first sends a message, and the client's capabilities (`turn.client_supports`) are worked out once per connection instead of once per turn.
+- acp: on Python 3.12+ the client writes a prompt before `session.prompt()` returns (the task that sends it starts eagerly) instead of on the event loop's next round.
+- acp: awaiting a `Turn` wakes the awaiting task directly when the turn ends, one round of the loop sooner than through `asyncio.shield`. As before, cancelling the awaiting task does not cancel the turn.
+- acp: a prompt without handlers of its own reuses the client's handlers instead of copying them, and an idle session schedules its next queued prompt only when one is queued.
+- kernel: the NDJSON codec keeps one JSON decoder and one encoder; `json.loads()` and `json.dumps()` with options build a new one per call. What it accepts, refuses and writes is unchanged.
+- kernel: a request whose message is written at once no longer waits a round of the loop to check the write.
+
+### Testkit
 
 - acp-testkit: `prompt.ends` fails a turn that ends with `stopReason: "error"` (v2), as `cancel.permission` already does. It used to pass. The TypeScript testkit does the same.
 - New distribution `deft-subspace-acp-testkit` (`deft_subspace.acp_testkit`), a port of the TypeScript `@deft-subspace/acp-testkit`. It pins `deft-subspace-kernel` and `deft-subspace-acp` to its own version.
@@ -19,20 +33,6 @@ The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-s
   - `check_agent(only=[...])`: a selected check that needs a session (`config.set-current`, `prompt.ends`, `prompt.updates-before-end`) now gets one without `session.new` being selected; it ran nothing before. If that setup (or initialize) fails, the selected checks that needed it are reported as failed instead of left out, also when `session.new` is selected and fails.
   - `check_agent()`: a `cancel.permission` turn that fails before it asks for permission is a failure (`prompt failed: ...`: on v1 the prompt request fails, on v2 the turn ends with `stopReason: "error"`); it was reported as skipped.
   - `check_client()`: `fs.outside-workspace` writes to fresh random names (`deft-testkit-outside-<random>`) checked not to exist, and removes only those; it wrote to fixed names beside the workspace and deleted them, so it could overwrite and remove a file of yours.
-
-## Unreleased
-
-### Faster concurrent sessions
-
-Less work and fewer event-loop wake-ups per message, on both sides. Nothing changes on the wire or in the API. Measured old against new, alternating runs (`bench/`, ACP v1, median of the pairs): 20 concurrent sessions about 1.45× faster with the Subspace TypeScript client and the Python agent, about 1.35× with the Python client and the TypeScript agent, and about 1.4× Python against Python; streaming small chunks from the Python agent about 1.9×; sequential turns 1.25–1.4×; permission requests about 1.1×; large chunks and startup unchanged.
-
-- acp: `serve_stdio`'s writer thread tells the event loop a frame is written only when a send waits for it (past the 1 MiB window, a frame of 64 KiB or more, or `close()`). It used to do so for every frame, waking the loop once per message.
-- acp: an agent turn makes its random message-id prefix only when it first sends a message, and the client's capabilities (`turn.client_supports`) are worked out once per connection instead of once per turn.
-- acp: on Python 3.12+ the client writes a prompt before `session.prompt()` returns (the task that sends it starts eagerly) instead of on the event loop's next round.
-- acp: awaiting a `Turn` wakes the awaiting task directly when the turn ends, one round of the loop sooner than through `asyncio.shield`. As before, cancelling the awaiting task does not cancel the turn.
-- acp: a prompt without handlers of its own reuses the client's handlers instead of copying them, and an idle session schedules its next queued prompt only when one is queued.
-- kernel: the NDJSON codec keeps one JSON decoder and one encoder; `json.loads()` and `json.dumps()` with options build a new one per call. What it accepts, refuses and writes is unchanged.
-- kernel: a request whose message is written at once no longer waits a round of the loop to check the write.
 
 ## 0.1.0a1
 
