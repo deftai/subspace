@@ -180,6 +180,68 @@ test('a permission turn that neither asks nor ends fails cancel.permission inste
   assert.match(report[0]!.detail, /neither asked permission nor ended within 100 ms/);
 });
 
+test('a permission turn that fails before it asks fails cancel.permission instead of skipping it', async () => {
+  for (const protocol of [1, 2] as const) {
+    const link = byteLink();
+    serveAgent(link.agent, {
+      name: 'failing',
+      protocols: [protocol],
+      async prompt() {
+        throw new Error('no model');
+      },
+    });
+    const report = await checkAgent(link.client, { only: ['cancel.permission'], cancelGraceMs: 1000 });
+    assert.deepEqual(summary(report), ['cancel.permission:fail'], `v${protocol}`);
+    // v1: the prompt request fails; v2: the turn ends with stopReason "error".
+    assert.match(report[0]!.detail, protocol === 1 ? /prompt failed: .*no model/ : /prompt failed: stopReason error/);
+  }
+});
+
+test('only: a selected check runs the setup it needs (the first session) without reporting it', async () => {
+  for (const id of ['prompt.ends', 'prompt.updates-before-end', 'config.set-current']) {
+    const link = byteLink();
+    serveAgent(link.agent, { name: 'good', prompt: wellBehaved });
+    const report = await checkAgent(link.client, { only: [id] });
+    // serveAgent offers no config options, so config.set-current is skipped; it still ran.
+    assert.deepEqual(summary(report), [`${id}:${id === 'config.set-current' ? 'skip' : 'pass'}`], formatReport(report));
+  }
+});
+
+test('only: failed setup is reported on the selected checks that needed it', async () => {
+  const link = byteLink();
+  serveAgent(link.agent, {
+    name: 'no-sessions',
+    newSession() {
+      throw new Error('out of sessions');
+    },
+    prompt: wellBehaved,
+  });
+  const report = await checkAgent(link.client, { only: ['prompt.ends', 'session.unknown'] });
+  assert.deepEqual(summary(report), ['prompt.ends:fail', 'session.unknown:pass'], formatReport(report));
+  assert.match(report[0]!.detail, /session\/new failed: .*out of sessions/);
+  // With session.new selected too, its failure is reported, and so is each check that needed the session.
+  const both = byteLink();
+  serveAgent(both.agent, {
+    name: 'no-sessions',
+    newSession() {
+      throw new Error('out of sessions');
+    },
+    prompt: wellBehaved,
+  });
+  const withNew = await checkAgent(both.client, { only: ['session.new', 'prompt.ends'] });
+  assert.deepEqual(summary(withNew), ['session.new:fail', 'prompt.ends:fail'], formatReport(withNew));
+  assert.match(withNew[1]!.detail, /session\/new failed: .*out of sessions/);
+
+  const other = byteLink();
+  officialV1
+    .agent({ name: 'future' })
+    .onRequest('initialize', () => ({ protocolVersion: 7, agentCapabilities: {}, authMethods: [] }))
+    .connect(officialV1.ndJsonStream(other.b.writable, other.b.readable));
+  const bad = await checkAgent(other.client, { only: ['session.new', 'prompt.ends'] });
+  assert.deepEqual(summary(bad), ['session.new:fail', 'prompt.ends:fail']);
+  assert.match(bad[0]!.detail, /initialize failed: asked v2, agent chose 7/);
+});
+
 test('trailingUpdateMs: how long after the end updates are still counted', async () => {
   const link = byteLink();
   serveAgent(link.agent, {

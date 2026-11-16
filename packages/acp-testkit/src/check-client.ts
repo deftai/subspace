@@ -194,13 +194,16 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
             tried.push(`${method} ${String(params.path)}: refused`);
           }
         };
-        if (fs.writeTextFile) {
-          await attempt('fs/write_text_file', { path: `${base}/../deft-testkit-outside.txt`, content: 'deft-testkit' });
-          await attempt('fs/write_text_file', { path: `${base}-deft-testkit-outside/escape.txt`, content: 'deft-testkit' });
+        // Fresh names that exist nowhere yet, so a client that lets the writes through
+        // clobbers nothing, and whatever is there afterwards is the client's write.
+        const probe = fs.writeTextFile ? await freshProbe(base) : undefined;
+        if (probe) {
+          await attempt('fs/write_text_file', { path: probe.up, content: 'deft-testkit' });
+          await attempt('fs/write_text_file', { path: `${probe.folder}/escape.txt`, content: 'deft-testkit' });
         }
         if (fs.readTextFile && options.outsideFile) await attempt('fs/read_text_file', { path: options.outsideFile });
         // A client that let the writes through leaves files behind: remove them (when it shares our file system).
-        if (written.length) await removeWritten(written, `${base}-deft-testkit-outside`);
+        if (written.length && probe) await removeWritten(written, probe.folder);
         if (!tried.length) return { pass: true, skipped: true, detail: 'the client can only read files; pass outsideFile to try a read outside the workspace' };
         return { pass, detail: tried.join('; ') };
       })
@@ -226,12 +229,37 @@ export async function checkClient(connect: ConnectClient, options: CheckClientOp
   return report;
 }
 
-/** Best effort, and only in Node (this module also runs elsewhere): the test files, then the folder made for one. */
-async function removeWritten(paths: string[], folder: string): Promise<void> {
+/** node:fs/promises in Node; undefined elsewhere (this module also runs outside Node). */
+async function nodeFs(): Promise<typeof import('node:fs/promises') | undefined> {
   const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
-  if (!node) return;
+  if (!node) return undefined;
   const specifier = 'node:fs/promises';
-  const fs = (await import(/* @vite-ignore */ specifier).catch(() => undefined)) as typeof import('node:fs/promises') | undefined;
+  return (await import(/* @vite-ignore */ specifier).catch(() => undefined)) as typeof import('node:fs/promises') | undefined;
+}
+
+/**
+ * Paths outside the workspace at `base` for the write probes: a file up out of it
+ * (`base/../`) and a folder beside it whose name starts like it. Their random
+ * names are checked not to exist (in Node; elsewhere the name alone makes them unique).
+ */
+async function freshProbe(base: string): Promise<{ up: string; folder: string }> {
+  const fs = await nodeFs();
+  const exists = async (path: string) => (fs ? fs.lstat(path).then(() => true, () => false) : false);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(6));
+    const id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    const probe = { up: `${base}/../deft-testkit-outside-${id}.txt`, folder: `${base}-deft-testkit-outside-${id}` };
+    if (!(await exists(probe.up)) && !(await exists(probe.folder))) return probe;
+  }
+  throw new Error('found no unused name for the files to write outside the workspace');
+}
+
+/**
+ * Best effort, and only in Node: the files the client wrote, then the folder made for one.
+ * Their names were fresh (`freshProbe`), so nothing removed here was anyone else's.
+ */
+async function removeWritten(paths: string[], folder: string): Promise<void> {
+  const fs = await nodeFs();
   if (!fs) return;
   for (const path of paths) await fs.rm(path, { force: true }).catch(() => {});
   await fs.rmdir(folder).catch(() => {});

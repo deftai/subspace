@@ -254,6 +254,61 @@ async def test_check_makes_params_matter_when_you_want_them_to():
     await client.close()
 
 
+async def test_the_agents_cancel_request_names_its_own_request_by_the_live_id():
+    text = "\n".join(
+        [
+            HEADER,
+            _at("in", {"jsonrpc": "2.0", "id": "permission-7", "method": "x/ask", "params": {}}),
+            _at("in", {"jsonrpc": "2.0", "method": "$/cancel_request", "params": {"requestId": "permission-7"}}),
+            _at("out", {"jsonrpc": "2.0", "id": "permission-7", "error": {"code": -32800, "message": "cancelled"}}),
+        ]
+    )
+    agent_end, client_end = channel_pair()
+    replay = replay_agent(agent_end, text)
+    ask = await client_end.receive()
+    assert ask["method"] == "x/ask"
+    assert ask["id"] != "permission-7"
+    cancel = await client_end.receive()
+    assert cancel["method"] == "$/cancel_request"
+    assert cancel["params"]["requestId"] == ask["id"]
+    await client_end.send({"jsonrpc": "2.0", "id": ask["id"], "error": {"code": -32800, "message": "cancelled"}})
+    await replay.done
+    await client_end.close()
+
+
+@pytest.mark.parametrize("answer", ["yes", "no"])
+async def test_check_sees_the_clients_answers_to_the_agents_requests_with_live_ids(answer: str):
+    text = "\n".join(
+        [
+            HEADER,
+            _at("in", {"jsonrpc": "2.0", "id": "perm-1", "method": "x/ask", "params": {}}),
+            _at("out", {"jsonrpc": "2.0", "id": "perm-1", "result": {"answer": "yes"}}),
+        ]
+    )
+    agent_end, client_end = channel_pair()
+    checked: list[tuple[Any, Any]] = []
+
+    def check(expected: dict[str, Any], got: dict[str, Any]) -> str | None:
+        checked.append((expected.get("id"), got.get("id")))
+        if "method" in expected:
+            return None
+        return None if expected.get("result") == got.get("result") else f"answered {json.dumps(got.get('result'))}"
+
+    replay = replay_agent(agent_end, text, check=check)
+    peer = RpcPeer(client_end)
+    peer.on_request("x/ask", lambda _params, _context: {"answer": answer})
+    peer.start()
+    if answer == "yes":
+        await replay.done
+    else:
+        with pytest.raises(ReplayDivergence, match=r'answered \{"answer": "no"\}'):
+            await replay.done
+    assert len(checked) == 1
+    assert checked[0][0] != "perm-1"
+    assert checked[0][0] == checked[0][1]
+    await peer.close()
+
+
 async def test_pace_keeps_the_recorded_gaps():
     records = [
         {"v": 1, "kind": "header", "started": "1970-01-01T00:00:00.000Z", "peer": "client"},

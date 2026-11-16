@@ -11,7 +11,7 @@
   client sends together may arrive in another order than recorded: one is
   matched with any of the next few recorded ones (`window`). Their params
   may differ (pass `check` to be stricter). Responses to the agent's
-  requests are matched by id.
+  requests are matched by id (and passed to `check` too).
 - JSON-RPC ids are remapped both ways: recorded answers go out with the
   client's live ids, and the agent's requests get fresh ids.
 - When the client sends something else, or nothing within `wait_ms`, the
@@ -230,7 +230,8 @@ class Replay:
             return {**rest, "id": live}
         params = rest.get("params")
         if rest.get("method") == "$/cancel_request" and isinstance(params, dict):
-            live = self._client_ids.get(_key(params.get("requestId")), _KEEP_WAITING)
+            # The agent cancels one of its own requests, which went out with a fresh id.
+            live = self._agent_ids.get(_key(params.get("requestId")), _KEEP_WAITING)
             if live is not _KEEP_WAITING:
                 return {**rest, "params": {**params, "requestId": live}}
         return rest
@@ -304,9 +305,14 @@ class Replay:
                 def take_response() -> Any:
                     return self._responses.pop(live_key, _KEEP_WAITING)
 
-                if await self._wait_for(take_response) is _KEEP_WAITING:
+                answer = await self._wait_for(take_response)
+                if answer is _KEEP_WAITING:
                     method = self._methods.get(_key(expected.get("id")), "?")
                     await diverge(f'expected the client to answer request "{method}", got {silence()}')
+                if self._check is not None:
+                    complaint = self._check(expected if live is _KEEP_WAITING else {**expected, "id": live}, answer)
+                    if complaint:
+                        await diverge(complaint, answer)
                 continue
 
             if not _is_call(expected):
@@ -383,7 +389,10 @@ def replay_agent(
       1 is strict recorded order.
     - `check(expected, got)`: compare a client message with the recorded one (both whole
       JSON-RPC messages; `expected` has its ids mapped to the live ones). Return a
-      description to stop the replay as diverged.
+      description to stop the replay as diverged. It sees the client's requests and
+      notifications, and its responses to the agent's requests (a permission answer, a
+      file's contents). A response has no `"method"`: check `"method" in expected` to tell
+      them apart.
     """
     records = parse_trace(trace) if isinstance(trace, str) else trace
     header = records[0] if records and records[0].get("kind") == "header" else None

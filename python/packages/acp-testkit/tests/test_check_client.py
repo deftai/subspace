@@ -95,8 +95,15 @@ async def _connect_bare(peer: RpcPeer, cwd: Path, fs: dict[str, bool]) -> str:
     return result["sessionId"]
 
 
-async def test_a_careless_client_fails_the_checks_it_breaks_and_the_files_it_wrote_outside_are_removed(tmp_path):
+async def test_a_careless_client_fails_the_checks_it_breaks_the_files_it_wrote_outside_are_removed_and_no_one_elses(
+    tmp_path,
+):
     root, cwd, _outside = workspace(tmp_path)
+    # The user's own files, where earlier versions of the check wrote (and then deleted).
+    mine = [root / "deft-testkit-outside.txt", Path(f"{cwd}-deft-testkit-outside") / "escape.txt"]
+    for path in mine:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("mine")
     written: list[str] = []
 
     async def connect(channel: Channel[Any]) -> _BareDriver:
@@ -142,8 +149,14 @@ async def test_a_careless_client_fails_the_checks_it_breaks_and_the_files_it_wro
     ]
     assert re.search(r'"selected".*session/cancel sent', report[1].detail)
     assert [os.path.dirname(p) == str(cwd) for p in written] == [False, False]
-    assert not (root / "deft-testkit-outside.txt").exists()
-    assert not Path(f"{cwd}-deft-testkit-outside").exists()
+    # Fresh paths, the same escapes: up out of the workspace, and a sibling folder whose name starts like it.
+    assert Path(os.path.abspath(os.path.dirname(written[0]))) == Path(os.path.abspath(root))
+    assert os.path.dirname(written[1]).startswith(f"{cwd}-deft-testkit-outside-"), written[1]
+    for path in mine:
+        assert path.read_text() == "mine"
+    for path in written:
+        assert not Path(path).exists(), path
+    assert not Path(os.path.dirname(written[1])).exists()
 
 
 def bare_client(

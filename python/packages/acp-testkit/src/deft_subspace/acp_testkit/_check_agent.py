@@ -134,7 +134,8 @@ async def check_agent(
     - `cancel_after_ms`: wait this long after the long turn's first update before cancelling.
     - `trailing_update_ms`: how long after a turn's end to keep watching for stray updates
       (`prompt.updates-before-end`). Default 100 ms.
-    - `only`: run only these check ids.
+    - `only`: run only these check ids. The setup a selected check needs (initialize, the
+      first session) still runs, unreported; if it fails, the selected checks fail.
     - `waive`: failed checks to waive, as check id: reason (an agent's quirks carry its waivers:
       `resolve_agent(catalog, name).waivers`).
     - `mode`: switch every session to this mode before its turn, e.g. an ask-first mode
@@ -158,6 +159,12 @@ async def check_agent(
     async def check(id: str, body: Callable[[], Awaitable[Outcome]]) -> None:
         if wanted(id):
             report.append(await run_check(id, AGENT_CHECKS[id], body))
+
+    def setup_failed(ids: Sequence[str], detail: str) -> None:
+        """Setup that failed: fail the selected checks that needed it, so none is left out of the report."""
+        for id in ids:
+            if wanted(id):
+                report.append(CheckResult(id, AGENT_CHECKS[id], False, detail))
 
     watches: dict[str, _TurnWatch] = {}
     # How this check answers permission requests, per session. Default: reject (or cancelled).
@@ -188,6 +195,7 @@ async def check_agent(
 
     negotiated: Literal[1, 2] | None = None
     init_answer: dict[str, Any] = {}
+    init_detail = ""
     asked = protocol
     try:
         init_params: dict[str, Any] = {"protocolVersion": asked}
@@ -204,25 +212,35 @@ async def check_agent(
                 negotiated = 1 if version == 1 else 2
             init_answer = init if isinstance(init, dict) else {}
             chosen = negotiated
+            init_detail = f"asked v{asked}, agent chose {_plain(version)}"
 
             async def version_check() -> Outcome:
-                return Outcome(chosen is not None and chosen <= asked, f"asked v{asked}, agent chose {_plain(version)}")
+                return Outcome(chosen is not None and chosen <= asked, init_detail)
 
             await check("initialize.version", version_check)
         else:
+            init_detail = "no answer within 60 s"
 
             async def no_answer() -> Outcome:
-                return Outcome(False, "no answer within 60 s")
+                return Outcome(False, init_detail)
 
             await check("initialize.version", no_answer)
     except Exception as error:  # noqa: BLE001
-        failed = error
+        init_detail = f"error: {message(error)}"
 
         async def init_failed() -> Outcome:
-            return Outcome(False, f"error: {message(failed)}")
+            return Outcome(False, init_detail)
 
         await check("initialize.version", init_failed)
     if negotiated is None:
+        # Every other check needs a connection.
+        if not wanted("initialize.version"):
+            ids = [
+                id
+                for id in AGENT_CHECKS
+                if id != "initialize.version" and (id != "cancel.permission" or prompts["permission"] is not None)
+            ]
+            setup_failed(ids, f"initialize failed: {init_detail}")
         await peer.close()
         return apply_waivers(report, waive)
     v: Literal[1, 2] = negotiated
@@ -312,15 +330,30 @@ async def check_agent(
             pass
         await within(watch.ended.wait(), grace, TIMED_OUT, cancel=True)
 
+    # The first session, for these checks: set up even when session.new is not selected, then not reported.
     holder: list[str] = []
+    session_failed: str | None = None
 
     async def session_new() -> Outcome:
-        holder.append(await new_session())
+        nonlocal session_failed
+        try:
+            holder.append(await new_session())
+        except Exception as error:
+            session_failed = f"session/new failed: {message(error)}"
+            raise
         return Outcome(True, f"sessionId {holder[0]}")
 
-    await check("session.new", session_new)
+    if wanted("session.new"):
+        await check("session.new", session_new)
+    elif any(wanted(id) for id in ("config.set-current", "prompt.ends", "prompt.updates-before-end")):
+        try:
+            holder.append(await new_session())
+        except Exception as error:  # noqa: BLE001
+            session_failed = f"session/new failed: {message(error)}"
     session_id = holder[0] if holder else None
 
+    if session_failed is not None:
+        setup_failed(["config.set-current"], session_failed)
     if session_id is not None:
         answer = created.get(session_id, {})
         sid = session_id
@@ -366,6 +399,8 @@ async def check_agent(
 
     await check("session.delete", session_delete)
 
+    if session_failed is not None:
+        setup_failed(["prompt.ends", "prompt.updates-before-end"], session_failed)
     if session_id is not None and (wanted("prompt.ends") or wanted("prompt.updates-before-end")):
         watch = start_turn(session_id, prompts["prompt"])
         ended = await within(watch.ended.wait(), turn_timeout, TIMED_OUT, cancel=True)
@@ -459,6 +494,11 @@ async def check_agent(
                 # A turn that hangs is a failure; only one that ends without asking is skipped.
                 if not done:
                     return Outcome(False, f"the turn neither asked permission nor ended within {_plain(turn_timeout)} ms")
+                if watch.error is not None:
+                    return Outcome(False, f"prompt failed: {message(watch.error)}")
+                # v2 answers the prompt request at once and reports a failed turn as its stop reason.
+                if watch.stop_reason == "error":
+                    return Outcome(False, "prompt failed: stopReason error")
                 return Outcome(True, f"the agent asked no permission (stopReason {watch.stop_reason})", skipped=True)
             ended = await within(watch.ended.wait(), grace, TIMED_OUT, cancel=True)
             permission_handlers.pop(id, None)

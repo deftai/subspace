@@ -273,6 +273,57 @@ async def test_a_permission_turn_that_neither_asks_nor_ends_fails_cancel_permiss
     assert re.search(r"neither asked permission nor ended within 100 ms", report[0].detail)
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_permission_turn_that_fails_before_it_asks_fails_cancel_permission_instead_of_skipping_it(protocol):
+    link = ByteLink()
+
+    async def failing(_turn: AgentTurn) -> str:
+        raise RuntimeError("no model")
+
+    serve_agent(link.agent, name="failing", protocols=[protocol], prompt=failing)
+    report = await check_agent(link.client, only=["cancel.permission"], cancel_grace_ms=1000)
+    assert summary(report) == ["cancel.permission:fail"]
+    # v1: the prompt request fails; v2: the turn ends with stopReason "error".
+    expected = r"prompt failed: .*no model" if protocol == 1 else r"prompt failed: stopReason error"
+    assert re.search(expected, report[0].detail)
+
+
+@pytest.mark.parametrize("id", ["prompt.ends", "prompt.updates-before-end", "config.set-current"])
+async def test_only_a_selected_check_runs_the_setup_it_needs_without_reporting_it(id: str):
+    link = ByteLink()
+    serve_agent(link.agent, name="good", prompt=well_behaved)
+    report = await check_agent(link.client, only=[id])
+    # serve_agent offers no config options, so config.set-current is skipped; it still ran.
+    assert summary(report) == [f"{id}:{'skip' if id == 'config.set-current' else 'pass'}"], format_report(report)
+
+
+async def test_only_failed_setup_is_reported_on_the_selected_checks_that_needed_it():
+    link = ByteLink()
+
+    def no_sessions(_request: Any) -> Any:
+        raise RuntimeError("out of sessions")
+
+    serve_agent(link.agent, name="no-sessions", new_session=no_sessions, prompt=well_behaved)
+    report = await check_agent(link.client, only=["prompt.ends", "session.unknown"])
+    assert summary(report) == ["prompt.ends:fail", "session.unknown:pass"], format_report(report)
+    assert re.search(r"session/new failed: .*out of sessions", report[0].detail)
+    # With session.new selected too, its failure is reported, and so is each check that needed the session.
+    both = ByteLink()
+    serve_agent(both.agent, name="no-sessions", new_session=no_sessions, prompt=well_behaved)
+    with_new = await check_agent(both.client, only=["session.new", "prompt.ends"])
+    assert summary(with_new) == ["session.new:fail", "prompt.ends:fail"], format_report(with_new)
+    assert re.search(r"session/new failed: .*out of sessions", with_new[1].detail)
+
+    other = ByteLink()
+    future = bare_agent(other.agent, "future")
+    _listen(future, "initialize", lambda _p: {"protocolVersion": 7, "agentCapabilities": {}, "authMethods": []})
+    future.start()
+    bad = await check_agent(other.client, only=["session.new", "prompt.ends"])
+    assert summary(bad) == ["session.new:fail", "prompt.ends:fail"]
+    assert re.search(r"initialize failed: asked v2, agent chose 7", bad[0].detail)
+    await future.close()
+
+
 async def test_trailing_update_ms_how_long_after_the_end_updates_are_still_counted():
     link = ByteLink()
     late: set[asyncio.Task[Any]] = set()

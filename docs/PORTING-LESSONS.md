@@ -624,3 +624,30 @@ that record new corpus traces from real agents were left out.
   between the ports; only the API is snake_case. `pass` is a Python keyword,
   so a check result's field is `passed` (a scenario's `report.json` still
   says `pass`).
+
+### 2026-11-16: bugs the port copied faithfully
+
+The review of the testkit port found five bugs, and all five were in the
+TypeScript original too: the port had reproduced them exactly. They were
+fixed in both, each with a failing test first on both sides.
+
+- **A faithful port copies the bugs.** "Port behaviour, not code" still
+  ports the behaviour you did not mean. When a review finds a bug in the
+  port, look for it in the original before fixing it in one place, and fix
+  both in one change so they do not drift.
+- **Two id tables, and which one a message uses.** Replay keeps the
+  client's ids and the agent's ids apart; an agent's `$/cancel_request` names
+  one of the agent's own requests, but was looked up among the client's. In
+  any JSON-RPC proxy or replayer, write down for each message kind which
+  side's ids it carries.
+- **A filter on results must not filter the setup.** `only` hid the session
+  that the selected checks needed, so they ran nothing and reported nothing:
+  an empty report that looks like a pass. Run setup by dependency, report by
+  selection, and fail a selected check whose setup failed.
+- **"Ended" is not "succeeded".** A turn that failed also sets `ended`, so a
+  branch for "ended without asking" passed a failure as skipped. Check the
+  error before the end.
+- **A check that writes must not own fixed paths.** Probe files beside the
+  workspace had fixed names and were deleted afterwards, so they could
+  overwrite and remove a user's file. Use fresh random names, checked not to
+  exist, and remove only those.

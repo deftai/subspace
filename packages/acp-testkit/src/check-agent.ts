@@ -31,7 +31,10 @@ export interface CheckAgentOptions {
   cancelAfterMs?: number;
   /** How long after a turn's end to keep watching for stray updates (`prompt.updates-before-end`). Default 100 ms. */
   trailingUpdateMs?: number;
-  /** Run only these check ids. */
+  /**
+   * Run only these check ids. The setup a selected check needs (initialize, the
+   * first session) still runs, unreported; if it fails, the selected checks fail.
+   */
   only?: string[];
   /** Failed checks to waive, as check id: reason (known quirks: an agent's `waivers` from the catalog, `resolveAgent()`). */
   waive?: Record<string, string>;
@@ -134,6 +137,10 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   const check = async (id: keyof typeof AGENT_CHECKS, body: Parameters<typeof runCheck>[2]) => {
     if (wanted(id)) report.push(await runCheck(id, AGENT_CHECKS[id], body));
   };
+  /** Setup that failed: fail the selected checks that needed it, so none is left out of the report. */
+  const setupFailed = (ids: ReadonlyArray<keyof typeof AGENT_CHECKS>, detail: string) => {
+    for (const id of ids) if (wanted(id)) report.push({ id, title: AGENT_CHECKS[id], pass: false, detail });
+  };
 
   const watches = new Map<string, TurnWatch>();
   /** How this check answers permission requests, per session. Default: reject (or cancelled). */
@@ -153,6 +160,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
 
   let protocol: 1 | 2 | undefined;
   let initAnswer: Record<string, unknown> = {};
+  let initDetail = '';
   const asked = options.protocol ?? 2;
   try {
     const init = (await within(
@@ -169,17 +177,24 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
       const v = Number(init?.protocolVersion);
       if (v === 1 || v === 2) protocol = v;
       initAnswer = init;
-      await check('initialize.version', async () => ({
-        pass: protocol !== undefined && protocol <= asked,
-        detail: `asked v${asked}, agent chose ${String(init?.protocolVersion)}`,
-      }));
+      initDetail = `asked v${asked}, agent chose ${String(init?.protocolVersion)}`;
+      await check('initialize.version', async () => ({ pass: protocol !== undefined && protocol <= asked, detail: initDetail }));
     } else {
-      await check('initialize.version', async () => ({ pass: false, detail: 'no answer within 60 s' }));
+      initDetail = 'no answer within 60 s';
+      await check('initialize.version', async () => ({ pass: false, detail: initDetail }));
     }
   } catch (error) {
-    await check('initialize.version', async () => ({ pass: false, detail: `error: ${message(error)}` }));
+    initDetail = `error: ${message(error)}`;
+    await check('initialize.version', async () => ({ pass: false, detail: initDetail }));
   }
   if (protocol === undefined) {
+    // Every other check needs a connection.
+    if (!wanted('initialize.version')) {
+      const ids = (Object.keys(AGENT_CHECKS) as Array<keyof typeof AGENT_CHECKS>).filter(
+        (id) => id !== 'initialize.version' && (id !== 'cancel.permission' || prompts.permissionPrompt !== null)
+      );
+      setupFailed(ids, `initialize failed: ${initDetail}`);
+    }
     await peer.close();
     return applyWaivers(report, options.waive);
   }
@@ -247,12 +262,28 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
     await within(watch.ended, grace, TIMED_OUT);
   };
 
+  // The first session, for these checks: set up even when session.new is not selected, then not reported.
   let sessionId: string | undefined;
-  await check('session.new', async () => {
-    sessionId = await newSession();
-    return { pass: true, detail: `sessionId ${sessionId}` };
-  });
+  let sessionFailed: string | undefined;
+  if (wanted('session.new')) {
+    await check('session.new', async () => {
+      try {
+        sessionId = await newSession();
+      } catch (error) {
+        sessionFailed = `session/new failed: ${message(error)}`;
+        throw error;
+      }
+      return { pass: true, detail: `sessionId ${sessionId}` };
+    });
+  } else if ((['config.set-current', 'prompt.ends', 'prompt.updates-before-end'] as const).some(wanted)) {
+    try {
+      sessionId = await newSession();
+    } catch (error) {
+      sessionFailed = `session/new failed: ${message(error)}`;
+    }
+  }
 
+  if (sessionFailed) setupFailed(['config.set-current'], sessionFailed);
   if (sessionId) {
     const answer = created.get(sessionId) ?? {};
     await check('config.set-current', async () => {
@@ -288,6 +319,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
     return { pass: !still, detail: still ? `${id} is still in session/list` : `deleted ${id}; gone from session/list` };
   });
 
+  if (sessionFailed) setupFailed(['prompt.ends', 'prompt.updates-before-end'], sessionFailed);
   if (sessionId && (wanted('prompt.ends') || wanted('prompt.updates-before-end'))) {
     const watch = startTurn(sessionId, prompts.prompt);
     const ended = await within(watch.ended, turnTimeout, TIMED_OUT);
@@ -364,6 +396,9 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
         await settle(id, watch);
         // A turn that hangs is a failure; only one that ends without asking is skipped.
         if (first === TIMED_OUT) return { pass: false, detail: `the turn neither asked permission nor ended within ${turnTimeout} ms` };
+        if (watch.error) return { pass: false, detail: `prompt failed: ${message(watch.error)}` };
+        // v2 answers the prompt request at once and reports a failed turn as its stop reason.
+        if (watch.stopReason === 'error') return { pass: false, detail: 'prompt failed: stopReason error' };
         return { pass: true, skipped: true, detail: `the agent asked no permission (stopReason ${watch.stopReason})` };
       }
       const ended = await within(watch.ended, grace, TIMED_OUT);
