@@ -288,6 +288,20 @@ async def test_a_permission_turn_that_fails_before_it_asks_fails_cancel_permissi
     assert re.search(expected, report[0].detail)
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_a_turn_that_fails_fails_prompt_ends_on_v1_and_v2(protocol):
+    link = ByteLink()
+
+    async def failing(_turn: AgentTurn) -> str:
+        raise RuntimeError("no model")
+
+    serve_agent(link.agent, name="failing", protocols=[protocol], prompt=failing)
+    report = await check_agent(link.client, only=["prompt.ends"])
+    assert summary(report) == ["prompt.ends:fail"]
+    expected = r"prompt failed: .*no model" if protocol == 1 else r"prompt failed: stopReason error"
+    assert re.search(expected, report[0].detail)
+
+
 @pytest.mark.parametrize("id", ["prompt.ends", "prompt.updates-before-end", "config.set-current"])
 async def test_only_a_selected_check_runs_the_setup_it_needs_without_reporting_it(id: str):
     link = ByteLink()

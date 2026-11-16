@@ -197,6 +197,22 @@ test('a permission turn that fails before it asks fails cancel.permission instea
   }
 });
 
+test('a turn that fails fails prompt.ends, on v1 and v2 (stopReason "error")', async () => {
+  for (const protocol of [1, 2] as const) {
+    const link = byteLink();
+    serveAgent(link.agent, {
+      name: 'failing',
+      protocols: [protocol],
+      async prompt() {
+        throw new Error('no model');
+      },
+    });
+    const report = await checkAgent(link.client, { only: ['prompt.ends'] });
+    assert.deepEqual(summary(report), ['prompt.ends:fail'], `v${protocol}`);
+    assert.match(report[0]!.detail, protocol === 1 ? /prompt failed: .*no model/ : /prompt failed: stopReason error/);
+  }
+});
+
 test('only: a selected check runs the setup it needs (the first session) without reporting it', async () => {
   for (const id of ['prompt.ends', 'prompt.updates-before-end', 'config.set-current']) {
     const link = byteLink();
