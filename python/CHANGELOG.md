@@ -1,6 +1,17 @@
 # Changelog
 
-Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
+The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-subspace-acp-testkit`, are released together at the same version.
+
+## Unreleased
+
+- New distribution `deft-subspace-acp-testkit` (`deft_subspace.acp_testkit`), a port of the TypeScript `@deft-subspace/acp-testkit`. It pins `deft-subspace-kernel` and `deft-subspace-acp` to its own version.
+  - Record and replay: `recorder()`, `tap_channel()`, `record_agent()`, `replace_strings()`, `redact_keys()`, `save_trace()`, `load_trace()`; `replay_agent()` plays the agent side of a trace to a live client and raises `ReplayDivergence` (expected vs got) instead of hanging.
+  - Faults: `fault_channel(channel, read=[...], write=[...])` with `delay`, `disconnect_after`, `close_when(is_update(...))`, and for bytes `rechunk`, `merge`, `coalesce`, `inject_lines`. Any kernel `Transform` works as a fault too.
+  - Conformance: `check_agent()`, `check_agent_process()`, `check_client()` with `acp_client_driver()`; `format_report()`, `failures()`, `apply_waivers()`. A result's verdict is `passed` (`pass` is a Python keyword).
+  - Tool-input robustness: `summarize_tool_input()`, `merge_tool_input()`, `check_tool_input()` (limits as keyword arguments).
+  - Scenarios: `run_scenario()`, `load_scenarios()` (JSON, or a Python module's `scenarios`), `check_turn()`, `format_scenarios()`, `format_junit()`. Scenario files and snapshots are the same JSON as the TypeScript testkit's.
+  - The corpus of real agents' traces is read from `packages/acp-testkit/corpus/`, not copied; the tests replay every trace to `AcpClient` and compare with the result recorded live.
+- Not ported: the `subspace` CLI (`subspace test`, `subspace check`) and the scripts that record new corpus traces from real agents.
 
 ## 0.1.0a1
 

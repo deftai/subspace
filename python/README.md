@@ -40,8 +40,9 @@ To see what went over the wire, set `SUBSPACE_TRACE` to a folder: every `start()
 |---|---|---|
 | `deft-subspace-kernel` | `deft_subspace.kernel` | Channels, NDJSON framing, a JSON-RPC peer with timeouts and cancellation, abort signals, traces, supervised processes. No dependencies. |
 | `deft-subspace-acp` | `deft_subspace.acp` | `AcpClient`, `Session` and `Turn`; `serve_agent` and `agent_endpoint`; `start()`, `run()` and `serve_stdio()`; permission rules, tools, MCP-over-ACP, `model_agent()`, OpenTelemetry (`otel` extra), MCP servers over http and sse (`mcp` extra). |
+| `deft-subspace-acp-testkit` | `deft_subspace.acp_testkit` | Test agents and clients: record and replay traces (`replay_agent()`), faults on a channel (`fault_channel()`), conformance checks (`check_agent()`, `check_client()`), JSON scenarios (`run_scenario()`). |
 
-The testkit, devtools, CLI and the Claude model adapter are not ported yet. Traces are the same JSON Lines format as the TypeScript packages, so the TypeScript trace viewer reads them.
+Devtools, the CLI and the Claude model adapter are not ported yet. Traces are the same JSON Lines format as the TypeScript packages, so the TypeScript trace viewer reads them, and a trace recorded by one port replays in the other.
 
 ### Where to start
 
@@ -119,13 +120,13 @@ Python 3.11 or later. CI runs Linux, macOS and Windows on 3.11 and 3.13.
 
 ## Releasing
 
-Both distributions are released together, at the same version, by `.github/workflows/python-release.yml` when a `python-v<version>` tag is pushed. It runs the tests, builds and checks the wheels, smoke-tests them in a clean environment, and publishes with PyPI trusted publishing from the `pypi` environment.
+The three distributions are released together, at the same version, by `.github/workflows/python-release.yml` when a `python-v<version>` tag is pushed. It runs the tests, builds and checks the wheels, smoke-tests them in a clean environment, and publishes with PyPI trusted publishing from the `pypi` environment.
 
 1. `python scripts/set_version.py <version>`, then `uv lock`.
 2. Add a `## <version>` section to `CHANGELOG.md`.
 3. Merge, then tag the merge commit `python-v<version>` and push the tag.
 4. Approve the `pypi` deployment in the workflow run.
 
-A new distribution's first release has to be uploaded by hand; the header of `python-release.yml` says how.
+A new distribution's first release has to be uploaded by hand; the header of `python-release.yml` says how. `deft-subspace-acp-testkit` has not been uploaded yet.
 
 `python scripts/check_versions.py --tag python-v<version>` runs the same checks locally.

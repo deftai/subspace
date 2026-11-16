@@ -1,8 +1,10 @@
-# Publishes deft-subspace-kernel and deft-subspace-acp to PyPI when a python-v<version> tag is pushed.
+# Publishes deft-subspace-kernel, deft-subspace-acp and deft-subspace-acp-testkit to PyPI when a
+# python-v<version> tag is pushed.
 #
-# Nothing runs until such a tag exists. Both projects exist on PyPI (0.1.0a1, 2026-11-12) and each
+# Nothing runs until such a tag exists. kernel and acp exist on PyPI (0.1.0a1, 2026-11-12) and each
 # has a trusted publisher: owner deftai, repository subspace, workflow python-release.yml,
-# environment pypi. The `pypi` environment here needs a reviewer and only deploys python-v* tags.
+# environment pypi. The testkit does not exist there yet: upload its first release by hand (below).
+# The `pypi` environment here needs a reviewer and only deploys python-v* tags.
 #
 # A NEW distribution can't be created by this workflow while another project already uses the same
 # publisher settings: PyPI matches the run to the existing publisher, which may not create projects
@@ -45,6 +47,7 @@ jobs:
         run: |
           uv build --package deft-subspace-kernel -o dist
           uv build --package deft-subspace-acp -o dist
+          uv build --package deft-subspace-acp-testkit -o dist
           uvx twine check --strict dist/*
       - name: Smoke test the wheels
         run: |
@@ -69,9 +72,13 @@ jobs:
         with:
           name: dist
           path: dist/
-      # The kernel first: acp depends on it.
+      # The kernel first, then acp, then the testkit: each depends on the ones before it.
       - name: Order
-        run: mkdir kernel acp && mv dist/deft_subspace_kernel-* kernel/ && mv dist/deft_subspace_acp-* acp/
+        run: |
+          mkdir kernel acp testkit
+          mv dist/deft_subspace_kernel-* kernel/
+          mv dist/deft_subspace_acp-* acp/
+          mv dist/deft_subspace_acp_testkit-* testkit/
       # skip-existing: a re-run (say, after the acp upload failed) skips files already on PyPI.
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
@@ -80,4 +87,8 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: acp/
+          skip-existing: true
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: testkit/
           skip-existing: true

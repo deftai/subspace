@@ -3,27 +3,109 @@ title: The testkit
 description: Record and replay real agents, inject faults, and run conformance checks against agents and clients.
 ---
 
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 import Example from '../../../components/Example.astro';
 import testing from '../../../../../examples/testing.ts?raw';
+import testingPy from '../../../../../python/examples/testing.py?raw';
 
 `@deft-subspace/acp-testkit` tests ACP agents and clients, written with Subspace or not. Everything uses one trace format: JSON Lines, a header and then `{ t, dir, msg }` records. Traces are language-neutral, so any implementation can replay them.
 
-<Example file="testing.ts" ts={testing} />
+In Python it is `deft_subspace.acp_testkit` (`deft-subspace-acp-testkit`), with the same parts in snake_case: `replay_agent`, `fault_channel`, `check_agent`, `run_scenario`. Everything is imported from the package; there is no separate `./node` entry. A check result's verdict is `passed`, since `pass` is a Python keyword.
+
+<Example file="testing.ts" ts={testing} py={testingPy} />
 
 ## Record and replay
 
 - `recordAgent(command, options)` (from `./node`) runs a real agent and records the connection. `recorder()` gives a `tap` for any peer or client, and `tapChannel()` records any channel. `replaceStrings()` and `redactKeys()` keep paths and identities out of traces.
 - `replayAgent(channel, trace)` plays the agent's side back to a live client. It remaps ids, matches the client's calls by method in order, tolerates different params, and rejects `done` with a `ReplayDivergence` (expected vs got) instead of hanging.
 
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
+```ts
+import { channelPair } from '@deft-subspace/kernel';
+import { AcpClient } from '@deft-subspace/acp';
+import { replayAgent } from '@deft-subspace/acp-testkit';
+import { loadTrace } from '@deft-subspace/acp-testkit/node';
+
+const [agentEnd, clientEnd] = channelPair<unknown>();
+const replay = replayAgent(agentEnd, await loadTrace('grok-plain.trace.jsonl'));
+const client = await AcpClient.connect(clientEnd);
+const session = await client.newSession({ cwd: '/workspace' });
+await session.prompt('hi').done;
+await replay.done; // rejects with a ReplayDivergence if the client did something else
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp import AcpClient
+from deft_subspace.acp_testkit import load_trace, replay_agent
+from deft_subspace.kernel import channel_pair
+
+agent_end, client_end = channel_pair()
+replay = replay_agent(agent_end, await load_trace("grok-plain.trace.jsonl"))
+client = await AcpClient.connect(client_end)
+session = await client.new_session("/workspace")
+await session.prompt("hi")
+await replay.done  # raises ReplayDivergence if the client did something else
+```
+
+</TabItem>
+</Tabs>
+
 ## Faults
 
 `faultChannel(channel, { read, write })` adds `delay`, `disconnectAfter`, `closeWhen(isUpdate(...))`, and for bytes `rechunk`, `merge`, `coalesce` and `injectLines` (banner lines and other noise real agents print).
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
+```ts
+const flaky = faultChannel(clientEnd, { read: [delay(5), closeWhen(isUpdate('agent_message_chunk'))] });
+const noisy = ndjson(faultChannel(bytes, { read: [injectLines(), rechunk(3)] }));
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+flaky = fault_channel(client_end, read=[delay(5), close_when(is_update("agent_message_chunk"))])
+noisy = ndjson(fault_channel(byte_channel, read=[inject_lines(), rechunk(3)]))
+```
+
+</TabItem>
+</Tabs>
 
 ## Conformance
 
 - `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; An agent's quirks carry its waivers (`resolveAgent(catalog, name).waivers`; see [agents files](/subspace/client/agents-file/)), which `subspace check <agent>` applies (`--strict` to not).
 - `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
 - From the command line: `node --conditions=subspace-source packages/acp-testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
+
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
+```ts
+const report = await checkAgentProcess('my-agent', { args: ['--acp'], waive: { 'session.unknown': 'answers -32602' } });
+console.log(formatReport(report));
+
+const clientReport = await checkClient(acpClientDriver({ permissions: 'reject' }));
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+report = await check_agent_process("my-agent", args=["--acp"], waive={"session.unknown": "answers -32602"})
+print(format_report(report))
+
+client_report = await check_client(acp_client_driver(permissions="reject"))
+```
+
+</TabItem>
+</Tabs>
 
 The checks are listed on [Conformance](../../behaviour/conformance/).
 
@@ -52,16 +134,42 @@ Describe what an agent should do, and check it did:
 }
 ```
 
-Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "scenarios": [...] }`; also TypeScript modules exporting `defineScenario(...)`), or `runScenario()` from `@deft-subspace/acp-testkit/node`.
+Run with `subspace test greeting.scenario.json` (several files, a list, or `{ "scenarios": [...] }`; also TypeScript modules exporting `defineScenario(...)`), or `runScenario()` from `@deft-subspace/acp-testkit/node`. The Python port runs the same files, and writes and reads the same snapshots:
 
-- **Agent:** a known name or `{ command, args, env, mode }`; it starts in its ask-first mode unless `mode` says otherwise. A name is looked up in the [agent catalog](../../client/agents-file/) from the scenario file's folder up, so a `subspace.toml` there is read only if its folder is trusted; otherwise it is skipped with a warning. `--trust-project` (`trustProject: true`) reads it for one run; `onWarning` receives the warning instead of stderr.
+<Tabs syncKey="language">
+<TabItem label="TypeScript">
+
+```ts
+import { formatScenarios, loadScenarios, runScenario } from '@deft-subspace/acp-testkit/node';
+
+const reports = [];
+for (const scenario of await loadScenarios('greeting.scenario.json')) {
+  reports.push(await runScenario(scenario, { baseDir: '.' }));
+}
+console.log(formatScenarios(reports));
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from deft_subspace.acp_testkit import format_scenarios, load_scenarios, run_scenario
+
+reports = [await run_scenario(scenario, base_dir=".") for scenario in load_scenarios("greeting.scenario.json")]
+print(format_scenarios(reports))
+```
+
+</TabItem>
+</Tabs>
+
+- **Agent:** a known name or `{ command, args, env, mode }`; it starts in its ask-first mode unless `mode` says otherwise. A name is looked up in the [agent catalog](../../client/agents-file/) from the scenario file's folder up, so a `subspace.toml` there is read only if its folder is trusted; otherwise it is skipped with a warning. `--trust-project` (`trustProject: true`; Python `trust_project=True`) reads it for one run; `onWarning` receives the warning instead of stderr.
 - **Workspace:** a fresh temporary folder each run, empty or a copy of `workspace.from` (relative to the scenario file).
 - **Permissions:** `allow`, `reject` (the default), `read-only`, or `{ allow: [kinds], reject: [kinds] }`.
 - **Expectations, per turn:** `end` (`completed`, `refused`, `cancelled`, `limit`, `error`), `stopReason`, `text` (`contains`, `notContains`, `matches`), `toolCalls` (`min`, `max`, `titles`, `kinds`, `allCompleted`), `permissions` (`min`, `max`, `titles`), `files` (`exists`, `contains`, `equals`, `matches`), `updates` (`min`, `max`).
 - **Snapshots:** `snapshot` records each turn's outcome (how it ended, its text and its tool calls) the first time and compares later runs with it; `--update` accepts a change. Best for deterministic agents (your own, or replayed ones). A snapshot that is not valid JSON fails and is left as it is. In CI (`--ci`, `requireSnapshots`, on when the `CI` environment variable is set) a missing snapshot fails instead of being written: commit them.
 - **When it fails:** a failure bundle with the trace, the report and the workspace's file list, in its own folder (`--artifacts <dir>`, default under the temp folder). A passing scenario removes its workspace and trace (`--keep`, `keep: true` to keep them).
-- **For CI:** `--junit results.xml` (a test case per turn), `--json`, and exit code 1 when any scenario failed.
+- **For CI:** `--junit results.xml` (a test case per turn), `--json`, and exit code 1 when any scenario failed. In Python, `format_junit(reports)` gives the same XML; there is no CLI yet.
 
 ## The quirks corpus
 
-`packages/acp-testkit/corpus/` holds traces recorded from Grok Build and the Claude and Codex adapters: a plain turn, a cancel mid-stream, and a refused write, for each. The test suite replays them to the client and checks it gets the result recorded live. What they show is on [Quirks](../../behaviour/quirks/).
+`packages/acp-testkit/corpus/` holds traces recorded from Grok Build and the Claude and Codex adapters: a plain turn, a cancel mid-stream, and a refused write, for each. The test suite replays them to the client and checks it gets the result recorded live; the Python tests replay the same files to the Python client. What they show is on [Quirks](../../behaviour/quirks/).
