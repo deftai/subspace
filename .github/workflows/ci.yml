@@ -91,6 +91,7 @@ jobs:
         run: |
           uv build --package deft-subspace-kernel -o dist
           uv build --package deft-subspace-acp -o dist
+          uv build --package deft-subspace-acp-testkit -o dist
       - name: Check metadata
         run: uvx twine check --strict dist/*
       - name: Install the wheels in a clean environment and smoke test

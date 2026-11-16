@@ -1,6 +1,24 @@
 # Changelog
 
-Both distributions, `deft-subspace-kernel` and `deft-subspace-acp`, are released together at the same version.
+The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-subspace-acp-testkit`, are released together at the same version.
+
+## Unreleased
+
+- acp-testkit: `prompt.ends` fails a turn that ends with `stopReason: "error"` (v2), as `cancel.permission` already does. It used to pass. The TypeScript testkit does the same.
+- New distribution `deft-subspace-acp-testkit` (`deft_subspace.acp_testkit`), a port of the TypeScript `@deft-subspace/acp-testkit`. It pins `deft-subspace-kernel` and `deft-subspace-acp` to its own version.
+  - Record and replay: `recorder()`, `tap_channel()`, `record_agent()`, `replace_strings()`, `redact_keys()`, `save_trace()`, `load_trace()`; `replay_agent()` plays the agent side of a trace to a live client and raises `ReplayDivergence` (expected vs got) instead of hanging.
+  - Faults: `fault_channel(channel, read=[...], write=[...])` with `delay`, `disconnect_after`, `close_when(is_update(...))`, and for bytes `rechunk`, `merge`, `coalesce`, `inject_lines`. Any kernel `Transform` works as a fault too.
+  - Conformance: `check_agent()`, `check_agent_process()`, `check_client()` with `acp_client_driver()`; `format_report()`, `failures()`, `apply_waivers()`. A result's verdict is `passed` (`pass` is a Python keyword).
+  - Tool-input robustness: `summarize_tool_input()`, `merge_tool_input()`, `check_tool_input()` (limits as keyword arguments).
+  - Scenarios: `run_scenario()`, `load_scenarios()` (JSON, or a Python module's `scenarios`), `check_turn()`, `format_scenarios()`, `format_junit()`. Scenario files and snapshots are the same JSON as the TypeScript testkit's.
+  - The corpus of real agents' traces is read from `packages/acp-testkit/corpus/`, not copied; the tests replay every trace to `AcpClient` and compare with the result recorded live.
+- Not ported: the `subspace` CLI (`subspace test`, `subspace check`) and the scripts that record new corpus traces from real agents.
+- acp-testkit: five fixes, made the same way in the TypeScript testkit (which had the same bugs):
+  - `replay_agent()`: a recorded `$/cancel_request` from the agent now names the agent's request by the id it was sent with, so the client sees the cancel (it named the recorded id before).
+  - `replay_agent()`: `check(expected, got)` also sees the client's responses to the agent's requests (a permission answer, a file's contents), with `expected`'s id mapped to the live one. Same arguments; a response has no `"method"`, so a check written for calls tells them apart with `"method" in expected`.
+  - `check_agent(only=[...])`: a selected check that needs a session (`config.set-current`, `prompt.ends`, `prompt.updates-before-end`) now gets one without `session.new` being selected; it ran nothing before. If that setup (or initialize) fails, the selected checks that needed it are reported as failed instead of left out, also when `session.new` is selected and fails.
+  - `check_agent()`: a `cancel.permission` turn that fails before it asks for permission is a failure (`prompt failed: ...`: on v1 the prompt request fails, on v2 the turn ends with `stopReason: "error"`); it was reported as skipped.
+  - `check_client()`: `fs.outside-workspace` writes to fresh random names (`deft-testkit-outside-<random>`) checked not to exist, and removes only those; it wrote to fixed names beside the workspace and deleted them, so it could overwrite and remove a file of yours.
 
 ## Unreleased
 

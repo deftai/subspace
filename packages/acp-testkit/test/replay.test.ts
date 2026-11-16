@@ -182,6 +182,58 @@ test('check makes params matter when you want them to', async () => {
   await assert.rejects(replay.done, ReplayDivergence);
 });
 
+test("the agent's $/cancel_request names its own request by the live id", async () => {
+  const at = (dir: 'in' | 'out', msg: unknown) => JSON.stringify({ v: 1, kind: 'message', t: 0, dir, msg });
+  const text = [
+    JSON.stringify({ v: 1, kind: 'header', started: new Date(0).toISOString(), peer: 'client' }),
+    at('in', { jsonrpc: '2.0', id: 'permission-7', method: 'x/ask', params: {} }),
+    at('in', { jsonrpc: '2.0', method: '$/cancel_request', params: { requestId: 'permission-7' } }),
+    at('out', { jsonrpc: '2.0', id: 'permission-7', error: { code: -32800, message: 'cancelled' } }),
+  ].join('\n');
+  const [agentEnd, clientEnd] = channelPair<unknown>();
+  const replay = replayAgent(agentEnd, text);
+  const reader = clientEnd.readable.getReader();
+  const writer = clientEnd.writable.getWriter();
+  const ask = (await reader.read()).value as { id: unknown; method: string };
+  assert.equal(ask.method, 'x/ask');
+  assert.notEqual(ask.id, 'permission-7');
+  const cancel = (await reader.read()).value as { method: string; params: { requestId: unknown } };
+  assert.equal(cancel.method, '$/cancel_request');
+  assert.equal(cancel.params.requestId, ask.id);
+  await writer.write({ jsonrpc: '2.0', id: ask.id, error: { code: -32800, message: 'cancelled' } });
+  await replay.done;
+  await writer.close();
+});
+
+test("check sees the client's answers to the agent's requests, with live ids", async () => {
+  const at = (dir: 'in' | 'out', msg: unknown) => JSON.stringify({ v: 1, kind: 'message', t: 0, dir, msg });
+  const text = [
+    JSON.stringify({ v: 1, kind: 'header', started: new Date(0).toISOString(), peer: 'client' }),
+    at('in', { jsonrpc: '2.0', id: 'perm-1', method: 'x/ask', params: {} }),
+    at('out', { jsonrpc: '2.0', id: 'perm-1', result: { answer: 'yes' } }),
+  ].join('\n');
+  for (const answer of ['yes', 'no']) {
+    const [agentEnd, clientEnd] = channelPair<unknown>();
+    const checked: Array<[unknown, unknown]> = [];
+    const replay = replayAgent(agentEnd, text, {
+      check: (expected, got) => {
+        checked.push([expected.id, got.id]);
+        if ('method' in expected) return undefined;
+        return JSON.stringify(expected.result) === JSON.stringify(got.result) ? undefined : `answered ${JSON.stringify(got.result)}`;
+      },
+    });
+    const peer = new RpcPeer(clientEnd);
+    peer.onRequest('x/ask', () => ({ answer }));
+    peer.start();
+    if (answer === 'yes') await replay.done;
+    else await assert.rejects(replay.done, (e) => e instanceof ReplayDivergence && /answered \{"answer":"no"\}/.test(e.message));
+    assert.equal(checked.length, 1);
+    assert.notEqual(checked[0]![0], 'perm-1');
+    assert.equal(checked[0]![0], checked[0]![1]);
+    await peer.close();
+  }
+});
+
 test('pace keeps the recorded gaps', async () => {
   const at = (t: number, dir: 'in' | 'out', msg: unknown) => ({ v: 1 as const, kind: 'message' as const, t, dir, msg });
   const records: TraceRecord[] = [
