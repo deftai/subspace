@@ -685,7 +685,7 @@ def format_scenarios(reports: Sequence[ScenarioReport]) -> str:
 
 # Control characters (other than tab and newlines), U+FFFE, U+FFFF and lone surrogates are not
 # allowed in XML at all: dropped.
-_NOT_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿\ud800-\udfff]")
+_NOT_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff\ud800-\udfff]")
 _XML_ESCAPES = {"<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;"}
 
 
