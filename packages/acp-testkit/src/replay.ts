@@ -12,7 +12,7 @@
  *   client sends together may arrive in another order than recorded: one is
  *   matched with any of the next few recorded ones (`window`). Their params
  *   may differ (pass `check` to be stricter). Responses to the agent's
- *   requests are matched by id.
+ *   requests are matched by id (and passed to `check` too).
  * - JSON-RPC ids are remapped both ways: recorded answers go out with the
  *   client's live ids, and the agent's requests get fresh ids.
  * - When the client sends something else, or nothing within `waitMs`, the
@@ -40,6 +40,10 @@ export interface ReplayOptions {
    * Compare a client message with the recorded one (both whole JSON-RPC
    * messages; `expected` has its ids mapped to the live ones). Return a
    * description to stop the replay as diverged.
+   *
+   * It sees the client's requests and notifications, and its responses to the
+   * agent's requests (a permission answer, a file's contents). A response has
+   * no `method`: check `'method' in expected` to tell them apart.
    */
   check?: (expected: Record<string, unknown>, got: Record<string, unknown>) => string | undefined | void;
 }
@@ -189,7 +193,8 @@ export function replayAgent(channel: Channel<unknown>, trace: readonly TraceReco
       return { ...rest, id: live };
     }
     if (rest.method === '$/cancel_request' && isRecord(rest.params)) {
-      const live = clientIds.get(key(rest.params.requestId));
+      // The agent cancels one of its own requests, which went out with a fresh id.
+      const live = agentIds.get(key(rest.params.requestId));
       if (live !== undefined) return { ...rest, params: { ...rest.params, requestId: live } };
     }
     return rest;
@@ -237,6 +242,8 @@ export function replayAgent(channel: Channel<unknown>, trace: readonly TraceReco
           return r;
         });
         if (!got) await diverge(`expected the client to answer request "${methodOf(expected)}", got ${silence()}`);
+        const complaint = options.check?.(live === undefined ? expected : { ...expected, id: live }, got!);
+        if (complaint) await diverge(complaint, got);
         continue;
       }
 

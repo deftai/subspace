@@ -14,6 +14,7 @@ import asyncio
 import inspect
 import json
 import os
+import secrets
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Protocol
@@ -284,16 +285,18 @@ async def check_client(
                     written.append(str(params["path"]))
                 tried.append(f"{method} {params['path']}: allowed")
 
-            if fs.get("writeTextFile"):
-                await attempt("fs/write_text_file", {"path": f"{base}/../deft-testkit-outside.txt", "content": "deft-testkit"})
-                await attempt(
-                    "fs/write_text_file", {"path": f"{base}-deft-testkit-outside/escape.txt", "content": "deft-testkit"}
-                )
+            # Fresh names that exist nowhere yet, so a client that lets the writes through
+            # clobbers nothing, and whatever is there afterwards is the client's write.
+            probe = await asyncio.to_thread(_fresh_probe, base) if fs.get("writeTextFile") else None
+            if probe is not None:
+                up, folder = probe
+                await attempt("fs/write_text_file", {"path": up, "content": "deft-testkit"})
+                await attempt("fs/write_text_file", {"path": f"{folder}/escape.txt", "content": "deft-testkit"})
             if fs.get("readTextFile") and outside_file:
                 await attempt("fs/read_text_file", {"path": outside_file})
             # A client that let the writes through leaves files behind: remove them (when it shares our file system).
-            if written:
-                await asyncio.to_thread(_remove_written, written, f"{base}-deft-testkit-outside")
+            if written and probe is not None:
+                await asyncio.to_thread(_remove_written, written, probe[1])
             if not tried:
                 return Outcome(
                     True, "the client can only read files; pass outside_file to try a read outside the workspace", skipped=True
@@ -325,8 +328,21 @@ async def check_client(
     return report
 
 
+def _fresh_probe(base: str) -> tuple[str, str]:
+    """Paths outside the workspace at `base` for the write probes: a file up out of it
+    (`base/../`) and a folder beside it whose name starts like it. Their random names are
+    checked not to exist."""
+    for _ in range(10):
+        id = secrets.token_hex(6)
+        up, folder = f"{base}/../deft-testkit-outside-{id}.txt", f"{base}-deft-testkit-outside-{id}"
+        if not os.path.lexists(up) and not os.path.lexists(folder):
+            return up, folder
+    raise RuntimeError("found no unused name for the files to write outside the workspace")
+
+
 def _remove_written(paths: list[str], folder: str) -> None:
-    """Best effort: the test files, then the folder made for one."""
+    """Best effort: the files the client wrote, then the folder made for one. Their names were
+    fresh (`_fresh_probe`), so nothing removed here was anyone else's."""
     for path in paths:
         try:
             os.remove(path)

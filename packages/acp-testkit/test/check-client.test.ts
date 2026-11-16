@@ -4,9 +4,9 @@
  */
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import * as officialV1 from '@agentclientprotocol/sdk';
 import type { PermissionHandler } from '@deft-subspace/acp';
@@ -60,8 +60,14 @@ test('AcpClient without file access: the fs check is skipped; a reject policy st
   assert.match(report[1]!.detail, /before the cancel/);
 });
 
-test('a careless official-SDK client fails the checks it breaks, and the files it wrote outside are removed', async () => {
+test("a careless official-SDK client fails the checks it breaks; the files it wrote outside are removed, and no one else's", async () => {
   const { root, cwd } = await workspace();
+  // The user's own files, where earlier versions of the check wrote (and then deleted).
+  const mine = [join(root, 'deft-testkit-outside.txt'), join(`${cwd}-deft-testkit-outside`, 'escape.txt')];
+  for (const path of mine) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, 'mine');
+  }
   const written: string[] = [];
   const report = await checkClient(async (channel) => {
     let sessionId = '';
@@ -108,8 +114,12 @@ test('a careless official-SDK client fails the checks it breaks, and the files i
   ]);
   assert.match(report[1]!.detail, /"selected".*session\/cancel sent/);
   assert.deepEqual(written.map((p) => dirname(p) === cwd), [false, false]);
-  assert.equal(existsSync(join(root, 'deft-testkit-outside.txt')), false);
-  assert.equal(existsSync(`${cwd}-deft-testkit-outside`), false);
+  // Fresh paths, the same escapes: up out of the workspace, and a sibling folder whose name starts like it.
+  assert.equal(resolve(dirname(written[0]!)), root);
+  assert.ok(dirname(written[1]!).startsWith(`${cwd}-deft-testkit-outside-`), written[1]);
+  for (const path of mine) assert.equal(await readFile(path, 'utf8'), 'mine');
+  for (const path of written) assert.equal(existsSync(path), false, path);
+  assert.equal(existsSync(dirname(written[1]!)), false);
 });
 
 /** An official-SDK v1 client; `onCancel` is what its driver does when the user cancels. */

@@ -17,7 +17,7 @@ In Python it is `deft_subspace.acp_testkit` (`deft-subspace-acp-testkit`), with 
 ## Record and replay
 
 - `recordAgent(command, options)` (from `./node`) runs a real agent and records the connection. `recorder()` gives a `tap` for any peer or client, and `tapChannel()` records any channel. `replaceStrings()` and `redactKeys()` keep paths and identities out of traces.
-- `replayAgent(channel, trace)` plays the agent's side back to a live client. It remaps ids, matches the client's calls by method in order, tolerates different params, and rejects `done` with a `ReplayDivergence` (expected vs got) instead of hanging.
+- `replayAgent(channel, trace)` plays the agent's side back to a live client. It remaps ids, matches the client's calls by method in order, tolerates different params, and rejects `done` with a `ReplayDivergence` (expected vs got) instead of hanging. Pass `check(expected, got)` to be stricter: it sees each of the client's requests and notifications, and its answers to the agent's requests (a response has no `method`), and returns a description to stop the replay as diverged.
 
 <Tabs syncKey="language">
 <TabItem label="TypeScript">
@@ -82,6 +82,7 @@ noisy = ndjson(fault_channel(byte_channel, read=[inject_lines(), rechunk(3)]))
 
 - `checkAgent(channel, options)` drives any agent and reports each check; `checkAgentProcess(command, options)` starts a program and checks it. `waive: { checkId: reason }` turns a known failure into `WAIVE`; An agent's quirks carry its waivers (`resolveAgent(catalog, name).waivers`; see [agents files](/subspace/client/agents-file/)), which `subspace check <agent>` applies (`--strict` to not).
 - `checkClient(connect)` plays an agent against any client; `acpClientDriver()` connects ours.
+- `only: [ids]` runs just those checks. The setup they need (initialize, the first session) still runs, unreported; if it fails, they fail.
 - From the command line: `node --conditions=subspace-source packages/acp-testkit/scripts/check-agent.ts <agent command>`, with `ONLY` to pick checks and `MODE` to switch each session to a mode first.
 
 <Tabs syncKey="language">
