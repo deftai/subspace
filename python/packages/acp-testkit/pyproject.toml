@@ -1,6 +1,6 @@
 [project]
 name = "deft-subspace-acp-testkit"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Test ACP agents and clients: record and replay traces, inject faults, run conformance checks and scenarios, and replay a corpus of real agents' quirks."
 keywords = ["agent-client-protocol", "acp", "agents", "testing", "conformance", "asyncio"]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 # Released with the kernel and acp, at the same version.
-dependencies = ["deft-subspace-kernel==0.1.0a1", "deft-subspace-acp==0.1.0a1"]
+dependencies = ["deft-subspace-kernel==0.1.0a2", "deft-subspace-acp==0.1.0a2"]
 
 [project.urls]
 Homepage = "https://github.com/deftai/subspace/tree/main/python"
