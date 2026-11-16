@@ -330,7 +330,9 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
         ? { pass: false, detail: `no end within ${turnTimeout} ms (v${v})` }
         : watch.error
           ? { pass: false, detail: `prompt failed: ${message(watch.error)}` }
-          : { pass: !!watch.stopReason, detail: `v${v}, stopReason ${watch.stopReason}` }
+          : watch.stopReason === 'error'
+            ? { pass: false, detail: 'prompt failed: stopReason error' }
+            : { pass: !!watch.stopReason, detail: `v${v}, stopReason ${watch.stopReason}` }
     );
     await check('prompt.updates-before-end', async () => {
       const content = watch.updates.filter((u) => u.sessionUpdate !== 'state_update').length;

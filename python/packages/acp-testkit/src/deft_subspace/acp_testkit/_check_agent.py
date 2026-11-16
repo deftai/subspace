@@ -412,6 +412,8 @@ async def check_agent(
                 return Outcome(False, f"no end within {_plain(turn_timeout)} ms (v{v})")
             if watch.error is not None:
                 return Outcome(False, f"prompt failed: {message(watch.error)}")
+            if watch.stop_reason == "error":
+                return Outcome(False, "prompt failed: stopReason error")
             return Outcome(bool(watch.stop_reason), f"v{v}, stopReason {watch.stop_reason}")
 
         async def updates_before_end() -> Outcome:

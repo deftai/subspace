@@ -4,6 +4,7 @@ The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-s
 
 ## Unreleased
 
+- acp-testkit: `prompt.ends` fails a turn that ends with `stopReason: "error"` (v2), as `cancel.permission` already does. It used to pass. The TypeScript testkit does the same.
 - New distribution `deft-subspace-acp-testkit` (`deft_subspace.acp_testkit`), a port of the TypeScript `@deft-subspace/acp-testkit`. It pins `deft-subspace-kernel` and `deft-subspace-acp` to its own version.
   - Record and replay: `recorder()`, `tap_channel()`, `record_agent()`, `replace_strings()`, `redact_keys()`, `save_trace()`, `load_trace()`; `replay_agent()` plays the agent side of a trace to a live client and raises `ReplayDivergence` (expected vs got) instead of hanging.
   - Faults: `fault_channel(channel, read=[...], write=[...])` with `delay`, `disconnect_after`, `close_when(is_update(...))`, and for bytes `rechunk`, `merge`, `coalesce`, `inject_lines`. Any kernel `Transform` works as a fault too.
