@@ -305,7 +305,15 @@ class _TurnWriter:
         self.open: set[str] = set()
         #: The turn's terminals (v2), until they exit or are detached.
         self.terminals: set[Work] = set()
-        self.turn_id = _random_uuid()[:8]
+        self._turn_id: str | None = None
+
+    @property
+    def turn_id(self) -> str:
+        """The prefix of the turn's message ids, made the first time one is needed (a turn that
+        streams nothing never needs one, and a random id costs a system call)."""
+        if self._turn_id is None:
+            self._turn_id = _random_uuid()[:8]
+        return self._turn_id
 
     def update(self, update: dict[str, Any]) -> Awaitable[None]:
         return self.peer.notify("session/update", {"sessionId": self.session_id, "update": update})
@@ -436,6 +444,7 @@ class AgentTurn:
         servers: list[McpServer],
         mcp_caller: McpCaller | None,
         connections: SessionMcpConnections | None,
+        client_supports: ClientSupport | None = None,
     ) -> None:
         self._writer = writer
         self._mcp_caller = mcp_caller
@@ -445,7 +454,9 @@ class AgentTurn:
         #: What the client said it can do in initialize (v1 `clientCapabilities`, v2 `capabilities`).
         self.client_capabilities = client_capabilities
         #: The same, as one shape for v1 and v2.
-        self.client_supports: ClientSupport = client_support(writer.protocol, client_capabilities)
+        self.client_supports: ClientSupport = (
+            client_supports if client_supports is not None else client_support(writer.protocol, client_capabilities)
+        )
         #: The session's MCP servers, typed (from session/new, load or resume).
         self.mcp_servers: list[McpServer] = servers
         self.prompt = prompt
@@ -777,6 +788,13 @@ class _Negotiated:
     client_capabilities: dict[str, Any]
     #: initialize was answered: a second one is refused (the protocol can't change mid-connection).
     initialized: bool = False
+    _supports: ClientSupport | None = field(default=None, repr=False, compare=False)
+
+    def supports(self) -> ClientSupport:
+        """`client_support()` of the above, worked out once per connection rather than per turn."""
+        if self._supports is None:
+            self._supports = client_support(self.protocol, self.client_capabilities)
+        return self._supports
 
 
 NEGOTIATED: StateKey[_Negotiated] = state_key("negotiated")
@@ -1169,6 +1187,7 @@ def _turns_layer(options: _Options) -> AgentLayer[None]:
             session.servers,
             mcp_part.caller if mcp_part is not None else None,
             sessions.part(session, "mcp"),
+            negotiated.supports(),
         )
         # Wait for the turn ahead (if any), in order.
         ahead = turns.turns[-1].ended if turns.turns else None

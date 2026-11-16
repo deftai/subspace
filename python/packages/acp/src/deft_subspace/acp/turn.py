@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
 from typing import Any, Literal, Union
 
@@ -115,9 +116,11 @@ class Turn:
         self._spawn = spawn or self._keep
         self._tasks: set[asyncio.Task[Any]] = set()
         loop = asyncio.get_running_loop()
+        # Iterating without awaiting the result must not log "exception was never retrieved":
+        # `_set_done()` marks a failure as seen when it sets it.
         self._done: asyncio.Future[TurnResult] = loop.create_future()
-        # Iterating without awaiting the result must not log "exception was never retrieved".
-        self._done.add_done_callback(lambda f: f.cancelled() or f.exception())
+        #: The futures that tasks awaiting the turn wait on; settled along with `_done`.
+        self._awaiting: list[asyncio.Future[TurnResult]] = []
         #: Runs the turn's handlers; the result waits for it.
         self._observer: asyncio.Task[None] | None = None
         self._handler_failed: list[BaseException] = []
@@ -178,7 +181,20 @@ class Turn:
         return asyncio.shield(self._done)
 
     def __await__(self) -> Generator[Any, None, TurnResult]:
-        return asyncio.shield(self._done).__await__()
+        # What `asyncio.shield(self._done)` does (a cancelled awaiter does not cancel the turn),
+        # with one trip through the event loop instead of two: the turn settles the awaiter's
+        # future itself, where shield settles it from a callback of its own.
+        done = self._done
+        if done.done():
+            return done.result()
+        waiter: asyncio.Future[TurnResult] = done.get_loop().create_future()
+        self._awaiting.append(waiter)
+        try:
+            return (yield from waiter.__await__())
+        finally:
+            if not waiter.done() or waiter.cancelled():
+                with contextlib.suppress(ValueError):
+                    self._awaiting.remove(waiter)
 
     async def cancel(self) -> None:
         """Ask the agent to stop. Returns once the request is sent; await the turn for the end."""
@@ -267,7 +283,7 @@ class Turn:
         self._trim()
         self._finished = (True, result)
         self._wake()
-        self._settle(lambda: self._done.done() or self._done.set_result(result))
+        self._settle(lambda: self._set_done(result))
 
     def fail(self, error: BaseException) -> None:
         if self._finished is not None:
@@ -276,7 +292,7 @@ class Turn:
         self._trim()
         self._finished = (False, error)
         self._wake()
-        self._settle(lambda: self._done.done() or self._done.set_exception(error))
+        self._settle(lambda: self._set_done(error=error))
 
     def observe(self, handlers: TurnHandlers) -> None:
         """Run `handlers` for every event, in order, one at a time. The result is ready after
@@ -349,12 +365,30 @@ class Turn:
 
         def after(_task: asyncio.Task[None]) -> None:
             if self._handler_failed:
-                if not self._done.done():
-                    self._done.set_exception(self._handler_failed[0])
+                self._set_done(error=self._handler_failed[0])
             else:
                 complete()
 
         observer.add_done_callback(after)
+
+    def _set_done(self, result: TurnResult | None = None, error: BaseException | None = None) -> None:
+        """Settle the result, once, and every task awaiting the turn with it."""
+        if self._done.done():
+            return
+        if error is not None:
+            self._done.set_exception(error)
+            # Marks it retrieved; whoever awaits the turn still gets the error.
+            self._done.exception()
+        else:
+            self._done.set_result(result)  # type: ignore[arg-type]  # a result when there is no error
+        awaiting, self._awaiting = self._awaiting, []
+        for waiter in awaiting:
+            if waiter.done():
+                continue
+            if error is not None:
+                waiter.set_exception(error)
+            else:
+                waiter.set_result(result)  # type: ignore[arg-type]
 
     def _keep(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coroutine)

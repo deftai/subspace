@@ -457,12 +457,17 @@ class _StdioChannel:
     _started: bool = False
     _ended: bool = False
     _closed: bool = False
-    #: (bytes, the sender's loop, a future for the result); None ends the writer.
-    _writes: queue.SimpleQueue[tuple[bytes | None, asyncio.AbstractEventLoop, asyncio.Future[None]] | None] = field(default_factory=queue.SimpleQueue)
+    #: (bytes, the sender's loop and a future for the result, or None and None when nobody waits
+    #: for this frame); None ends the writer.
+    _writes: queue.SimpleQueue[
+        tuple[bytes | None, asyncio.AbstractEventLoop | None, asyncio.Future[None] | None] | None
+    ] = field(default_factory=queue.SimpleQueue)
     _writing: bool = False
-    #: Bytes queued for the writer thread and not yet written.
-    _unwritten: int = 0
-    #: The first write that failed; later sends raise it.
+    #: Bytes queued for the writer thread (counted by the loop) and bytes it is done with,
+    #: written or failed (counted by the thread). Each side only adds to its own.
+    _queued: int = 0
+    _written: int = 0
+    #: The first write that failed (set by the writer thread); later sends raise it.
     _failure: BaseException | None = None
     #: The atexit hook that lets the writer finish; unregistered once close() has flushed.
     _drain: Callable[[], None] | None = None
@@ -502,6 +507,11 @@ class _StdioChannel:
             self._ended = True
             raise EndOfChannel()
         return item
+
+    @property
+    def _unwritten(self) -> int:
+        """Bytes queued for the writer thread and not yet written."""
+        return self._queued - self._written
 
     def _start_writer(self) -> None:
         if self._writing:
@@ -547,8 +557,14 @@ class _StdioChannel:
                         self.writer.flush()
                     except (OSError, ValueError) as error:
                         failed = error
+                        if self._failure is None:
+                            self._failure = error
+                self._written += sum(len(data) for data, _loop, _future in batch if data is not None)
+                # Only the frames someone waits for go back to the loop: a wake-up per frame
+                # would cost more than the write.
                 for _data, loop, future in batch:
-                    settle(loop, future, failed)
+                    if loop is not None and future is not None:
+                        settle(loop, future, failed)
 
         thread = threading.Thread(target=run, name="serve_stdio:stdout", daemon=True)
         thread.start()
@@ -564,6 +580,7 @@ class _StdioChannel:
         atexit.register(drain)
 
     def _enqueue(self, data: bytes | None) -> asyncio.Future[None]:
+        """Queue a frame (or, for None, only a marker) and a future that settles once it is written."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[None] = loop.create_future()
         self._start_writer()
@@ -582,20 +599,16 @@ class _StdioChannel:
             raise ChannelClosed("stdout closed")
         if self._failure is not None:
             raise ChannelClosed(str(self._failure))
-        future = self._enqueue(item)
         size = len(item)
-        self._unwritten += size
-
-        def written(done: asyncio.Future[None]) -> None:
-            self._unwritten -= size
-            if not done.cancelled() and done.exception() is not None and self._failure is None:
-                self._failure = done.exception()
-
-        future.add_done_callback(written)
-        if self._unwritten > _WINDOW or size >= _LARGE:
-            # Shielded: once queued, the frame is written whole whatever happens to this send.
-            # Frames are written in order, so this one done means every earlier one is too.
-            await asyncio.shield(future)
+        self._queued += size
+        if self._queued - self._written <= _WINDOW and size < _LARGE:
+            # Nobody waits for this frame, so the writer thread need not tell the loop it is out.
+            self._start_writer()
+            self._writes.put((item, None, None))
+            return
+        # Shielded: once queued, the frame is written whole whatever happens to this send.
+        # Frames are written in order, so this one done means every earlier one is too.
+        await asyncio.shield(self._enqueue(item))
 
     async def close(self) -> None:
         """End our side: what was sent is written and flushed first."""

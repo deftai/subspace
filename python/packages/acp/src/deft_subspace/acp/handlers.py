@@ -122,6 +122,9 @@ _ANSWERING = ("on_permission", "on_question")
 
 def merge_handlers(defaults: TurnHandlers | None, options: dict[str, Any]) -> TurnHandlers | None:
     """The handlers in `options`, over `defaults`; None when there are none."""
+    if not options:
+        # No handlers for this turn (the common case): the defaults as they are (they are frozen).
+        return defaults if defaults is not None and any(getattr(defaults, key) is not None for key in HANDLER_KEYS) else None
     changes: dict[str, Any] = {}
     for key in HANDLER_KEYS:
         value = options.get(key)

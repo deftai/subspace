@@ -92,3 +92,21 @@ def test_encoder_raises_for_an_unserializable_value_and_keeps_working():
             encoder.feed(value)
     assert b"".join(encoder.feed({"b": 2})) == b'{"b":2}\n'
     assert len(errors) == 3
+
+
+def test_lines_decode_and_encode_as_json_loads_and_dumps_would():
+    """The codec keeps one decoder and one encoder; what they accept and refuse is unchanged."""
+    import json
+
+    diagnostics: list[FramingDiagnostic] = []
+    lines = b'{"a":1}\n\xef\xbb\xbf{"b":2}\n{"n":NaN}\n{"c":"\xc3\xa9"}\n'
+    # The stream's first byte order mark is skipped; one at the start of a later line is not JSON.
+    assert decode([b"\xef\xbb\xbf" + lines], on_diagnostic=diagnostics.append) == [{"a": 1}, {"c": "é"}]
+    assert [d.kind for d in diagnostics] == ["invalid-json", "invalid-json"]
+    with pytest.raises(ValueError) as bom:
+        json.loads('﻿{"b":2}')
+    assert str(diagnostics[0].error) == str(bom.value)
+    assert "NaN" in str(diagnostics[1].error)
+    value = {"text": "é ✓", "list": [1, 2.5, None, True], "nested": {"k": "v"}}
+    expected = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    assert b"".join(ndjson_encoder().feed(value)) == (expected + "\n").encode()

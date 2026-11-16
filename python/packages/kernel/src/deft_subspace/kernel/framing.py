@@ -32,6 +32,12 @@ def _no_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 
 
+# One decoder and one encoder for every line: json.loads() and json.dumps() build a new
+# one per call whenever they are given options, which costs more than a small message's parsing.
+_DECODE = json.JSONDecoder(parse_constant=_no_constant).decode
+_ENCODE = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode
+
+
 class NdjsonDecoder:
     """Split bytes into JSON values, one per line.
 
@@ -68,7 +74,8 @@ class NdjsonDecoder:
         if not text.strip():
             return
         try:
-            out.append(json.loads(text, parse_constant=_no_constant))
+            # json.loads() refuses a leading byte order mark with its own message; keep it.
+            out.append(json.loads(text, parse_constant=_no_constant) if text[0] == "\ufeff" else _DECODE(text))
         except ValueError as error:
             self._report(FramingDiagnostic("invalid-json", len(text), text[:200], error))
 
@@ -133,7 +140,7 @@ class NdjsonEncoder:
 
     def feed(self, value: Any) -> Iterable[bytes]:
         try:
-            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            text = _ENCODE(value)
         except (TypeError, ValueError, RecursionError) as error:
             if self._on_error is not None:
                 try:
