@@ -161,7 +161,7 @@ async def check_agent(
             report.append(await run_check(id, AGENT_CHECKS[id], body))
 
     def setup_failed(ids: Sequence[str], detail: str) -> None:
-        """Setup that failed and was not reported itself (not in `only`): fail the selected checks that needed it."""
+        """Setup that failed: fail the selected checks that needed it, so none is left out of the report."""
         for id in ids:
             if wanted(id):
                 report.append(CheckResult(id, AGENT_CHECKS[id], False, detail))
@@ -335,7 +335,12 @@ async def check_agent(
     session_failed: str | None = None
 
     async def session_new() -> Outcome:
-        holder.append(await new_session())
+        nonlocal session_failed
+        try:
+            holder.append(await new_session())
+        except Exception as error:
+            session_failed = f"session/new failed: {message(error)}"
+            raise
         return Outcome(True, f"sessionId {holder[0]}")
 
     if wanted("session.new"):
@@ -491,6 +496,9 @@ async def check_agent(
                     return Outcome(False, f"the turn neither asked permission nor ended within {_plain(turn_timeout)} ms")
                 if watch.error is not None:
                     return Outcome(False, f"prompt failed: {message(watch.error)}")
+                # v2 answers the prompt request at once and reports a failed turn as its stop reason.
+                if watch.stop_reason == "error":
+                    return Outcome(False, "prompt failed: stopReason error")
                 return Outcome(True, f"the agent asked no permission (stopReason {watch.stop_reason})", skipped=True)
             ended = await within(watch.ended.wait(), grace, TIMED_OUT, cancel=True)
             permission_handlers.pop(id, None)

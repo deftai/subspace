@@ -137,7 +137,7 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   const check = async (id: keyof typeof AGENT_CHECKS, body: Parameters<typeof runCheck>[2]) => {
     if (wanted(id)) report.push(await runCheck(id, AGENT_CHECKS[id], body));
   };
-  /** Setup that failed and was not reported itself (not in `only`): fail the selected checks that needed it. */
+  /** Setup that failed: fail the selected checks that needed it, so none is left out of the report. */
   const setupFailed = (ids: ReadonlyArray<keyof typeof AGENT_CHECKS>, detail: string) => {
     for (const id of ids) if (wanted(id)) report.push({ id, title: AGENT_CHECKS[id], pass: false, detail });
   };
@@ -267,7 +267,12 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
   let sessionFailed: string | undefined;
   if (wanted('session.new')) {
     await check('session.new', async () => {
-      sessionId = await newSession();
+      try {
+        sessionId = await newSession();
+      } catch (error) {
+        sessionFailed = `session/new failed: ${message(error)}`;
+        throw error;
+      }
       return { pass: true, detail: `sessionId ${sessionId}` };
     });
   } else if ((['config.set-current', 'prompt.ends', 'prompt.updates-before-end'] as const).some(wanted)) {
@@ -392,6 +397,8 @@ export async function checkAgent(channel: Channel<unknown>, options: CheckAgentO
         // A turn that hangs is a failure; only one that ends without asking is skipped.
         if (first === TIMED_OUT) return { pass: false, detail: `the turn neither asked permission nor ended within ${turnTimeout} ms` };
         if (watch.error) return { pass: false, detail: `prompt failed: ${message(watch.error)}` };
+        // v2 answers the prompt request at once and reports a failed turn as its stop reason.
+        if (watch.stopReason === 'error') return { pass: false, detail: 'prompt failed: stopReason error' };
         return { pass: true, skipped: true, detail: `the agent asked no permission (stopReason ${watch.stopReason})` };
       }
       const ended = await within(watch.ended, grace, TIMED_OUT);

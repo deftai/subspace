@@ -15,8 +15,8 @@ The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-s
 - acp-testkit: five fixes, made the same way in the TypeScript testkit (which had the same bugs):
   - `replay_agent()`: a recorded `$/cancel_request` from the agent now names the agent's request by the id it was sent with, so the client sees the cancel (it named the recorded id before).
   - `replay_agent()`: `check(expected, got)` also sees the client's responses to the agent's requests (a permission answer, a file's contents), with `expected`'s id mapped to the live one. Same arguments; a response has no `"method"`, so a check written for calls tells them apart with `"method" in expected`.
-  - `check_agent(only=[...])`: a selected check that needs a session (`config.set-current`, `prompt.ends`, `prompt.updates-before-end`) now gets one without `session.new` being selected; it ran nothing before. If that setup (or initialize) fails, the selected checks that needed it are reported as failed instead of left out.
-  - `check_agent()`: a `cancel.permission` turn that fails before it asks for permission is a failure (`prompt failed: ...`); it was reported as skipped.
+  - `check_agent(only=[...])`: a selected check that needs a session (`config.set-current`, `prompt.ends`, `prompt.updates-before-end`) now gets one without `session.new` being selected; it ran nothing before. If that setup (or initialize) fails, the selected checks that needed it are reported as failed instead of left out, also when `session.new` is selected and fails.
+  - `check_agent()`: a `cancel.permission` turn that fails before it asks for permission is a failure (`prompt failed: ...`: on v1 the prompt request fails, on v2 the turn ends with `stopReason: "error"`); it was reported as skipped.
   - `check_client()`: `fs.outside-workspace` writes to fresh random names (`deft-testkit-outside-<random>`) checked not to exist, and removes only those; it wrote to fixed names beside the workspace and deleted them, so it could overwrite and remove a file of yours.
 
 ## 0.1.0a1
