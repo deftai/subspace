@@ -446,7 +446,12 @@ class RpcPeer:
             if error is not None:
                 self._settle(key, error=LocalError("send-failed", f"{self.name}: could not send {method}", method=method, cause=error))
 
-        self._write(message).add_done_callback(on_written)
+        written = self._write(message)
+        if written.done():
+            # Written already (the writer runs eagerly): no callback round through the loop.
+            on_written(written)
+        else:
+            written.add_done_callback(on_written)
         try:
             return await future
         except asyncio.CancelledError:

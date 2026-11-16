@@ -268,6 +268,35 @@ async def test_stdio_send_returns_once_queued_waits_past_the_window_and_raises_a
         await channel.send(b"next\n")
 
 
+async def test_stdio_frames_nobody_waits_for_do_not_wake_the_loop_when_written():
+    import asyncio
+    import io
+
+    from deft_subspace.acp._start import _StdioChannel
+
+    loop = asyncio.get_running_loop()
+    calls: list[object] = []
+    original = loop.call_soon_threadsafe
+
+    def counting(callback, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(callback)
+        return original(callback, *args, **kwargs)
+
+    out = io.BytesIO()
+    channel = _StdioChannel(reader=None, writer=out)
+    loop.call_soon_threadsafe = counting  # type: ignore[method-assign]
+    try:
+        for i in range(100):
+            await channel.send(f"frame {i}\n".encode())
+        await channel.close()
+    finally:
+        del loop.call_soon_threadsafe  # type: ignore[misc]
+    assert out.getvalue().decode().split("\n")[:-1] == [f"frame {i}" for i in range(100)]
+    # Only close() waits, so only its marker is reported back.
+    assert len(calls) == 1
+    assert channel._unwritten == 0
+
+
 def test_stdio_frames_queued_when_the_program_ends_are_still_written():
     """An agent that returns from main as soon as its peer is closed must not lose its last
     replies: the writer thread is a daemon, and sends return before their frames are written."""

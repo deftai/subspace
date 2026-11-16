@@ -307,3 +307,61 @@ async def test_a_turns_repr_shows_a_session_cancel_and_a_failed_handler():
         await asyncio.wait_for(failing.done, 3)
     assert " failed: ValueError, " in repr(failing), repr(failing)
     await client.close()
+
+
+async def _await(turn: Turn) -> Any:
+    return await turn
+
+
+async def test_awaiting_a_turn_shields_it_and_every_awaiter_gets_the_result_or_the_error():
+    from deft_subspace.acp.model import TurnResult
+
+    async def on_cancel() -> None:
+        pass
+
+    turn = Turn("t1", on_cancel)
+    first = asyncio.ensure_future(_await(turn))
+    second = asyncio.ensure_future(_await(turn))
+    cancelled = asyncio.ensure_future(_await(turn))
+    await asyncio.sleep(0)
+    assert len(turn._awaiting) == 3
+    # Cancelling a task that awaits the turn does not cancel the turn, and lets go of its waiter.
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert len(turn._awaiting) == 2 and not turn._done.done()
+    result = TurnResult(stop_reason="end_turn", text="hi", tool_calls=[], cancelled=False)
+    turn.finish(result)
+    assert await first is result and await second is result
+    assert turn._awaiting == []
+    # Once done, awaiting returns at once.
+    assert await turn is result
+
+    failed = Turn("t2", on_cancel)
+    waiters = [asyncio.ensure_future(_await(failed)) for _ in range(2)]
+    await asyncio.sleep(0)
+    failed.fail(ValueError("boom"))
+    for waiter in waiters:
+        with pytest.raises(ValueError, match="boom"):
+            await waiter
+    with pytest.raises(ValueError, match="boom"):
+        await failed
+    # A failed turn nobody awaits does not log "exception was never retrieved".
+    unawaited = Turn("t3", on_cancel)
+    unawaited.fail(ValueError("ignored"))
+    assert not unawaited._done._log_traceback  # type: ignore[attr-defined]
+
+
+def test_merge_handlers_without_turn_handlers_gives_the_defaults_or_none():
+    from deft_subspace.acp.handlers import TurnHandlers, merge_handlers
+
+    assert merge_handlers(None, {}) is None
+    assert merge_handlers(TurnHandlers(), {}) is None
+    defaults = TurnHandlers(on_permission="allow")
+    assert merge_handlers(defaults, {}) == defaults
+
+    def on_message(*_args: Any) -> None:
+        pass
+
+    merged = merge_handlers(defaults, {"on_message": on_message})
+    assert merged is not None and merged.on_permission == "allow" and merged.on_message is on_message

@@ -306,6 +306,23 @@ interruption rules.
   returned from main once its peer closed could lose its final reply. The
   stdio writer registers an `atexit` hook that lets it write what was
   queued. A Rust or C++ port has the same trap with a detached writer thread.
+- **Count wake-ups per message, not only time.** After sends stopped waiting,
+  the stdio writer thread still told the loop about every frame it wrote
+  (`call_soon_threadsafe`, which writes to the loop's self-pipe), so each
+  message still woke the loop once more than needed. Report back only the
+  frames someone waits for; keep the byte window as two counters, one per
+  thread. The same count on the client found an `asyncio.shield` per awaited
+  turn (two callback rounds where one does), a prompt task that waited a
+  round before writing (start it eagerly), and done callbacks on futures that
+  were already done. cProfile's `call_soon` count divided by the number of
+  turns is the quickest measure; it went from 10 to about 6 per client turn.
+  A Rust port has the same cost in channel sends that wake an executor, a JS
+  port in extra promise hops.
+- **Hoist per-message constants.** `json.loads(text, parse_constant=...)` and
+  `json.dumps(..., separators=...)` build a new decoder or encoder per call;
+  keep one. Likewise values derived from the connection (client capabilities)
+  belong to the connection, not to each turn, and a random id (a system
+  call) should be made only when something uses it.
 - **Never block the event loop.** File checks (`realpath`, `lstat`), file
   reads and writes, catalog loading and trace writes run in a thread
   (`asyncio.to_thread`) or are batched. A stdio writer thread does the

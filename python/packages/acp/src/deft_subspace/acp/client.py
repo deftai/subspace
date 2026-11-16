@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 from collections.abc import Awaitable, Callable, Sequence
@@ -190,6 +191,15 @@ class _Options:
     handlers: TurnHandlers | None
     queue_prompts: bool
     on_elicitation_complete: Callable[[dict[str, Any]], Any] | None
+
+
+def _eager_task(coroutine: Any) -> asyncio.Task[Any]:
+    """A task that runs at once, up to its first wait (Python 3.12+), as the kernel's RPC peer
+    starts its own. Not when the loop has a task factory: an eager task would bypass it."""
+    loop = asyncio.get_running_loop()
+    if sys.version_info >= (3, 12) and loop.get_task_factory() is None:
+        return asyncio.Task(coroutine, loop=loop, eager_start=True)  # type: ignore[call-arg]
+    return loop.create_task(coroutine)
 
 
 def _check_handler_names(handlers: dict[str, Any]) -> None:
@@ -1188,10 +1198,11 @@ class Session:
         current = self._current
         return current.question if current else None
 
-    def _spawn(self, coroutine: Any) -> asyncio.Task[Any]:
-        task = asyncio.ensure_future(coroutine)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+    def _spawn(self, coroutine: Any, *, eager: bool = False) -> asyncio.Task[Any]:
+        task = _eager_task(coroutine) if eager else asyncio.ensure_future(coroutine)
+        if not task.done():
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return task
 
     def _is_background(self, call: ToolCall) -> bool:
@@ -1268,7 +1279,8 @@ class Session:
                 return
             self._prompt_answered(active, result)
 
-        active.prompt_task = self._spawn(send())
+        # Eager where it can be: the prompt is written now, not on the loop's next round.
+        active.prompt_task = self._spawn(send(), eager=True)
 
     def _start_next(self) -> None:
         """The next queued prompt, once nothing is running."""
@@ -1547,7 +1559,8 @@ class Session:
             # No longer waited for: the kernel stops waiting for its prompt answer and tells the agent ($/cancel_request).
             previous.stale.request.abort()
         self._state = next_state
-        if isinstance(next_state, _Idle):
+        # Only a prompt that waits needs the next round; one sent later finds the session idle itself.
+        if isinstance(next_state, _Idle) and self._queued:
             asyncio.get_running_loop().call_soon(self._start_next)
 
 
