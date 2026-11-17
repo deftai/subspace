@@ -130,7 +130,7 @@ class _SdkConnection:
                 if not self._ready.done():
                     self._ready.set_result(client)
                 await self._stop.wait()
-        except BaseException as error:  # noqa: BLE001
+        except BaseException as error:
             if not self._ready.done():
                 self._ready.set_exception(error if isinstance(error, Exception) else RuntimeError(str(error)))
             if isinstance(error, asyncio.CancelledError):

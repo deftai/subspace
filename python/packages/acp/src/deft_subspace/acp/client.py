@@ -16,11 +16,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Protocol, Union
+from typing import Any, Literal, Protocol, Self
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from deft_subspace.kernel import (
     AbortController,
@@ -46,8 +46,8 @@ from .mcp import MCP_PROTOCOL_VERSION, McpProvider, McpRegistration, McpRequestH
 from .model import (
     BackgroundItem,
     ContentBlock,
-    Exhaustion,
     ExhaustedEvent,
+    Exhaustion,
     PermissionCommand,
     PermissionEvent,
     PermissionOutcome,
@@ -70,7 +70,7 @@ from .terminals import Terminals
 from .tools import ToolSet, check_tool_input, tool_input_schema, tool_output_text
 from .turn import Turn, TurnHistory, TurnView
 
-PromptInput = Union[str, ContentBlock, Sequence[Union[str, ContentBlock]]]
+PromptInput = str | ContentBlock | Sequence[str | ContentBlock]
 """A prompt: text, a content block, or a list of both (strings become text blocks)."""
 
 
@@ -137,7 +137,7 @@ class ElicitationRequest:
 ElicitationResponse = dict[str, Any]
 """`{"action": "accept", "content": {...}}`, `{"action": "decline"}` or `{"action": "cancel"}`."""
 
-ElicitationHandler = Callable[[ElicitationRequest, AbortSignal], Union[ElicitationResponse, Awaitable[ElicitationResponse]]]
+ElicitationHandler = Callable[[ElicitationRequest, AbortSignal], ElicitationResponse | Awaitable[ElicitationResponse]]
 """Answer an elicitation. Anything that goes wrong becomes `decline`, and so does a form answer
 that does not fit `requested_schema` (check it first with `validate_elicitation` to ask again)."""
 
@@ -171,7 +171,7 @@ class SessionSummary:
     raw: Any = None
 
 
-SessionMcpServers = Sequence[Union[McpServer, McpRegistration]]
+SessionMcpServers = Sequence[McpServer | McpRegistration]
 
 
 @dataclass
@@ -298,7 +298,7 @@ class AcpClient:
         merged = merge_handlers(handlers, turn_handlers)
         # An on_question is no use unless the agent is told it may ask: advertise forms (others declined).
         if merged is not None and merged.on_question is not None and elicitation is None:
-            elicitation = lambda _request, _signal: {"action": "decline"}  # noqa: E731
+            elicitation = lambda _request, _signal: {"action": "decline"}
             elicitation_modes = elicitation_modes or ["form"]
         options = _Options(
             name=name,
@@ -714,10 +714,10 @@ class AcpClient:
         """Close the connection. Running turns fail with a `closed` LocalError."""
         await self.peer.close()
 
-    async def __aenter__(self) -> AcpClient:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc: Any) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
     # ---- internal ------------------------------------------------------------------
@@ -853,7 +853,7 @@ class _Draining:
     until: asyncio.TimerHandle
 
 
-_SessionState = Union[_Idle, _Running, _Cancelling, _Draining]
+_SessionState = _Idle | _Running | _Cancelling | _Draining
 
 
 def _is_turn_idle(update: Any) -> bool:
@@ -1053,7 +1053,7 @@ class Session:
             raise ValueError(f'The agent offers no config option "{option_id}" (offered: {offered})')
         built = config_params(self.client.protocol, self.id, option, value)
         if isinstance(built, str):
-            raise ValueError(built)
+            raise ValueError(built)  # noqa: TRY004 - a string here is the reason the value was refused
         result = await self.client.peer.request("session/set_config_option", built, timeout_ms=timeout_ms)
         options = result.get("configOptions") if isinstance(result, dict) else None
         self._config = config_options_from(options) or self._with_value(option_id, value)
@@ -1185,10 +1185,10 @@ class Session:
         active.turn.push(*active.projection.fail_open_tool_calls(self._is_background))
         self._end(active, "cancelled", None, forced=True)
 
-    async def __aenter__(self) -> Session:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc: Any) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
     # ---- internal ----------------------------------------------------------------------

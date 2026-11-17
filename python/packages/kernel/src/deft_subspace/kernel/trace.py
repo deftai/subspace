@@ -17,7 +17,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .clock import Clock, system_clock
@@ -32,7 +32,7 @@ _NO_DATA: Any = object()
 
 
 def _iso(ms: float) -> str:
-    stamp = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    stamp = datetime.fromtimestamp(ms / 1000, tz=UTC)
     return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}Z"
 
 
@@ -52,10 +52,10 @@ def _copy_message(value: Any) -> Any:
     is recorded as it is. Never raises."""
     try:
         return _copy_json(value, 0)
-    except Exception:
+    except Exception:  # noqa: BLE001 - never raises: falls back to a deep copy
         try:
             return copy.deepcopy(value)
-        except Exception:
+        except Exception:  # noqa: BLE001 - never raises: recorded as it is
             return value
 
 

@@ -134,7 +134,7 @@ async def test_connect_session_a_ready_session_over_any_channel_needs_a_permissi
     assert result.text == "Hello world (refused)"
     assert streamed[0] == result.text
     await connected.close()
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - whatever a closed connection raises
         await connected.session.prompt("again")
 
 
@@ -183,7 +183,7 @@ async def test_stdio_writes_go_through_one_writer_whole_and_in_order_even_when_a
     assert out.threads == {"serve_stdio:stdout"}
     # Frames queued together share a flush.
     assert out.flushes < 52
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - whatever a closed channel raises
         await channel.send(b"late\n")
 
 
@@ -317,7 +317,7 @@ async def main():
 
 asyncio.run(main())
 """
-    done = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=30)
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, check=False, timeout=30)
     assert done.returncode == 0, done.stderr
     assert done.stdout == b"last reply\n"
 

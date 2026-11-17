@@ -290,7 +290,7 @@ def permission_policy(permissions: ScenarioPermissions | None) -> PermissionPoli
     if permissions == "read-only":
         return first_of(read_only, "reject")
     if not isinstance(permissions, dict):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 - bad scenario input; callers catch ValueError
             f'permissions must be "allow", "reject", "read-only" or {{"allow": [...], "reject": [...]}}, not {permissions!r}'
         )
     rules: list[Any] = []
@@ -472,7 +472,7 @@ async def run_scenario(
             target = AgentCommand(local(command), tuple(local(a) for a in spec.get("args", [])), mode=spec.get("mode") or None)
             env = spec.get("env")
         else:
-            raise ValueError("the scenario's agent must be a name or {command, args}")
+            raise ValueError("the scenario's agent must be a name or {command, args}")  # noqa: TRY004 - bad scenario input; callers catch ValueError
         # Without turns nothing is checked: that is not a pass.
         if not scenario.get("turns"):
             raise ValueError("the scenario has no turns")
@@ -494,6 +494,7 @@ async def run_scenario(
             handle_signals=False,
             **options,
         )
+        # The handler below (B023) runs only during its own turn: `agent.run` returns after its last event.
         for step in scenario["turns"]:
             turn_started = _now_ms()
             counts = {"updates": 0}
@@ -502,11 +503,11 @@ async def run_scenario(
 
             def on_turn_event(event: TurnEvent) -> Any:
                 if event.type != "state":
-                    counts["updates"] += 1
+                    counts["updates"] += 1  # noqa: B023
                 if event.type == "permission":
-                    permissions.append(event.request.title)
+                    permissions.append(event.request.title)  # noqa: B023
                 if on_event is not None:
-                    return on_event(event, name)
+                    return on_event(event, name)  # noqa: B023
                 return None
 
             timeout_ms = step.get("timeoutMs", scenario.get("timeoutMs", 120_000))
@@ -598,7 +599,7 @@ def _compare_snapshot(path: str, report: ScenarioReport, update: bool, require: 
     try:
         existing = json.loads(text)
         if not isinstance(existing, list):
-            raise ValueError("not a list of turns")
+            raise ValueError("not a list of turns")  # noqa: TRY004 - caught just below
     except ValueError as error:
         # Kept as it is: overwriting would hide a bad merge or a hand edit.
         report.snapshot_failures = [f"{path} is not a valid snapshot ({error}); fix it or rerun with update_snapshots"]

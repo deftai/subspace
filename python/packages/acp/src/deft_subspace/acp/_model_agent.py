@@ -18,7 +18,7 @@ import inspect
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Union
+from typing import Any, Protocol
 
 from deft_subspace.kernel import AbortSignal
 
@@ -74,7 +74,7 @@ class ToolResultsInput:
     tool_results: list[ToolResult]
 
 
-ModelInput = Union[ModelPromptInput, ToolResultsInput]
+ModelInput = ModelPromptInput | ToolResultsInput
 """What goes to the model next: the user's prompt, or the results of its tool calls."""
 
 

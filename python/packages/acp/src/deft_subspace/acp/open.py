@@ -17,7 +17,7 @@ import asyncio
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from deft_subspace.kernel import Channel, ErrorCode, RpcError
 
@@ -94,14 +94,14 @@ class ConnectedSession(SessionConveniences):
     async def _close(self) -> None:
         try:
             await self.session.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort close
             pass
         await self.client.close()
 
-    async def __aenter__(self) -> ConnectedSession:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc: Any) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
 

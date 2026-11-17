@@ -126,6 +126,6 @@ async def test_a_kernel_transform_works_as_a_fault_and_close_flushes_what_faults
     while True:
         try:
             received.append(await b.receive())
-        except Exception:
+        except Exception:  # noqa: BLE001 - any end of the stream stops the loop
             break
     assert received == [b"ab", b"cd", b"e"]

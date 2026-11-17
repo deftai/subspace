@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from deft_subspace.acp.client import AcpClient
 from deft_subspace.acp.model import MessageEndEvent, MessageEvent, PermissionEvent, ToolCallEvent
 from deft_subspace.kernel import ndjson, spawn_process

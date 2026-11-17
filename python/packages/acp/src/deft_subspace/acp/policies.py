@@ -104,7 +104,7 @@ def _matches(request: PermissionRequest, kinds: list[str] | None, titles: Patter
         return False
     if commands is not None and not _text_matches(commands, request_command(request)):
         return False
-    if inside_root is not None and not inside(inside_root, request_paths(request)):
+    if inside_root is not None and not inside(inside_root, request_paths(request)):  # noqa: SIM103 - one check per line, like the others
         return False
     return True
 

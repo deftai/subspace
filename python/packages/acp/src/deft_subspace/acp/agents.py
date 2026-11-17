@@ -305,7 +305,7 @@ def _registry_launch(entry: RegistryAgent, platform: str, arch: str, binaries: d
     # Installed by `subspace agents install`: run it from there.
     folder = (binaries or {}).get(f"{entry['id']}@{entry['version']}")
     if target and folder:
-        cmd = target["cmd"][2:] if target["cmd"].startswith("./") else target["cmd"]
+        cmd = target["cmd"].removeprefix("./")
         command = f"{_trim_trailing_separators(folder)}/{cmd}"
         install = f"It was installed by `subspace agents install {entry['id']}` into {folder}; run that again if it is missing"
         return {

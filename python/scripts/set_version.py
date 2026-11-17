@@ -16,7 +16,7 @@ def main(version: str) -> None:
         sys.exit(f"not a PEP 440 release version: {version}")
     for name in PACKAGES:
         path = ROOT / "packages" / name / "pyproject.toml"
-        text = re.sub(r'^version = "[^"]*"', f'version = "{version}"', path.read_text(), count=1, flags=re.M)
+        text = re.sub(r'^version = "[^"]*"', f'version = "{version}"', path.read_text(), count=1, flags=re.MULTILINE)
         for pinned in ("deft-subspace-kernel", "deft-subspace-acp"):
             text = re.sub(rf'"{pinned}==[^"]*"', f'"{pinned}=={version}"', text)
         path.write_text(text)

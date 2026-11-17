@@ -44,7 +44,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from deft_subspace.kernel import ChannelClosed, EndOfChannel, ErrorCode, RpcError, RpcPeer, SpawnError, ndjson, trace_tap
 
@@ -120,7 +120,7 @@ class _Trace:
 
     def open(self) -> _Trace:
         """A trace written to `path` as it happens (JSON Lines, the kernel's trace format)."""
-        self.file = open(self.path, "w", encoding="utf-8")
+        self.file = open(self.path, "w", encoding="utf-8")  # noqa: SIM115 - open for the trace's lifetime; closed by close()
 
         def write(record: Any) -> None:
             if self.file.closed:
@@ -199,10 +199,10 @@ class StartedAgent(SessionConveniences):
         """Cancel what is running, close the session and the connection, and stop the agent."""
         await self._close()
 
-    async def __aenter__(self) -> StartedAgent:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc: Any) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
 
@@ -393,7 +393,7 @@ async def start(
             h.remove()
         try:
             await session.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 - best effort; the connection is closed next
             pass
         await connected.close()
         if recording is not None:
@@ -493,7 +493,7 @@ class _StdioChannel:
                         put(None)
                         return
                     put(data)
-            except BaseException as error:
+            except BaseException as error:  # noqa: BLE001 - handed to the reading side, which raises it
                 put(error)
 
         threading.Thread(target=read, name="serve_stdio:stdin", daemon=True).start()

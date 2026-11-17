@@ -262,12 +262,13 @@ class Replay:
     async def _play(self) -> None:
         steps = self._steps
         last_t: float = 0
+        # The closures below (B023) are called, and awaited, only within the step that defines them.
         for index, (direction, t, expected) in enumerate(steps):
             if self._finished:
                 return
 
             async def diverge(description: str, got: Message | None = None) -> None:
-                error = ReplayDivergence(index + 1, len(steps), description, expected, got)
+                error = ReplayDivergence(index + 1, len(steps), description, expected, got)  # noqa: B023
                 if got is not None and _is_call(got) and "id" in got:
                     try:
                         await self._write(
@@ -276,7 +277,7 @@ class Replay:
                                 "error": {
                                     "code": ErrorCode.INTERNAL_ERROR,
                                     "message": error.message,
-                                    "data": {"expected": expected, "got": got},
+                                    "data": {"expected": expected, "got": got},  # noqa: B023
                                 },
                             }
                         )
@@ -303,7 +304,7 @@ class Replay:
                 live_key = _key(expected.get("id") if live is _KEEP_WAITING else live)
 
                 def take_response() -> Any:
-                    return self._responses.pop(live_key, _KEEP_WAITING)
+                    return self._responses.pop(live_key, _KEEP_WAITING)  # noqa: B023
 
                 answer = await self._wait_for(take_response)
                 if answer is _KEEP_WAITING:
@@ -327,12 +328,12 @@ class Replay:
 
             def take_call() -> Any:
                 for at, c in enumerate(self._calls):
-                    if same(c, expected):
+                    if same(c, expected):  # noqa: B023
                         return self._calls.pop(at)
                 # Something none of them explains: stop now rather than wait.
                 for c in self._calls:
-                    if not any(same(c, u) for u in upcoming):
-                        stray[:] = [c]
+                    if not any(same(c, u) for u in upcoming):  # noqa: B023
+                        stray[:] = [c]  # noqa: B023
                         return _STOP
                 return _KEEP_WAITING
 

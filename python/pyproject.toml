@@ -28,6 +28,11 @@ addopts = "--import-mode=importlib"
 line-length = 130
 target-version = "py311"
 
+[tool.ruff.lint]
+# S110 (try-except-pass) only fires on broad excepts, which BLE001 already flags; each deliberate
+# swallow (best-effort close, a hook that must not break the stream) carries a `noqa: BLE001`.
+ignore = ["S110"]
+
 [tool.pyright]
 pythonVersion = "3.11"
 include = ["packages/kernel/src", "packages/acp/src", "packages/acp-testkit/src", "examples"]

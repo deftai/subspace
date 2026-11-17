@@ -1,12 +1,11 @@
 """Smoke test for installed wheels: run from outside the repo, in a clean environment."""
 
 import asyncio
-import importlib.metadata as metadata
 import sys
+from importlib import metadata
 
-import deft_subspace.acp as acp
 import deft_subspace.acp_testkit as testkit
-import deft_subspace.kernel as kernel
+from deft_subspace import acp, kernel
 from deft_subspace.acp import AcpClient, serve_agent
 from deft_subspace.acp_testkit import normalize_turn, recorder, replay_agent
 from deft_subspace.kernel import channel_pair

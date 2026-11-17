@@ -14,17 +14,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ._util import as_list
 from .model import (
     BackgroundItem,
     MessageEvent,
     OtherWork,
-    TextAt,
     PlanEvent,
     SessionInfoEvent,
     StateEvent,
     SubagentWork,
     TerminalEvent,
     TerminalWork,
+    TextAt,
     ThoughtEvent,
     ToolCall,
     ToolCallEvent,
@@ -34,7 +35,6 @@ from .model import (
     UsageEvent,
     UserMessageEvent,
 )
-from ._util import as_list
 from .terminals import AppliedTerminal, Terminals
 
 TERMINAL_KEYS = ("terminal_info", "terminal_output", "terminal_output_delta", "terminal_exit")
@@ -281,7 +281,7 @@ class TurnProjection:
         text = "".join(_text_of(b) for b in content) if isinstance(content, list) else ""
         message = self._message(message_id, kind)
         before = message.log.text()
-        delta = text[len(before) :] if text.startswith(before) else text
+        delta = text.removeprefix(before)
         if text != before:
             message.log = _TextLog(text)
             if message.kind == "message":
