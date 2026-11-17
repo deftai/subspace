@@ -78,6 +78,10 @@ test(
       assert.equal(existsSync(join(base, 'new.txt')), false);
       // Outside by the text and by the OS: the same error as before.
       await assert.rejects(files.readTextFile({ path: '../secret.txt' }), /Path is outside the workspace/);
+      // `..` after a file is refused, as the OS does (ENOTDIR), also through a link.
+      await assert.rejects(files.readTextFile({ path: 'a/c.txt/../c.txt' }), { code: 'ENOTDIR' });
+      await assert.rejects(files.writeTextFile({ path: 'alias/../c.txt/../x.txt', content: '' }), { code: 'ENOTDIR' });
+      assert.equal(existsSync(join(ws, 'a', 'x.txt')), false);
     } finally {
       await rm(base, { recursive: true, force: true });
     }

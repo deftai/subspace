@@ -77,8 +77,11 @@ export function workspaceFiles(root: string): FileHandlers {
 export async function insideWorkspace(root: string, path: string): Promise<string> {
   if (typeof path !== 'string' || !path) throw new Error('Path is required');
   const realBase = await realpath(root);
-  const target = await resolveLikeTheOs(realBase, path);
-  if (isInside(realBase, target)) return target;
+  const { target, notADirectory } = await resolveLikeTheOs(realBase, path);
+  if (isInside(realBase, target)) {
+    if (notADirectory) throw Object.assign(new Error(`ENOTDIR: not a directory, '${path}'`), { code: 'ENOTDIR' });
+    return target;
+  }
   const base = resolve(root);
   if (!isInside(base, resolve(base, path))) throw new Error(`Path is outside the workspace: ${path}`);
   throw new Error(`Path leads outside the workspace through a symbolic link: ${path}`);
@@ -96,20 +99,30 @@ function isInside(root: string, path: string): boolean {
  * not c.txt), as Python's `os.path.realpath` does. Windows applies `..` to the
  * text first, so there the path is normalised before links are followed.
  */
-async function resolveLikeTheOs(base: string, path: string): Promise<string> {
-  if (process.platform === 'win32') return realLocation(resolve(base, path));
+async function resolveLikeTheOs(base: string, path: string): Promise<{ target: string; notADirectory: boolean }> {
+  if (process.platform === 'win32') return { target: await realLocation(resolve(base, path)), notADirectory: false };
   // Not join() or resolve(): both apply `..` to the text.
-  return realLocation(await followLinks(isAbsolute(path) ? path : `${base}${sep}${path}`));
+  const walked = await followLinks(isAbsolute(path) ? path : `${base}${sep}${path}`);
+  return { target: await realLocation(walked.path), notADirectory: walked.notADirectory };
 }
 
-/** Walk the absolute `path` one name at a time, following each link before the names after it. */
-async function followLinks(path: string): Promise<string> {
+/**
+ * Walk the absolute `path` one name at a time, following each link before the
+ * names after it. `notADirectory`: a `..` in `path` comes after a file, which
+ * the OS refuses (`notes.txt/../x`, ENOTDIR).
+ */
+async function followLinks(path: string): Promise<{ path: string; notADirectory: boolean }> {
   let links = 0;
-  const walk = async (from: string, rest: string): Promise<string> => {
+  let notADirectory = false;
+  const walk = async (from: string, rest: string, top: boolean): Promise<string> => {
     let current = from;
     for (const name of rest.split(sep)) {
       if (!name || name === '.') continue;
       if (name === '..') {
+        if (top && !notADirectory) {
+          const kind = await lstat(current).catch(() => undefined);
+          notADirectory = kind !== undefined && !kind.isDirectory();
+        }
         // `current` has no links in it, so its parent is where `..` leads.
         current = dirname(current);
         continue;
@@ -123,11 +136,11 @@ async function followLinks(path: string): Promise<string> {
       }
       // Too many links (a loop): keep the name and let opening it fail.
       if (target === undefined || ++links > 40) current = next;
-      else current = await walk(isAbsolute(target) ? sep : current, target);
+      else current = await walk(isAbsolute(target) ? sep : current, target, false);
     }
     return current;
   };
-  return walk(sep, path);
+  return { path: await walk(sep, path, true), notADirectory };
 }
 
 /** `path` (with no `..` left in it) with its deepest existing part replaced by that part's real path. */

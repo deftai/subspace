@@ -89,6 +89,12 @@ async def test_a_link_is_followed_before_the_dotdot_after_it(tmp_path):
     # Outside by the text and by the OS: the same error as before.
     with pytest.raises(ValueError, match="Path is outside the workspace"):
         await files.read_text_file({"path": "../secret.txt"})
+    # `..` after a file is refused, as the OS does (ENOTDIR), also through a link.
+    with pytest.raises(NotADirectoryError):
+        await files.read_text_file({"path": "a/c.txt/../c.txt"})
+    with pytest.raises(NotADirectoryError):
+        await files.write_text_file({"path": "alias/../c.txt/../x.txt", "content": ""})
+    assert not (ws / "a" / "x.txt").exists()
 
 
 async def test_a_missing_agent_binary_is_a_spawn_error_with_a_hint():

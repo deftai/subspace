@@ -697,3 +697,6 @@ files. Both ports now resolve the way the operating system does.
   leaves but whose resolution lands inside is inside too. Keep the error
   messages apart only for the report (outside by the text, or through a
   link).
+- **`..` after a file is an error.** The OS refuses `notes.txt/../x`
+  (ENOTDIR); a resolver that only tracks names, `realpath` included, goes on
+  to `x`. Check that what comes before each `..` is a directory.

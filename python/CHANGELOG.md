@@ -4,7 +4,7 @@ The three distributions, `deft-subspace-kernel`, `deft-subspace-acp` and `deft-s
 
 ## Unreleased
 
-- acp: `inside_workspace`, `WorkspaceFiles` and `WorkspaceTerminals` (the terminal cwd) resolve a path the way the operating system opens it: on POSIX each symbolic link is followed before the `..` after it, so `alias/../c.txt` with `alias -> a/b` is `a/c.txt`, as in the shell, not `c.txt` (#33). The returned path is the resolved one. A path outside the workspace is still refused with the same errors; a path whose text leaves the workspace but that the OS resolves inside it (`alias/../../c.txt`) is now allowed. On Windows, which applies `..` to the text first, `..` is still applied first. The TypeScript `insideWorkspace`, `workspaceFiles` and `workspaceTerminals` do the same.
+- acp: `inside_workspace`, `WorkspaceFiles` and `WorkspaceTerminals` (the terminal cwd) resolve a path the way the operating system opens it: on POSIX each symbolic link is followed before the `..` after it, so `alias/../c.txt` with `alias -> a/b` is `a/c.txt`, as in the shell, not `c.txt` (#33). The returned path is the resolved one. A path outside the workspace is still refused with the same errors; a path whose text leaves the workspace but that the OS resolves inside it (`alias/../../c.txt`) is now allowed. A `..` after a file (`notes.txt/../x`) raises `NotADirectoryError`, as the OS does, instead of going on to `x`. On Windows, which applies `..` to the text first, `..` is still applied first. The TypeScript `insideWorkspace`, `workspaceFiles` and `workspaceTerminals` do the same.
 
 ## 0.1.0a2
 

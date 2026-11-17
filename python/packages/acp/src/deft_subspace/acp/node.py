@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import errno
 import inspect
 import os
+import sys
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -184,13 +186,26 @@ def _inside_workspace(root: str | os.PathLike[str], path: Any) -> str:
     # alias -> a/b is a/c.txt, not c.txt). realpath does that, also for a target
     # that does not exist yet. Windows applies `..` to the text first, and so does
     # ntpath.realpath.
-    target = os.path.realpath(os.path.join(real_base, path))
+    joined = os.path.join(real_base, path)
+    target = os.path.realpath(joined)
     if _is_inside(real_base, target):
+        if sys.platform != "win32":
+            _no_dotdot_after_a_file(joined, path)
         return target
     base = os.path.abspath(root)
     if not _is_inside(base, os.path.abspath(os.path.join(base, path))):
         raise ValueError(f"Path is outside the workspace: {path}")
     raise ValueError(f"Path leads outside the workspace through a symbolic link: {path}")
+
+
+def _no_dotdot_after_a_file(joined: str, path: str) -> None:
+    # The OS refuses `notes.txt/../x` (ENOTDIR); realpath would go on to `x`.
+    names = joined.split(os.sep)
+    for i, name in enumerate(names):
+        if name == os.pardir and i > 0:
+            before = os.path.realpath(os.sep.join(names[:i]) or os.sep)
+            if os.path.exists(before) and not os.path.isdir(before):
+                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
 
 
 def _is_inside(root: str, path: str) -> bool:
