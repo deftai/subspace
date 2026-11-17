@@ -10,7 +10,6 @@ from dataclasses import FrozenInstanceError, asdict, replace
 from typing import Any
 
 import pytest
-
 from deft_subspace.acp import MessageEvent, TerminalEvent, ToolCallEvent, TurnResult, UsageEvent, terminal_text
 from deft_subspace.acp.projection import TurnProjection
 from deft_subspace.acp.terminals import Terminals

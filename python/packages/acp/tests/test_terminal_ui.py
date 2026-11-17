@@ -55,7 +55,7 @@ async def test_streams_text_dims_thoughts_shows_tool_calls_and_answered_permissi
         await turn.tool("List files", lambda _c: "a", kind="read")
         try:
             await turn.tool("Delete a", lambda _c: "x", kind="delete", ask=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 - the refusal is checked in the output below
             pass
         await turn.say("Done.")
 
@@ -63,7 +63,7 @@ async def test_streams_text_dims_thoughts_shows_tool_calls_and_answered_permissi
     client = await AcpClient.connect(client_end, handlers=terminal(out=out), on_permission="reject")
     session = await client.new_session("/w")
     await session.prompt("go")
-    assert out.written == "\n".join(
+    assert out.written == "\n".join(  # noqa: FLY002 - one item per line of output
         ["thinking: Looking.", "", "Checking files.", "", "• List files", "  ✓ List files", "• Delete a", "? Delete a refused", "  ✗ Delete a", "", "Done."]
     )
     await client.close()

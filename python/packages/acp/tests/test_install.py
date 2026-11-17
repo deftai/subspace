@@ -88,7 +88,7 @@ async def test_a_checksummed_tar_gz_is_unpacked_under_the_cache_then_reused_and_
     first = await install_agent(agent, env=env, **HOST, fetch=fetch)
     assert first.reused is False
     assert first.command == os.path.join(env["XDG_CACHE_HOME"], "subspace", "bin", "tool", "1.2.3", "bin", "tool")
-    assert subprocess.run([first.command], capture_output=True, text=True).stdout == "hi\n"
+    assert subprocess.run([first.command], capture_output=True, check=False, text=True).stdout == "hi\n"  # noqa: ASYNC221 - a test; blocking briefly is fine
     again = await install_agent(agent, env=env, **HOST, fetch=fetch)
     assert again.reused is True
     assert len(fetch.calls) == 1, "downloaded once"
@@ -107,7 +107,7 @@ async def test_a_checksummed_tar_gz_is_unpacked_under_the_cache_then_reused_and_
 async def test_a_zip_works_too(tmp_path, env):
     path, sha256 = archive(tmp_path, "zip", {"bin/tool": "#!/bin/sh\necho zipped\n"})
     installed = await install_agent(entry({"archive": "https://example.com/tool.zip", "sha256": sha256}), env=env, **HOST, fetch=Serving(path))
-    assert subprocess.run([installed.command], capture_output=True, text=True).stdout == "zipped\n"
+    assert subprocess.run([installed.command], capture_output=True, check=False, text=True).stdout == "zipped\n"  # noqa: ASYNC221 - a test; blocking briefly is fine
 
 
 @POSIX

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from .handlers import TextTracker, TurnHandlers, dispatch
 from .model import (
@@ -45,7 +45,7 @@ _ENDS = (*_TEXT, ToolCallEvent, PlanEvent, PermissionEvent, TerminalEvent)
 _END_OF = {MessageEvent: MessageEndEvent, ThoughtEvent: ThoughtEndEvent, UserMessageEvent: UserMessageEndEvent}
 
 
-TurnHistory = Union[Literal["all", "none"], int]
+TurnHistory = Literal["all", "none"] | int
 """What a turn keeps of its events, for `history` and for iterating it again: "all" (the
 default) keeps every event; a number keeps the last that many; "none" keeps none. An event is
 only dropped once every iteration running at the time (and the turn's handlers) has had it, so
@@ -310,7 +310,7 @@ class Turn:
                         notify()
             except (KeyboardInterrupt, SystemExit):
                 raise
-            except BaseException as error:  # noqa: BLE001
+            except BaseException as error:
                 task = asyncio.current_task()
                 # This task being cancelled is handled when it ends (`ended`).
                 if isinstance(error, asyncio.CancelledError) and task is not None and task.cancelling():
@@ -351,7 +351,7 @@ class Turn:
         self._progress.append(check)
         try:
             await asyncio.wait_for(future, max_ms / 1000)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         finally:
             if check in self._progress:

@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from deft_subspace.kernel import SubspaceError
@@ -55,7 +55,7 @@ class Installed:
 
 def iso_now() -> str:
     """Now as JavaScript's `toISOString()` writes it: 2026-11-08T12:00:00.000Z."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
@@ -151,7 +151,7 @@ async def install_agent(
         raise InstallError(f"{entry['id']}: the command {json.dumps(binary['cmd'])} is outside its folder")
     marker_path = os.path.join(folder, MARKER)
     if os.path.exists(marker_path):
-        with open(marker_path, encoding="utf-8") as f:
+        with open(marker_path, encoding="utf-8") as f:  # noqa: ASYNC230 - one small local file
             marker = json.load(f)
         if isinstance(marker, dict) and marker.get("sha256") == sha256_wanted and os.path.exists(command):
             return Installed(entry["id"], entry["version"], folder, command, sha256_wanted, True)
@@ -191,7 +191,7 @@ async def install_agent(
             os.chmod(real, 0o755)
 
         marker = {"id": entry["id"], "version": entry["version"], "target": target, "archive": binary["archive"], "sha256": sha256, "installed": iso_now()}
-        with open(os.path.join(unpack, MARKER), "w", encoding="utf-8") as f:
+        with open(os.path.join(unpack, MARKER), "w", encoding="utf-8") as f:  # noqa: ASYNC230 - one small local file
             f.write(json.dumps(marker, indent=2) + "\n")
         shutil.rmtree(folder, ignore_errors=True)
         os.rename(unpack, folder)

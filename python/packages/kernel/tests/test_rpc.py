@@ -1,20 +1,18 @@
 import asyncio
 import datetime
 import sys
-import time
 from typing import Any
 
 import pytest
-
 from deft_subspace.kernel import (
     AbortController,
     CancelInbound,
+    ChannelClosed,
     ErrorCode,
     LocalError,
     PeerDiagnostic,
     RpcError,
     RpcPeer,
-    ChannelClosed,
     cancel_request,
     channel_pair,
     ndjson,

@@ -20,7 +20,7 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
 from deft_subspace.kernel import AbortSignal
 
@@ -32,9 +32,9 @@ class OptionId:
     option_id: str
 
 
-PermissionDecision = Union[str, OptionId, dict[str, Any]]
-PermissionHandler = Callable[[PermissionRequest, AbortSignal], Union[PermissionDecision, None, Awaitable[Union[PermissionDecision, None]]]]
-PermissionPolicy = Union[str, PermissionHandler]
+PermissionDecision = str | OptionId | dict[str, Any]
+PermissionHandler = Callable[[PermissionRequest, AbortSignal], PermissionDecision | None | Awaitable[PermissionDecision | None]]
+PermissionPolicy = str | PermissionHandler
 
 _ALLOW = ("allow_once", "allow_always")
 

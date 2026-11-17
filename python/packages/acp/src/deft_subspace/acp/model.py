@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Union
+from typing import TYPE_CHECKING, Any, Literal
 
 from .lazy import Lazy, LazyField, stored
 
 if TYPE_CHECKING:
-    from acp import schema as v1
-    from acp.experimental.v2 import schema as v2
+    # For type checkers only: at runtime `v1` and `v2` load on first use (`__getattr__` below).
+    from acp import schema as v1  # noqa: F401
+    from acp.experimental.v2 import schema as v2  # noqa: F401
 
     from .terminals import TerminalState
 
@@ -105,13 +106,13 @@ class _ContentAt(Lazy):
 
 
 # Read through the descriptor: a snapshot's content is copied the first time it is read.
-setattr(ToolCall, "content", LazyField("content", None))
+setattr(ToolCall, "content", LazyField("content", None))  # noqa: B010 - pyright rejects assigning a descriptor to a typed field
 
 
 class TextAt(Lazy):
     """A message's text as it was: its log and the length it had, read when looked at."""
 
-    __slots__ = ("log", "length")
+    __slots__ = ("length", "log")
 
     def __init__(self, log: Any, length: int) -> None:
         self.log = log
@@ -156,7 +157,7 @@ class OtherWork:
     type: Literal["other"] = field(default="other", init=False)
 
 
-BackgroundItem = Union[TerminalWork, ToolCallWork, SubagentWork, OtherWork]
+BackgroundItem = TerminalWork | ToolCallWork | SubagentWork | OtherWork
 """v2: work running independently of the session's foreground work, as the agent lists it on state updates."""
 
 
@@ -262,7 +263,7 @@ class UserMessageEvent:
 # A text event's text may be a `TextAt`, read the first time it is looked at, so a turn's
 # events do not each keep a copy of the message so far.
 for _cls in (MessageEvent, ThoughtEvent, UserMessageEvent):
-    setattr(_cls, "text", LazyField("text", ""))
+    setattr(_cls, "text", LazyField("text", ""))  # noqa: B010 - pyright rejects assigning a descriptor to a typed field
 
 
 @dataclass(frozen=True)
@@ -375,25 +376,25 @@ class UpdateEvent:
     type: Literal["update"] = field(default="update", init=False)
 
 
-TextEvent = Union[MessageEvent, ThoughtEvent, UserMessageEvent]
-TextEndEvent = Union[MessageEndEvent, ThoughtEndEvent, UserMessageEndEvent]
-TurnEvent = Union[
-    MessageEvent,
-    ThoughtEvent,
-    UserMessageEvent,
-    MessageEndEvent,
-    ThoughtEndEvent,
-    UserMessageEndEvent,
-    SessionInfoEvent,
-    ToolCallEvent,
-    PlanEvent,
-    PermissionEvent,
-    UsageEvent,
-    TerminalEvent,
-    StateEvent,
-    ExhaustedEvent,
-    UpdateEvent,
-]
+TextEvent = MessageEvent | ThoughtEvent | UserMessageEvent
+TextEndEvent = MessageEndEvent | ThoughtEndEvent | UserMessageEndEvent
+TurnEvent = (
+    MessageEvent
+    | ThoughtEvent
+    | UserMessageEvent
+    | MessageEndEvent
+    | ThoughtEndEvent
+    | UserMessageEndEvent
+    | SessionInfoEvent
+    | ToolCallEvent
+    | PlanEvent
+    | PermissionEvent
+    | UsageEvent
+    | TerminalEvent
+    | StateEvent
+    | ExhaustedEvent
+    | UpdateEvent
+)
 """Everything that can happen during a turn, in order. Narrow with `match` or on `event.type`."""
 
 

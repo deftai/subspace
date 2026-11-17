@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 import pytest
-
 from deft_subspace.kernel import RpcPeer, SpawnError, ndjson, spawn_process
 
 PY = sys.executable
@@ -37,7 +36,7 @@ async def test_writing_to_a_process_that_died_fails():
     child = await spawn_process(PY, args=["-c", "raise SystemExit(1)"])
     await child.exited
     big = b"x" * (1024 * 1024)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - what a dead pipe raises differs by platform
         for _ in range(8):
             await child.channel.send(big)
 
@@ -80,7 +79,7 @@ async def test_keeps_the_last_stderr_output():
     while True:
         try:
             await child.channel.receive()
-        except Exception:
+        except Exception:  # noqa: BLE001 - any end of the stream stops the loop
             break
     info = await child.ended()
     assert info.code == 3
@@ -526,5 +525,5 @@ async def test_windows_stop_ends_a_cmd_files_whole_tree(tmp_path):
     grandchild = int((await child.channel.receive()).decode().strip())
     await asyncio.wait_for(child.stop(), 15)
     await asyncio.wait_for(child.ended(), 15)
-    listed = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild}"], capture_output=True, text=True).stdout
+    listed = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild}"], capture_output=True, check=False, text=True).stdout  # noqa: ASYNC221 - a test; blocking briefly is fine
     assert str(grandchild) not in listed

@@ -33,12 +33,12 @@ from .model import (
     PlanEvent,
     StateEvent,
     TerminalEvent,
+    TextAt,
     ThoughtEndEvent,
     ThoughtEvent,
     ToolCallEvent,
     TurnEvent,
     UsageEvent,
-    TextAt,
     UserMessageEndEvent,
     UserMessageEvent,
     text_source,
@@ -62,7 +62,7 @@ class TextInfo:
 
 
 # Read from the message when looked at, as on the event.
-setattr(TextInfo, "text", LazyField("text", ""))
+setattr(TextInfo, "text", LazyField("text", ""))  # noqa: B010 - pyright rejects assigning a descriptor to a typed field
 
 
 @dataclass(frozen=True)

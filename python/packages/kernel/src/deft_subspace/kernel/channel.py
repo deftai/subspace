@@ -26,8 +26,8 @@ from .errors import SubspaceError
 T = TypeVar("T")
 A = TypeVar("A")
 B = TypeVar("B")
-In = TypeVar("In", contravariant=True)
-Out = TypeVar("Out", covariant=True)
+In = TypeVar("In", contravariant=True)  # noqa: PLC0105 - short names read better in signatures
+Out = TypeVar("Out", covariant=True)  # noqa: PLC0105 - short names read better in signatures
 
 
 class EndOfChannel(SubspaceError):

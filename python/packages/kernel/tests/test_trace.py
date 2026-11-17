@@ -1,5 +1,4 @@
 import pytest
-
 from deft_subspace.kernel import RpcPeer, channel_pair, format_trace, parse_trace, trace_tap
 from deft_subspace.kernel.testing import manual_clock
 

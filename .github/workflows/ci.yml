@@ -66,6 +66,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install
         run: uv sync --locked
+      - name: Lint
+        # The same everywhere: once is enough.
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        run: uv run ruff check .
       - name: Type-check
         run: uv run pyright
       - name: Test

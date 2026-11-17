@@ -378,7 +378,7 @@ def spans_from_trace(
     """The same spans from a saved trace, at the times it recorded. Spans still open at the end are ended there."""
     spans = _Spans(tracer_provider, tracer, attributes, titles)
     header = next((r for r in records if r.get("kind") == "header"), None)
-    base = datetime.fromisoformat(str(header["started"]).replace("Z", "+00:00")).timestamp() * 1000 if header else 0.0
+    base = datetime.fromisoformat(str(header["started"])).timestamp() * 1000 if header else 0.0
     last = base
     for record in records:
         if record.get("kind") != "message":

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from ._util import as_list
 from .model import ProtocolVersion
@@ -70,7 +70,7 @@ class OtherConfigOption:
     type: Literal["other"] = field(default="other", init=False)
 
 
-ConfigOption = Union[SelectConfigOption, BooleanConfigOption, OtherConfigOption]
+ConfigOption = SelectConfigOption | BooleanConfigOption | OtherConfigOption
 
 
 def _text(value: Any) -> str | None:

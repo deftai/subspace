@@ -266,8 +266,8 @@ async def _serve_http(kind: str):
     return child, port
 
 
-import pytest  # noqa: E402
-from deft_subspace.acp.mcp import HttpMcpServer, SseMcpServer  # noqa: E402
+import pytest
+from deft_subspace.acp.mcp import HttpMcpServer, SseMcpServer
 
 
 @pytest.mark.parametrize("kind", ["http", "sse"])
