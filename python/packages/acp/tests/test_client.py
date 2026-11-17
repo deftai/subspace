@@ -3,9 +3,6 @@
 import asyncio
 
 import pytest
-
-from link import connect
-
 from deft_subspace.acp.client import Timeouts
 from deft_subspace.acp.model import (
     MessageEndEvent,
@@ -16,6 +13,7 @@ from deft_subspace.acp.model import (
     turn_end,
 )
 from deft_subspace.kernel import LocalError, RpcError
+from link import connect
 
 
 def shape(events):
@@ -269,7 +267,7 @@ async def test_overlapping_config_changes_apply_in_order():
     import itertools
 
     delays = itertools.count()
-    options = lambda current: [  # noqa: E731
+    options = lambda current: [
         {
             "id": "model",
             "name": "Model",

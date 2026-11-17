@@ -3,18 +3,16 @@
 from pathlib import Path
 
 import pytest
+from deft_subspace.acp.agent import serve_agent
+from deft_subspace.acp.client import AcpClient
+from deft_subspace.acp.telemetry import otel_tap, spans_from_trace
+from deft_subspace.kernel import parse_trace
+from link import byte_link
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
-
-from link import byte_link
-
-from deft_subspace.acp.agent import serve_agent
-from deft_subspace.acp.client import AcpClient
-from deft_subspace.acp.telemetry import otel_tap, spans_from_trace
-from deft_subspace.kernel import parse_trace
 
 
 @pytest.fixture

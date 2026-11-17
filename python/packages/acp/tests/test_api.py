@@ -4,8 +4,7 @@ import inspect
 import pkgutil
 import types
 
-import deft_subspace.acp as acp
-import deft_subspace.kernel as kernel
+from deft_subspace import acp, kernel
 from deft_subspace.kernel import SubspaceError
 
 

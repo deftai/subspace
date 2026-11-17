@@ -70,7 +70,7 @@ class NdjsonDecoder:
             pass
 
     def _emit(self, line: str, out: list[Any]) -> None:
-        text = line[:-1] if line.endswith("\r") else line
+        text = line.removesuffix("\r")
         if not text.strip():
             return
         try:

@@ -203,7 +203,7 @@ def ask_in_terminal(*, input: Any = None, output: Any = None) -> PermissionHandl
             try:
                 text = source.readline()
                 loop.call_soon_threadsafe(settle, text if isinstance(text, str) else text.decode("utf-8", "replace"), None)
-            except BaseException as error:
+            except BaseException as error:  # noqa: BLE001 - handed to the waiting future
                 try:
                     loop.call_soon_threadsafe(settle, None, error)
                 except RuntimeError:

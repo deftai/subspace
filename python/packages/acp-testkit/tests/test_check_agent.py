@@ -350,7 +350,7 @@ async def test_trailing_update_ms_how_long_after_the_end_updates_are_still_count
             await asyncio.sleep(0.15)
             try:
                 await turn.say("late")
-            except Exception:
+            except Exception:  # noqa: BLE001 - the turn may be over by now
                 pass
 
         task = asyncio.ensure_future(later())

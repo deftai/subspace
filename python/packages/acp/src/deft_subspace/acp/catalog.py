@@ -93,7 +93,7 @@ def _check(source: str, path: str, value: Any, want: Want) -> Any:
     elif want == "strings":
         if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
             fail("a list of strings")
-    elif want == "env":
+    elif want == "env":  # noqa: SIM102 - one branch per kind, like the others
         if not isinstance(value, dict) or any(not isinstance(v, str) for v in value.values()):
             fail('a table of strings (KEY = "value")')
     return value
@@ -365,7 +365,7 @@ async def refresh_registry(
         raise RuntimeError(f"{where}: no agents in the registry; keeping the old one")
     path = registry_cache_path(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8") as f:  # noqa: ASYNC230 - one small local file
         f.write(json.dumps({"fetchedAt": iso_now(), "url": where, "registry": registry}, indent=2, ensure_ascii=False) + "\n")
     return RefreshedRegistry(len(registry["agents"]), path)
 

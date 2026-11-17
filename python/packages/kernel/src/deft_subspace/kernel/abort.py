@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, Self
 
 from .errors import SubspaceError
 
@@ -31,7 +31,7 @@ Listener = Callable[[Any], None]
 
 
 class AbortSignal:
-    __slots__ = ("_aborted", "_reason", "_listeners", "_dispose", "__weakref__")
+    __slots__ = ("__weakref__", "_aborted", "_dispose", "_listeners", "_reason")
 
     def __init__(self) -> None:
         self._aborted = False
@@ -73,7 +73,7 @@ class AbortSignal:
         if dispose is not None:
             dispose()
 
-    def __enter__(self) -> AbortSignal:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:

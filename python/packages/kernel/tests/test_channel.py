@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-
 from deft_subspace.kernel import EndOfChannel, channel_pair
 
 

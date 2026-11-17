@@ -37,7 +37,8 @@ from .rpc import (
 from .trace import TRACE_VERSION, TraceRecord, TraceTap, format_trace, parse_trace, trace_tap
 
 __all__ = [
-    "SubspaceError",
+    "NO_ID",
+    "TRACE_VERSION",
     "AbortController",
     "AbortError",
     "AbortSignal",
@@ -59,7 +60,6 @@ __all__ = [
     "LocalError",
     "LocalErrorKind",
     "MemoryChannel",
-    "NO_ID",
     "NdjsonDecoder",
     "NdjsonEncoder",
     "NotificationHandler",
@@ -71,9 +71,9 @@ __all__ = [
     "RpcPeer",
     "SpawnError",
     "StreamChannel",
+    "SubspaceError",
     "SupervisedProcess",
     "SystemClock",
-    "TRACE_VERSION",
     "TraceRecord",
     "TraceTap",
     "Transform",

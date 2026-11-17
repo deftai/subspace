@@ -59,7 +59,7 @@ def test_every_typescript_export_has_a_python_name():
 
 
 def test_the_check_lists_match_typescript():
-    assert list(testkit.AGENT_CHECKS)[0] == "initialize.version" and len(testkit.AGENT_CHECKS) == 10
+    assert next(iter(testkit.AGENT_CHECKS)) == "initialize.version" and len(testkit.AGENT_CHECKS) == 10
     assert list(testkit.CLIENT_CHECKS) == [
         "permission.answered",
         "permission.cancelled-on-cancel",

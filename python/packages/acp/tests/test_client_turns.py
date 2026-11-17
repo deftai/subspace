@@ -7,13 +7,11 @@ import time
 from typing import Any
 
 import pytest
-
-from link import connect
-
 from deft_subspace.acp.client import AcpClient, Timeouts
 from deft_subspace.acp.model import MessageEvent
 from deft_subspace.acp.turn import Turn
 from deft_subspace.kernel import RpcPeer, channel_pair
+from link import connect
 
 
 class Fake:

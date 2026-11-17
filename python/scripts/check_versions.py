@@ -41,7 +41,7 @@ def main() -> int:
         if args.tag != f"python-v{version}":
             problems.append(f"tag {args.tag} does not match version {version} (expected python-v{version})")
         changelog = (ROOT / "CHANGELOG.md").read_text()
-        if not re.search(rf"^## {re.escape(version)}\b", changelog, re.M):
+        if not re.search(rf"^## {re.escape(version)}\b", changelog, re.MULTILINE):
             problems.append(f"CHANGELOG.md has no '## {version}' section")
     for problem in problems:
         print(f"error: {problem}", file=sys.stderr)

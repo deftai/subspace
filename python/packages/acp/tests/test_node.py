@@ -147,11 +147,11 @@ async def test_v1_terminals_run_inside_the_workspace_report_output_and_exit_trun
 
         try:
             await turn.terminal("rm", args=["-rf", "/"])
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - the test records whatever is raised
             seen["refused"] = str(error)
         try:
             await turn.terminal(sys.executable, cwd="/")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - the test records whatever is raised
             seen["outside"] = str(error)
         return "end_turn"
 
@@ -178,7 +178,7 @@ async def test_v2_no_client_terminals(tmp_path):
     async def prompt(turn):
         try:
             await turn.terminal("ls")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - the test records whatever is raised
             errors.append(error)
         return "end_turn"
 

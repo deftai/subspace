@@ -48,7 +48,7 @@ def _is_datetime(v: str) -> bool:
     if not re.match(r"\d{4}-\d{2}-\d{2}T", v):
         return False
     try:
-        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        datetime.fromisoformat(v)
         return True
     except ValueError:
         return False

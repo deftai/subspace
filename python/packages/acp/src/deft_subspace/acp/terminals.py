@@ -42,7 +42,7 @@ _SEGMENT = 64 * 1024
 class _Span:
     """Where a terminal's output was at one moment: a view of the log's segments, never a copy."""
 
-    __slots__ = ("segments", "fills", "start", "start_offset", "end", "end_fill", "length")
+    __slots__ = ("end", "end_fill", "fills", "length", "segments", "start", "start_offset")
 
     def __init__(self, segments: list[bytearray], fills: list[int], start: int, start_offset: int, end: int, end_fill: int, length: int) -> None:
         self.segments = segments
@@ -218,7 +218,7 @@ class TerminalState:
 
 
 # The dataclass keeps `output` as an init argument and field; reads go through the log.
-setattr(TerminalState, "output", _OutputField("output", b""))
+setattr(TerminalState, "output", _OutputField("output", b""))  # noqa: B010 - pyright rejects assigning a descriptor to a typed field
 
 
 def _bytes(data: Any) -> bytes:

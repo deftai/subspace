@@ -26,7 +26,7 @@ import re
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from deft_subspace.kernel import AbortController, AbortSignal, RpcError, RpcPeer
 
@@ -70,7 +70,7 @@ class AcpMcpServer:
     type: Literal["acp"] = field(default="acp", init=False)
 
 
-McpServer = Union[StdioMcpServer, HttpMcpServer, SseMcpServer, AcpMcpServer]
+McpServer = StdioMcpServer | HttpMcpServer | SseMcpServer | AcpMcpServer
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
 META_VERSION = "io.modelcontextprotocol/protocolVersion"
@@ -142,7 +142,7 @@ class McpOperationContext:
 McpOutcome = dict[str, Any]
 """Exactly one of `{"result": ...}` (any JSON value) or `{"error": {"code", "message", "data"?}}`, optionally with `_meta`."""
 
-McpRequestHandler = Callable[[McpOperationContext], Union[McpOutcome, Awaitable[McpOutcome]]]
+McpRequestHandler = Callable[[McpOperationContext], McpOutcome | Awaitable[McpOutcome]]
 """Answers MCP requests for one served server. Raise an exception with a `to_mcp_error()`
 method for an inner MCP error; any other exception is a binding failure (-33002), or
 -32800 when cancelled."""
@@ -242,7 +242,7 @@ class McpProvider:
         served.active[request_id] = task
         try:
             return await task
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             if signal.aborted:
                 raise RpcError(McpBindingError.CANCELLED, "MCP request cancelled") from error
             raise RpcError(McpBindingError.BACKEND_FAILED, str(error) or type(error).__name__) from error
@@ -302,7 +302,7 @@ class McpProvider:
             outcome = served.handler(context)
             if inspect.isawaitable(outcome):
                 outcome = await outcome
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             to_mcp = getattr(error, "to_mcp_error", None)
             if not callable(to_mcp):
                 raise

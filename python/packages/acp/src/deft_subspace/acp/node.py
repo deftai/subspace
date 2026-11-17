@@ -47,10 +47,10 @@ __all__ = [
     "inside_workspace",
     "install_agent",
     "installed_binaries",
-    "mcp_connector",
     "load_catalog",
     "load_catalog_async",
     "load_registry",
+    "mcp_connector",
     "parse_agent_file",
     "parse_agent_table",
     "refresh_registry",
@@ -318,7 +318,7 @@ class WorkspaceTerminals:
             if inspect.isawaitable(answer):
                 answer = await answer
             return bool(answer)
-        except Exception:
+        except Exception:  # noqa: BLE001 - an allow check that fails refuses the command
             return False
 
     async def create(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -349,7 +349,7 @@ class WorkspaceTerminals:
         async def close_stdin() -> None:
             try:
                 await process.channel.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - the process may be gone already
                 pass
 
         async def drain() -> None:
@@ -364,7 +364,7 @@ class WorkspaceTerminals:
                 rest = decoder.decode(b"", final=True)
                 if rest:
                     terminal.append(rest)
-            except Exception:
+            except Exception:  # noqa: BLE001 - the process went away
                 pass  # The process went away; its exit is reported below.
 
         async def ended(drained: asyncio.Task[None]) -> ExitInfo:

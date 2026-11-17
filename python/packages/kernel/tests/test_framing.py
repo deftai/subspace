@@ -3,7 +3,6 @@ import time
 from typing import Any
 
 import pytest
-
 from deft_subspace.kernel import EncodeError, FramingDiagnostic, ndjson_decoder, ndjson_encoder
 from deft_subspace.kernel.testing import merge, rechunk
 
