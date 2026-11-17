@@ -668,3 +668,32 @@ fixed in both, each with a failing test first on both sides.
   workspace had fixed names and were deleted afterwards, so they could
   overwrite and remove a user's file. Use fresh random names, checked not to
   exist, and remove only those.
+
+### 2026-11-16: links before `..`
+
+Both ports checked a workspace path by applying `..` to the text first and
+following symbolic links afterwards, so `alias/../c.txt` (alias -> `a/b`)
+was `c.txt` to Subspace and `a/c.txt` to the shell. Nothing outside the
+workspace was reached, but Subspace and the agent's own `cat` saw different
+files. Both ports now resolve the way the operating system does.
+
+- **Resolve paths the way the OS opens them.** On POSIX the kernel walks a
+  path one name at a time and follows each link before it applies the `..`
+  after it. Lexical normalisation (`os.path.abspath`, `normpath`, Node's
+  `path.resolve` and `path.join`) gives a different answer whenever a link
+  comes before a `..`. Check, and return, the path the OS would open; do not
+  check one path and open another.
+- **Windows is the exception.** Win32 applies `..` to the text before it
+  looks at the disk, so there lexical first is what the OS does (and what
+  Python's `ntpath.realpath` does). Write the rule per platform, not once.
+- **The target may not exist yet.** Python's `os.path.realpath` (not
+  strict) walks a missing tail correctly. Node's `realpath` needs the path to
+  exist, so the TS port walks the names itself with `lstat` and `readlink`.
+  Taking "the deepest existing ancestor" by cutting the text is wrong when
+  the tail has `..` in it (`alias/../missing/../link`): a link after the
+  `..` must still be followed, or a write goes through it unchecked.
+- **Decide by where the path really leads.** A link that leaves the
+  workspace and a `..` that comes back in is inside; a path whose text
+  leaves but whose resolution lands inside is inside too. Keep the error
+  messages apart only for the report (outside by the text, or through a
+  link).

@@ -178,13 +178,19 @@ async def inside_workspace(root: str | os.PathLike[str], path: Any) -> str:
 def _inside_workspace(root: str | os.PathLike[str], path: Any) -> str:
     if not isinstance(path, str) or not path:
         raise ValueError("Path is required")
+    real_base = os.path.realpath(root, strict=True)
+    # Resolve the way the operating system opens the path: on POSIX each symbolic
+    # link is followed before the `..` after it is applied (`alias/../c.txt` with
+    # alias -> a/b is a/c.txt, not c.txt). realpath does that, also for a target
+    # that does not exist yet. Windows applies `..` to the text first, and so does
+    # ntpath.realpath.
+    target = os.path.realpath(os.path.join(real_base, path))
+    if _is_inside(real_base, target):
+        return target
     base = os.path.abspath(root)
-    target = os.path.abspath(os.path.join(base, path))
-    if not _is_inside(base, target):
+    if not _is_inside(base, os.path.abspath(os.path.join(base, path))):
         raise ValueError(f"Path is outside the workspace: {path}")
-    if not _is_inside(os.path.realpath(base, strict=True), _real_location(target)):
-        raise ValueError(f"Path leads outside the workspace through a symbolic link: {path}")
-    return target
+    raise ValueError(f"Path leads outside the workspace through a symbolic link: {path}")
 
 
 def _is_inside(root: str, path: str) -> bool:
@@ -193,22 +199,6 @@ def _is_inside(root: str, path: str) -> bool:
     except ValueError:  # another drive (Windows)
         return False
     return rel != ".." and not rel.startswith(f"..{os.sep}") and not os.path.isabs(rel)
-
-
-def _real_location(path: str) -> str:
-    existing = path
-    rest: list[str] = []
-    while True:
-        try:
-            os.lstat(existing)
-            break
-        except OSError:
-            parent = os.path.dirname(existing)
-            if parent == existing:
-                return path
-            rest.insert(0, os.path.basename(existing))
-            existing = parent
-    return os.path.join(os.path.realpath(existing), *rest)
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ import pytest
 from deft_subspace.acp.agent import serve_agent
 from deft_subspace.acp.capabilities import CapabilityError
 from deft_subspace.acp.client import AcpClient
-from deft_subspace.acp.node import connect_agent, workspace_files, workspace_terminals
+from deft_subspace.acp.node import connect_agent, inside_workspace, workspace_files, workspace_terminals
 from deft_subspace.kernel import SpawnError, channel_pair
 
 
@@ -35,6 +35,60 @@ async def test_workspace_files_stay_inside_the_workspace(tmp_path):
     with pytest.raises(FileNotFoundError) as missing:
         await files.read_text_file({"path": "..notes.txt"})
     assert missing.value.errno == errno.ENOENT
+
+
+def _symlink_or_skip(target, link) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"cannot create symbolic links here: {error}")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows applies `..` to the text before following links")
+async def test_a_link_is_followed_before_the_dotdot_after_it(tmp_path):
+    # As the OS opens it: alias/../c.txt (alias -> a/b) is a/c.txt, not c.txt.
+    ws = tmp_path / "ws"
+    (ws / "a" / "b").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "secret.txt").write_text("secret")
+    (ws / "c.txt").write_text("top")
+    (ws / "a" / "c.txt").write_text("deep")
+    _symlink_or_skip(ws / "a" / "b", ws / "alias")
+    _symlink_or_skip(tmp_path / "outside", ws / "up")
+    _symlink_or_skip(tmp_path, ws / "a" / "escape")
+    files = workspace_files(str(ws))
+    real = os.path.realpath(ws)
+
+    # An existing target: the file the OS opens.
+    assert (ws / "alias/../c.txt").read_text() == "deep"
+    assert await files.read_text_file({"path": "alias/../c.txt"}) == "deep"
+    assert await inside_workspace(ws, "alias/../c.txt") == os.path.join(real, "a", "c.txt")
+    # The terminal cwd uses the same resolution.
+    assert await inside_workspace(ws, "alias/..") == os.path.join(real, "a")
+    # Lexically outside, but the OS lands inside: allowed.
+    assert await files.read_text_file({"path": "alias/../../c.txt"}) == "top"
+
+    # A target that does not exist yet, also with `..` after a missing folder.
+    await files.write_text_file({"path": "alias/../new.txt", "content": "n"})
+    assert (ws / "a" / "new.txt").read_text() == "n"
+    assert not (ws / "new.txt").exists()
+    await files.write_text_file({"path": "alias/../missing/../d.txt", "content": "d"})
+    assert (ws / "a" / "d.txt").read_text() == "d"
+    assert await inside_workspace(ws, "alias/../missing/x/../../e.txt") == os.path.join(real, "a", "e.txt")
+    # A link after the missing folder's `..` is still followed, and refused.
+    with pytest.raises(ValueError, match="symbolic link"):
+        await files.write_text_file({"path": "alias/../missing/../escape/x.txt", "content": ""})
+
+    # A link that leads outside, then `..`: outside unless it lands back inside.
+    assert await files.read_text_file({"path": "up/../ws/c.txt"}) == "top"
+    with pytest.raises(ValueError, match="symbolic link"):
+        await files.read_text_file({"path": "up/../secret.txt"})
+    with pytest.raises(ValueError, match="symbolic link"):
+        await files.write_text_file({"path": "up/../new.txt", "content": ""})
+    assert not (tmp_path / "new.txt").exists()
+    # Outside by the text and by the OS: the same error as before.
+    with pytest.raises(ValueError, match="Path is outside the workspace"):
+        await files.read_text_file({"path": "../secret.txt"})
 
 
 async def test_a_missing_agent_binary_is_a_spawn_error_with_a_hint():
