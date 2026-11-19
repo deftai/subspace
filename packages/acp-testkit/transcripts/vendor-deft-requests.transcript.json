@@ -27,6 +27,64 @@
           "outcome": "cancelled"
         }
       ]
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": [
+              {
+                "name": "show_image",
+                "description": "Show an image",
+                "inputSchema": {
+                  "type": "object"
+                }
+              },
+              {
+                "name": "show_diagram",
+                "description": "Show a diagram",
+                "inputSchema": {
+                  "type": "object"
+                }
+              },
+              {
+                "name": "show_page",
+                "description": "Show a page",
+                "inputSchema": {
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ],
+        "call": [
+          {
+            "ok": {
+              "ok": false,
+              "message": "No path given."
+            }
+          },
+          {
+            "ok": {
+              "ok": false,
+              "message": "No such file: /tmp-oracle/project/missing.png"
+            }
+          },
+          {
+            "ok": {
+              "ok": false,
+              "message": "No Mermaid source given."
+            }
+          }
+        ]
+      },
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
+      }
     }
   },
   "steps": [
@@ -804,6 +862,42 @@
   ],
   "expected": [
     {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": [
+        {
+          "name": "show_image",
+          "description": "Show an image",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "show_diagram",
+          "description": "Show a diagram",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "show_page",
+          "description": "Show a page",
+          "inputSchema": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
       "kind": "ask",
       "askKind": "key",
       "request": {
@@ -837,6 +931,45 @@
       },
       "answer": {
         "outcome": "cancelled"
+      }
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "call",
+      "args": {
+        "name": "show_image"
+      },
+      "result": {
+        "ok": false,
+        "message": "No path given."
+      }
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "call",
+      "args": {
+        "name": "show_image"
+      },
+      "result": {
+        "ok": false,
+        "message": "No such file: /tmp-oracle/project/missing.png"
+      }
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "call",
+      "args": {
+        "name": "show_diagram"
+      },
+      "result": {
+        "ok": false,
+        "message": "No Mermaid source given."
       }
     }
   ],

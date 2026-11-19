@@ -48,6 +48,22 @@
           "action": "decline"
         }
       ]
+    },
+    "services": {
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
+      },
+      "tools": {
+        "list": [
+          {
+            "ok": []
+          }
+        ]
+      }
     }
   },
   "steps": [
@@ -855,6 +871,20 @@
   ],
   "expected": [
     {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": []
+    },
+    {
       "kind": "ask",
       "askKind": "choices",
       "request": {
@@ -933,7 +963,6 @@
       "kind": "ask",
       "askKind": "question",
       "request": {
-        "sessionId": "sess-1",
         "message": "Fill",
         "mode": "form",
         "requestedSchema": {
@@ -952,7 +981,6 @@
       "kind": "ask",
       "askKind": "question",
       "request": {
-        "sessionId": "sess-1",
         "message": "Open",
         "mode": "url",
         "url": "https://x.test",

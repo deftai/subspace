@@ -173,6 +173,20 @@
   "expected": [
     {
       "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": null
+    },
+    {
+      "kind": "service",
       "service": "presentation",
       "method": "systemPrompt",
       "result": "Show diagrams when helpful."

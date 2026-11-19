@@ -40,6 +40,13 @@
             "error": "tools turned off"
           }
         ]
+      },
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
       }
     }
   },
@@ -216,6 +223,20 @@
     }
   ],
   "expected": [
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": null
+    },
     {
       "kind": "ask",
       "askKind": "sign_in",

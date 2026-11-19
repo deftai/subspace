@@ -36,6 +36,22 @@
           "action": "accept"
         }
       ]
+    },
+    "services": {
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
+      },
+      "tools": {
+        "list": [
+          {
+            "ok": []
+          }
+        ]
+      }
     }
   },
   "steps": [
@@ -718,12 +734,25 @@
   ],
   "expected": [
     {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": []
+    },
+    {
       "kind": "ask",
       "askKind": "question",
       "request": {
         "message": "Name?",
         "mode": "form",
-        "sessionId": "sess-1",
         "toolCallId": "tc",
         "requestedSchema": {
           "type": "object"

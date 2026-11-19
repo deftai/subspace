@@ -30,6 +30,13 @@
             "error": "tools turned off"
           }
         ]
+      },
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
       }
     }
   },
@@ -213,6 +220,21 @@
       "action": "stop"
     }
   ],
-  "expected": [],
+  "expected": [
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": null
+    }
+  ],
   "expectSessionId": "sess-1"
 }

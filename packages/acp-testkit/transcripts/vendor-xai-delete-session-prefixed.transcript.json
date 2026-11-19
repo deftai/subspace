@@ -14,6 +14,22 @@
   "workbench": {
     "project": {
       "path": "/tmp-oracle/project"
+    },
+    "services": {
+      "presentation": {
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
+      },
+      "tools": {
+        "list": [
+          {
+            "ok": []
+          }
+        ]
+      }
     }
   },
   "steps": [
@@ -523,6 +539,21 @@
       "action": "stop"
     }
   ],
-  "expected": [],
+  "expected": [
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "presentation",
+      "method": "capabilities",
+      "result": {}
+    },
+    {
+      "kind": "service",
+      "workbench": "main",
+      "service": "tools",
+      "method": "list",
+      "result": []
+    }
+  ],
   "expectSessionId": "sess-1"
 }
