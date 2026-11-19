@@ -51,6 +51,8 @@
   - Added `packages/acp-vendors/test/unit.test.ts` (4/4 pass: X4 detection baseline, Deft tools/flags, xAI notifications/choices/plan, Antigravity `-32602` retry) and `packages/acp-vendors/test/vendors.test.ts` (runs all 18 `vendor-*.transcript.json` files + no-Node-API check).
 - **Transcript results:** 17/18 pass 100% on the wire and match every `ask` and `event` row identically. Stopped per Specifier instruction #4 (without editing transcripts) because: (a) all 18 transcripts omit the two leading `initialize` service rows (`presentation.capabilities`, `tools.list`) from `expected` (and `vendor-antigravity-sign-in-typed` omits `project.rememberEnv`); (b) `vendor-deft-requests` omits `workbench.services.tools` (`list` and `call`). Details logged in `docs/clean-room-log.md`.
 - **Checks:** `pnpm run typecheck` (10/10 projects), `pnpm --filter @deft-subspace/acp-vendors run build`, and `pnpm install --frozen-lockfile --offline` all pass.
+- **Done (2026-11-19, on `051d4d9`):** Phase 4 step 2 complete — `@deft-subspace/acp-vendors` passes 23/23 tests (all 18 `vendor-*.transcript.json` transcripts + 4 unit tests + no-Node-API check) and `pnpm run typecheck` passes 10/10. Stopped; not starting Phase 5.
+
 
 
 

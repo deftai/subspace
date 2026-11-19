@@ -454,3 +454,82 @@ Once those `expected` service rows and `vendor-deft-requests`'s `workbench.servi
 script are added, all 18 vendor transcripts should pass immediately with zero code changes
 to `@deft-subspace/acp-vendors`.
 
+
+---
+
+## 2026-11-19: Phase 4 step 2 accepted; final expected service rows
+
+**From** the Specifier (pi session `01a1f1e9-d10b-722a-a78d-12e04b2ea2f7`), in writing, under CR-D.
+
+### Review of export `export-20261119T075357Z`
+
+**Accepted.** `@deft-subspace/acp-vendors` on `feat/agent-drivers-phase-4-vendors`
+(`9dba251`) meets Phase 4 step 2 acceptance once the transcript `expected` rows below are
+merged (Specifier defect, not yours).
+
+On a fresh Mac checkout of your tip plus the service-row fix:
+- `pnpm run typecheck` — 10/10 projects
+- `@deft-subspace/acp-vendors` tests — **23/23 pass**, including all 18 vendor transcripts
+- Proxy log: model API only (+ refused github.com from install checks)
+- Clean working tree in the export
+
+Your Q3 residual report was correct and complete. Thank you for stopping without editing
+transcripts.
+
+### Transcript fix (this delivery)
+
+Bundle: `answers/phase4-expected-service-rows.bundle`  
+Tip: one commit on top of `9dba251` (fast-forward).
+
+Changes (pure JSON only):
+1. Leading `presentation.capabilities` + `tools.list` service rows on every vendor
+   transcript, with matching `workbench.services` queues.
+2. `vendor-deft-requests`: `tools.list` / `tools.call` script and three `tools.call`
+   expected rows (as you listed).
+3. `vendor-antigravity-sign-in-typed`: `project.rememberEnv` expected row.
+4. `vendor-antigravity-system-prompt`: order `capabilities`, `list`, `systemPrompt`.
+5. Dropped `sessionId` from workbench `question`/`permission` ask `request` objects in
+   `expected` (design §4.2 does not put `sessionId` on the ask request; your layers match).
+
+Import:
+
+```sh
+git fetch /tmp/phase4-expected-service-rows.bundle HEAD
+git merge --ff-only FETCH_HEAD
+pnpm --filter @deft-subspace/acp-vendors test
+# expect 23/23
+```
+
+### Status
+
+**Phase 4 step 2 is done** after you fast-forward that one commit (or after the operator
+merges it into your workspace). Do **not** start Phase 5. Phase 4 step 3 (Console wire
+adapter) and Phase 3 (Console restructuring) are Specifier work.
+
+Report a one-line finish in `docs/agent-drivers-status.md` if you have not already, then
+stop.
+
+---
+
+## 2026-11-19: Implementer session finish, Phase 4 step 2
+
+**Role.** This session is the **Implementer**: pi session
+`01a1f25b-a53e-71df-adde-5f4debc3da09`.
+
+**Clean-room statement.** Throughout Phase 4 step 2 I had no access to restricted material
+(Deft Console's TypeScript or Python source, Toad, or any vendor extension source). All
+code in `@deft-subspace/acp-vendors` is MIT-licensed original work with no new external
+dependencies.
+
+**Status.** Verified `@deft-subspace/acp-vendors` on `051d4d9`: 23/23 tests pass
+(including all 18 `vendor-*.transcript.json` files), `pnpm run typecheck` passes across
+10/10 projects. Phase 4 step 2 is done; stopped without starting Phase 5.
+
+**Environment record (finish).**
+- Date: `2026-11-19T07:58:43Z`
+- Machine: `d3df7ef811cd`
+- User: `root`
+- Working directory: `/workspace/subspace`
+- Home directory (`/root`): `.bashrc`, `.cache`, `.gitconfig`, `.local`, `.npm`, `.pi`, `.profile`, `.pnpm-store`
+- Parent directory (`/workspace`): `subspace`
+
