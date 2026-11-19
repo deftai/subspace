@@ -56,6 +56,63 @@ export type AskResponder =
   | Readonly<Record<string, readonly unknown[]>>
   | ((ask: Ask<unknown, unknown>, ctx: AskHandlerContext) => unknown | Promise<unknown>);
 
+export type ServiceReply<T = unknown> = { ok: T } | { error: string };
+
+/**
+ * Data-only service scripting: for each service method, a queue of replies
+ * consumed in call order (`{ ok: value }` resolves, `{ error: message }` rejects).
+ * When a queue is exhausted (or omitted), the fake workbench uses its default.
+ */
+export interface FakeWorkbenchServiceScript {
+  files?: {
+    readText?: readonly ServiceReply<string>[];
+    writeText?: readonly ServiceReply<void>[];
+  };
+  terminals?: {
+    create?: readonly ServiceReply<{ terminalId: string }>[];
+    output?: readonly ServiceReply<{
+      output: string;
+      truncated: boolean;
+      exitStatus?: { exitCode: number | null; signal: string | null };
+    }>[];
+    waitForExit?: readonly ServiceReply<{ exitCode: number | null; signal: string | null }>[];
+    kill?: readonly ServiceReply<void>[];
+    release?: readonly ServiceReply<void>[];
+  };
+  tools?: {
+    list?: readonly ServiceReply<ToolDescriptor[] | null>[];
+    call?: readonly ServiceReply<{ ok: boolean; message: string }>[];
+    mcpServers?: readonly ServiceReply<McpServerDeclaration[]>[];
+  };
+  sessions?: {
+    opened?: readonly ServiceReply<void>[];
+    titled?: readonly ServiceReply<void>[];
+    used?: readonly ServiceReply<void>[];
+    deleted?: readonly ServiceReply<void>[];
+  };
+  project?: {
+    rememberEnv?: readonly ServiceReply<void>[];
+  };
+  presentation?: {
+    capabilities?: readonly ServiceReply<Readonly<Record<string, unknown>>>[];
+    systemPrompt?: readonly ServiceReply<string | null>[];
+  };
+}
+
+/** Pure-data workbench configuration, storable in a JSON transcript file. */
+export interface FakeWorkbenchData {
+  agent?: { readonly name: string; readonly identity: string | null };
+  project?: {
+    path?: string;
+    env?: Readonly<Record<string, string>>;
+    settings?: Readonly<Record<string, unknown>>;
+  };
+  /** Per-ask-kind queue of answers, consumed in order. Unscripted asks settle cancelled. */
+  asks?: Readonly<Record<string, readonly unknown[]>>;
+  /** Per-service-method queue of `{ ok }` / `{ error }` replies, consumed in order. */
+  services?: FakeWorkbenchServiceScript;
+}
+
 export interface FakeWorkbenchOptions {
   agent?: { readonly name: string; readonly identity: string | null };
   project?: {
@@ -71,6 +128,8 @@ export interface FakeWorkbenchOptions {
   presentation?: Partial<WorkbenchPresentation>;
   /** Scripted ask answers: either a per-kind queue of answers, or a responder function. */
   asks?: AskResponder;
+  /** Data-only per-service-method reply queues (consumed before function overrides or defaults). */
+  services?: FakeWorkbenchServiceScript;
 }
 
 interface OpenAskEntry {
@@ -101,6 +160,7 @@ export class FakeWorkbench implements AgentWorkbench {
   readonly #children = new Map<string, AgentWorkbench>();
   readonly #openAsks = new Set<OpenAskEntry>();
   readonly #askQueues = new Map<string, unknown[]>();
+  readonly #serviceQueues = new Map<string, ServiceReply[]>();
   readonly #askFn?: (ask: Ask<unknown, unknown>, ctx: AskHandlerContext) => unknown | Promise<unknown>;
   readonly #rememberedEnv = new Map<string, string>();
   readonly #options: FakeWorkbenchOptions;
@@ -119,6 +179,15 @@ export class FakeWorkbench implements AgentWorkbench {
     } else if (options.asks) {
       for (const [kind, list] of Object.entries(options.asks)) {
         this.#askQueues.set(kind, [...list]);
+      }
+    }
+
+    if (options.services) {
+      for (const [service, methods] of Object.entries(options.services)) {
+        if (!methods) continue;
+        for (const [method, queue] of Object.entries(methods as Record<string, readonly ServiceReply[] | undefined>)) {
+          if (queue) this.#serviceQueues.set(`${service}.${method}`, [...queue]);
+        }
       }
     }
 
@@ -349,7 +418,15 @@ export class FakeWorkbench implements AgentWorkbench {
     };
     this.records.push(entry);
     try {
-      const result = await fn();
+      const queue = this.#serviceQueues.get(`${service}.${method}`);
+      let result: T;
+      if (queue && queue.length > 0) {
+        const scripted = queue.shift()!;
+        if ('error' in scripted) throw new Error(scripted.error);
+        result = scripted.ok as T;
+      } else {
+        result = await fn();
+      }
       entry.result = tryClone(result).value;
       return result;
     } catch (err) {
@@ -451,11 +528,12 @@ export class FakeWorkbench implements AgentWorkbench {
       path,
       env,
       setting: (key: string) => settings[key],
-      rememberEnv: (name: string, value: string) =>
-        this.#recordService(wb, 'project', 'rememberEnv', { name, value }, async () => {
-          this.#rememberedEnv.set(name, value);
+      rememberEnv: async (name: string, value: string) => {
+        await this.#recordService(wb, 'project', 'rememberEnv', { name, value }, async () => {
           if (rememberImpl) await rememberImpl(name, value);
-        }),
+        });
+        this.#rememberedEnv.set(name, value);
+      },
     };
   }
 

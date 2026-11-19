@@ -24,7 +24,8 @@
   "files": [
     "dist",
     "src",
-    "corpus"
+    "corpus",
+    "transcripts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -34,7 +35,8 @@
   },
   "dependencies": {
     "@deft-subspace/kernel": "workspace:*",
-    "@deft-subspace/acp": "workspace:*"
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/agent-driver": "workspace:*"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "2.4.0",

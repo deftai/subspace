@@ -75,13 +75,25 @@ export {
   FakeWorkbench,
   type AskHandlerContext,
   type AskResponder,
+  type FakeWorkbenchData,
   type FakeWorkbenchOptions,
+  type FakeWorkbenchServiceScript,
+  type ServiceReply,
   type WorkbenchRecord,
 } from './fake-workbench.ts';
-export { type DriverTranscript, type ExpectedRecord, type TranscriptStep } from './transcript.ts';
+export {
+  type DriverTranscript,
+  type ExpectedRecord,
+  type RecordedDriverTranscript,
+  type RecordedTranscriptStep,
+  type TranscriptStep,
+} from './transcript.ts';
 export {
   assertDriverConforms,
   checkDriver,
+  matchSubset,
+  verifyWorkbenchRecords,
+  type CheckDriverOptions,
   type ConformanceFailure,
   type ConformanceResult,
 } from './conformance.ts';

@@ -31,3 +31,15 @@
 - **Python port (`python/`):** Would need a `deft-subspace-agent-driver` package (event/ask dataclasses, `FakeWorkbench`, `check_driver`) and a client-side `client_endpoint` / `ClientLayer` / `both_spellings` / `NEGOTIATED_AGENT` mirror in `deft-subspace-acp` with `AcpClient` rebuilt on it.
 - **Clean-room statement (CR-E):** Session `01a1f25b-a53e-71df-adde-5f4debc3da09` had no access to restricted material; full start and finish environment records are in `docs/clean-room-log.md`.
 
+## Phase 1/2 review fixes (2026-11-19)
+
+- **Branch:** `feat/agent-drivers-phase-2-fixes` (from `feat/agent-drivers-phase-2`, `ebc4925`)
+- **Finding 1 (frozen lockfile):** Updated `pnpm-lock.yaml` with `packages/agent-driver` and `@deft-subspace/agent-driver` under `packages/acp-testkit` (no new external dependencies). Verified with `pnpm install --frozen-lockfile --offline`.
+- **Finding 2 (data-only transcripts + ACP wire replay):**
+  - `@deft-subspace/agent-driver`: added data-only `FakeWorkbenchData` / `FakeWorkbenchServiceScript` (`{ ok }` / `{ error }` queues per service method), `RecordedDriverTranscript` / `RecordedTranscriptStep` with opaque `wire` and `action: 'exchange'`, and exported `verifyWorkbenchRecords` / `matchSubset`. Still zero protocol code and zero Node APIs.
+  - `@deft-subspace/acp-testkit`: added `packages/acp-testkit/src/driver-transcript.ts` (`AcpWireMessage`, `parseAcpTranscript`, `wireFromTrace`, `wireMessagesOf`, `wireToTrace`, `checkAcpDriver` / `assertAcpDriverConforms`, `checkClientLayer` / `assertClientLayerConforms`), built on `replayAgent` with automatic client response checking and optional `match` subset checks.
+  - Documented the format in `docs/agent-driver-transcripts.md` with tested example `packages/acp-testkit/transcripts/example-vendor-key.transcript.json`.
+- **Tests:** `pnpm run typecheck` passes (9/9 projects); `build` passes (`acp`, `agent-driver`, `acp-testkit`); `agent-driver`: 10/10; `acp-testkit`: 93/93 (including 5 new transcript-runner tests).
+- **Next:** Stopped; ready for Phase 4 step 2 once the Specifier adds vendor transcripts in this format to `@deft-subspace/acp-testkit`.
+
+

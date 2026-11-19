@@ -22,6 +22,13 @@ export interface ConformanceResult {
   records: readonly WorkbenchRecord[];
 }
 
+export interface CheckDriverOptions {
+  /** Called for `action: 'exchange'` steps (used by wire-replaying companions to wait for an exchange to finish). */
+  onExchange?: (step: Extract<TranscriptStep, { action: 'exchange' }>, stepIndex: number) => void | Promise<void>;
+  /** Called after every step completes (optional synchronization hook for wire-replaying companions). */
+  afterStep?: (step: TranscriptStep, stepIndex: number) => void | Promise<void>;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array);
 }
@@ -33,7 +40,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * - Arrays: equal length and element-by-element match
  * - Objects: every own key in `expected` (with value !== undefined) must match `actual[key]`
  */
-function matchSubset(expected: unknown, actual: unknown, path: string): string | null {
+export function matchSubset(expected: unknown, actual: unknown, path: string): string | null {
   if (expected === actual || Object.is(expected, actual)) return null;
 
   if (expected instanceof Uint8Array) {
@@ -106,6 +113,7 @@ async function runStep(
   workbench: FakeWorkbench,
   transcript: DriverTranscript,
   failures: ConformanceFailure[],
+  options?: CheckDriverOptions,
 ): Promise<void> {
   const where = `step[${index}] (${step.action})`;
   const checkValue = (expected: unknown, actual: unknown) => {
@@ -233,6 +241,10 @@ async function runStep(
       workbench.close();
       return;
     }
+    case 'exchange': {
+      await options?.onExchange?.(step, index);
+      return;
+    }
     case 'custom': {
       await step.run({ driver, workbench });
       return;
@@ -241,34 +253,17 @@ async function runStep(
 }
 
 /**
- * Drive a driver produced by `factory` through `transcript` and compare the
- * fake workbench's recorded events, asks, service calls and turn boundaries
- * against what the transcript requires.
+ * Verify a FakeWorkbench's recorded events, asks, service calls and turn
+ * boundaries against a transcript's expected list, plus plain-data cloneability
+ * and W3 (no open asks left behind).
  */
-export async function checkDriver(
-  factory: AgentDriverFactory,
-  transcript: DriverTranscript,
-): Promise<ConformanceResult> {
-  const failures: ConformanceFailure[] = [];
-  const workbench = new FakeWorkbench({
-    ...transcript.workbench,
-    agent: transcript.workbench?.agent ?? transcript.options.agent,
-  });
-
-  const driver = factory(workbench, transcript.options);
-
-  for (let i = 0; i < transcript.steps.length; i++) {
-    const step = transcript.steps[i]!;
-    try {
-      await runStep(step, i, driver, workbench, transcript, failures);
-    } catch (err) {
-      failures.push({
-        where: `step[${i}] (${step.action})`,
-        message: `step threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
-        actual: err,
-      });
-    }
-  }
+export function verifyWorkbenchRecords(
+  workbench: FakeWorkbench,
+  expected: readonly ExpectedRecord[],
+  transcriptName: string,
+  initialFailures: readonly ConformanceFailure[] = [],
+): ConformanceResult {
+  const failures: ConformanceFailure[] = [...initialFailures];
 
   // Plain-data check: every emitted event and ask request must be structured-cloneable.
   for (let i = 0; i < workbench.records.length; i++) {
@@ -293,21 +288,21 @@ export async function checkDriver(
   }
 
   // Compare recorded entries in order.
-  const count = Math.min(transcript.expected.length, workbench.records.length);
+  const count = Math.min(expected.length, workbench.records.length);
   for (let i = 0; i < count; i++) {
-    const mismatch = compareRecord(transcript.expected[i]!, workbench.records[i]!, i);
+    const mismatch = compareRecord(expected[i]!, workbench.records[i]!, i);
     if (mismatch) failures.push(mismatch);
   }
-  if (workbench.records.length < transcript.expected.length) {
-    for (let i = workbench.records.length; i < transcript.expected.length; i++) {
+  if (workbench.records.length < expected.length) {
+    for (let i = workbench.records.length; i < expected.length; i++) {
       failures.push({
         where: `record[${i}]`,
-        message: `missing expected ${transcript.expected[i]!.kind} record`,
-        expected: transcript.expected[i],
+        message: `missing expected ${expected[i]!.kind} record`,
+        expected: expected[i],
       });
     }
-  } else if (workbench.records.length > transcript.expected.length) {
-    for (let i = transcript.expected.length; i < workbench.records.length; i++) {
+  } else if (workbench.records.length > expected.length) {
+    for (let i = expected.length; i < workbench.records.length; i++) {
       failures.push({
         where: `record[${i}]`,
         message: `unexpected extra ${workbench.records[i]!.kind} record`,
@@ -318,18 +313,54 @@ export async function checkDriver(
 
   return {
     passed: failures.length === 0,
-    transcript: transcript.name,
+    transcript: transcriptName,
     failures,
     records: workbench.records,
   };
+}
+
+/**
+ * Drive a driver produced by `factory` through `transcript` and compare the
+ * fake workbench's recorded events, asks, service calls and turn boundaries
+ * against what the transcript requires.
+ */
+export async function checkDriver(
+  factory: AgentDriverFactory,
+  transcript: DriverTranscript,
+  options?: CheckDriverOptions,
+): Promise<ConformanceResult> {
+  const failures: ConformanceFailure[] = [];
+  const workbench = new FakeWorkbench({
+    ...transcript.workbench,
+    agent: transcript.workbench?.agent ?? transcript.options.agent,
+  });
+
+  const driver = factory(workbench, transcript.options);
+
+  for (let i = 0; i < transcript.steps.length; i++) {
+    const step = transcript.steps[i]!;
+    try {
+      await runStep(step, i, driver, workbench, transcript, failures, options);
+      await options?.afterStep?.(step, i);
+    } catch (err) {
+      failures.push({
+        where: `step[${i}] (${step.action})`,
+        message: `step threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        actual: err,
+      });
+    }
+  }
+
+  return verifyWorkbenchRecords(workbench, transcript.expected, transcript.name, failures);
 }
 
 /** Run `checkDriver` and throw a formatted Error if any check fails. */
 export async function assertDriverConforms(
   factory: AgentDriverFactory,
   transcript: DriverTranscript,
+  options?: CheckDriverOptions,
 ): Promise<ConformanceResult> {
-  const result = await checkDriver(factory, transcript);
+  const result = await checkDriver(factory, transcript, options);
   if (!result.passed) {
     const lines = result.failures.map((f) => `  - [${f.where}] ${f.message}`);
     throw new Error(`Driver failed transcript "${result.transcript}":\n${lines.join('\n')}`);

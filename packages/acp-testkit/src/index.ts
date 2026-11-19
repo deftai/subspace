@@ -16,3 +16,19 @@ export {
   type ToolInputSummary,
   type ToolInputThresholds,
 } from './tool-input.ts';
+export {
+  assertAcpDriverConforms,
+  assertClientLayerConforms,
+  checkAcpDriver,
+  checkClientLayer,
+  parseAcpTranscript,
+  wireFromTrace,
+  wireMessagesOf,
+  wireToTrace,
+  type AcpDriverFactory,
+  type AcpDriverTranscript,
+  type AcpTranscriptRunOptions,
+  type AcpWireMessage,
+  type ClientLayerHarness,
+  type ClientLayerSetup,
+} from './driver-transcript.ts';

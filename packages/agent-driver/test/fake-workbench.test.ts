@@ -155,3 +155,34 @@ test('§4: unknown ask kind and unscripted asks settle cancelled immediately', a
   assert.ok(isCancelled(unscripted));
   assert.equal(wb.openAskCount, 0);
 });
+
+test('data-only services script replays ok and error replies in call order without functions', async () => {
+  const wb = new FakeWorkbench({
+    project: { path: '/repo' },
+    services: {
+      files: {
+        readText: [{ ok: 'first file' }, { error: 'ENOENT: missing.txt' }],
+      },
+      tools: {
+        list: [{ ok: [{ name: 'draw', description: 'Draw', inputSchema: { type: 'object' } }] }],
+        call: [{ ok: { ok: true, message: 'drawn' } }],
+      },
+      presentation: {
+        capabilities: [{ ok: { theme: 'dark' } }],
+        systemPrompt: [{ ok: 'Be concise.' }],
+      },
+    },
+  });
+
+  assert.equal(await wb.files.readText({ sessionId: 's1', path: 'a.txt' }), 'first file');
+  await assert.rejects(() => wb.files.readText({ sessionId: 's1', path: 'missing.txt' }), /ENOENT: missing\.txt/);
+  assert.deepEqual(await wb.tools.list(), [{ name: 'draw', description: 'Draw', inputSchema: { type: 'object' } }]);
+  assert.deepEqual(await wb.tools.call('draw', { shape: 'box' }), { ok: true, message: 'drawn' });
+  assert.deepEqual(await wb.presentation.capabilities(), { theme: 'dark' });
+  assert.equal(await wb.presentation.systemPrompt(), 'Be concise.');
+
+  assert.equal(wb.records.length, 6);
+  const errRec = wb.records[1];
+  assert.equal(errRec?.kind, 'service');
+  assert.equal(errRec.error, 'ENOENT: missing.txt');
+});

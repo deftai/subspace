@@ -91,6 +91,9 @@ importers:
       '@deft-subspace/acp':
         specifier: workspace:*
         version: link:../acp
+      '@deft-subspace/agent-driver':
+        specifier: workspace:*
+        version: link:../agent-driver
       '@deft-subspace/kernel':
         specifier: workspace:*
         version: link:../kernel
@@ -101,6 +104,15 @@ importers:
       zod:
         specifier: ^4.1.0
         version: 4.6.7
+
+  packages/agent-driver:
+    devDependencies:
+      '@deft-subspace/acp':
+        specifier: workspace:*
+        version: link:../acp
+      '@deft-subspace/kernel':
+        specifier: workspace:*
+        version: link:../kernel
 
   packages/claude:
     dependencies:
