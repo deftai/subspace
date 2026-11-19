@@ -67,3 +67,31 @@ Viz's decisions on the questions Phase 0 raised are in `docs/agent-driver-design
 - Review of the crossing documents by Deft's lawyer.
 - No Implementer has started. The Implementer's environment and records are set out in the
   brief (CR-C, CR-E).
+
+---
+
+## 2026-11-19: Implementer session start, Phases 1 and 2
+
+**Role.** This session is the **Implementer**: pi session
+`01a1f25b-a53e-71df-adde-5f4debc3da09`.
+
+**Clean-room statement.** I am a fresh session that has never read, been shown, or been
+told the contents of Deft Console's source (TypeScript or Python) or of Toad. I have had
+no access to restricted material. I am working exclusively from the Phase 0 documents in
+`deftai/subspace`, the Subspace repository, the ACP specification, and the official ACP
+SDK reference.
+
+**Phases.** Starting Phase 1 (`@deft-subspace/agent-driver`) and Phase 2
+(`clientEndpoint` and `ClientLayer`). Phase 4 step 2 (vendor layers) and Phase 5 step 1
+(ACP driver) are blocked on the Specifier adding the vendor transcripts to
+`@deft-subspace/acp-testkit`.
+
+**Environment record (start).**
+- Date: `2026-11-19T05:51:07Z`
+- Machine: `283d6d978d2d`
+- User: `root`
+- Working directory: `/workspace/subspace`
+- Home directory (`/root`): `.bashrc`, `.cache`, `.gitconfig`, `.local`, `.npm`, `.pi`, `.profile`
+- Parent directory (`/workspace`): `subspace`
+- Starting commit: `d260c85` (`feat/agent-drivers-phase-0`), branched to `feat/agent-drivers-phase-1`
+

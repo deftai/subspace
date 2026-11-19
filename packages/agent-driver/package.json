@@ -1,0 +1,44 @@
+{
+  "name": "@deft-subspace/agent-driver",
+  "version": "0.0.0-experiment",
+  "description": "Protocol-neutral agent driver interfaces, event vocabulary, fake workbench, and conformance runner.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts"
+  },
+  "devDependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  },
+  "peerDependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@deft-subspace/acp": {
+      "optional": true
+    },
+    "@deft-subspace/kernel": {
+      "optional": true
+    }
+  }
+}
