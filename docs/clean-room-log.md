@@ -95,3 +95,30 @@ SDK reference.
 - Parent directory (`/workspace`): `subspace`
 - Starting commit: `d260c85` (`feat/agent-drivers-phase-0`), branched to `feat/agent-drivers-phase-1`
 
+---
+
+## 2026-11-19: Implementer session finish, Phases 1 and 2
+
+**Role.** This session is the **Implementer**: pi session
+`01a1f25b-a53e-71df-adde-5f4debc3da09`.
+
+**Clean-room statement.** Throughout this session I had no access to restricted material
+(Deft Console's TypeScript or Python source, or Toad). All code and documentation added
+are MIT-licensed, original work written solely from the Phase 0 documents in
+`deftai/subspace`, the Subspace repository, the ACP specification, and the official ACP
+SDK reference, with no new runtime dependencies.
+
+**Phases completed.**
+- Phase 1 (`@deft-subspace/agent-driver`): done on branch `feat/agent-drivers-phase-1` (commit `494877a`).
+- Phase 2 (`clientEndpoint`, `ClientLayer`, `AcpClient` preset stack, `docs/AGENT-LAYERS.md`): done on branch `feat/agent-drivers-phase-2`.
+- Phase 4 step 2 (vendor layers) and Phase 5 step 1 (ACP driver): not started; stopped per §9 and §10 because the vendor transcripts are not yet in `@deft-subspace/acp-testkit`.
+
+**Environment record (finish).**
+- Date: `2026-11-19T06:04:02Z`
+- Machine: `283d6d978d2d`
+- User: `root`
+- Working directory: `/workspace/subspace`
+- Home directory (`/root`): `.bashrc`, `.cache`, `.gitconfig`, `.local`, `.npm`, `.pi`, `.profile`, `.pnpm-store`
+- Parent directory (`/workspace`): `subspace`
+
+

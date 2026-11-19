@@ -12,14 +12,20 @@
 import { validateElicitation } from './elicitation.ts';
 import { mergeHandlers, observes, type TurnHandlers } from './handlers.ts';
 import {
-  cancelRequest,
   LocalError,
   RpcError,
-  RpcPeer,
   type Channel,
   type PeerDiagnostic,
+  type RpcPeer,
   type RpcPeerOptions,
 } from '@deft-subspace/kernel';
+import {
+  clientEndpoint,
+  NEGOTIATED_AGENT,
+  type ClientEndpoint,
+  type ClientLayer,
+  type NegotiatedAgent,
+} from './client-endpoint.ts';
 import type {
   BackgroundItem,
   ContentBlock,
@@ -39,7 +45,6 @@ import { agentSupport, CapabilityError, type AgentSupport } from './capabilities
 import { configOptionsFrom, configParams, type ConfigOption, type SelectConfigOption } from './config.ts';
 import {
   callExtension,
-  registerExtensions,
   type ExtensionHandler,
   type ExtensionNotification,
   type ExtensionRequest,
@@ -172,6 +177,8 @@ export interface ClientOptions extends TurnHandlers {
   queuePrompts?: boolean;
   /** Handlers for the agent's vendor extension methods (see `extensionRequest`, `handle`). */
   extensions?: ExtensionHandler[];
+  /** Additional client layers (for example vendor protocol layers) composed into the client endpoint stack. */
+  layers?: ClientLayer<any>[];
   /** The agent finished a URL-mode elicitation (`elicitation/complete`). */
   onElicitationComplete?: (notification: { elicitationId: string; sessionId?: string }) => void;
   /** Sees every JSON-RPC message, both directions. */
@@ -216,6 +223,7 @@ export interface AgentInfo {
 
 export class AcpClient {
   readonly peer: RpcPeer;
+  readonly endpoint: ClientEndpoint;
   readonly protocol: ProtocolVersion;
   readonly agent: AgentInfo;
   /** The agent's capabilities as it sent them (v1 `agentCapabilities` or v2 `capabilities`). */
@@ -234,26 +242,16 @@ export class AcpClient {
   private readonly closedHere = new Set<string>();
   private turnCounter = 0;
 
-  private constructor(peer: RpcPeer, protocol: ProtocolVersion, init: Record<string, unknown>, options: ClientOptions, mcp: McpProvider) {
-    this.peer = peer;
+  private constructor(endpoint: ClientEndpoint, negotiated: NegotiatedAgent, options: ClientOptions, mcp: McpProvider) {
+    this.endpoint = endpoint;
+    this.peer = endpoint.peer;
     this.mcp = mcp;
-    this.protocol = protocol;
+    this.protocol = negotiated.protocol;
     this.options = options;
-    const info = (init.info ?? init.agentInfo ?? {}) as AgentInfo;
-    this.agent = { name: info.name, title: info.title, version: info.version };
-    this.capabilities = (init.capabilities ?? init.agentCapabilities ?? {}) as Record<string, unknown>;
-    this.supports = agentSupport(protocol, this.capabilities);
-    this.authMethods = authMethodsFrom(init);
-    // In v2 a running turn has no request in flight, so the connection closing
-    // must end it explicitly.
-    void peer.closed.then((info) => {
-      const error = new LocalError(
-        'closed',
-        info.reason === 'remote-ended' ? 'The agent closed the connection' : 'The connection to the agent closed',
-        { cause: info.error }
-      );
-      for (const session of this.sessions.values()) session.connectionClosed(error);
-    });
+    this.agent = { name: negotiated.info.name, title: negotiated.info.title, version: negotiated.info.version };
+    this.capabilities = negotiated.capabilities as Record<string, unknown>;
+    this.supports = negotiated.supports;
+    this.authMethods = negotiated.authMethods;
   }
 
   /** Connect over a channel of JSON-RPC messages (use `ndjson()` for bytes). */
@@ -265,88 +263,198 @@ export class AcpClient {
     if (handlers?.onQuestion && !options.elicitation) {
       options = { ...options, elicitation: () => ({ action: 'decline' }), elicitationModes: options.elicitationModes ?? ['form'] };
     }
-    const peer = new RpcPeer(channel, {
-      name: options.name ?? 'acp-client',
-      ...cancelRequest,
-      ...withTelemetry(options.tap, options.telemetry),
-      onDiagnostic: options.onDiagnostic,
-    });
-    if (options.telemetry) void peer.closed.then(() => options.telemetry!.close());
-    // Handlers are registered before the first message can arrive.
-    let client: AcpClient | undefined;
-    peer.onNotification('session/update', (params: { sessionId?: string; update?: unknown }) => {
-      client?.routeUpdate(params);
-    });
-    peer.onRequest<Record<string, unknown>>('session/request_permission', (params, context) => {
-      if (!client) throw RpcError.internal('Not initialized');
-      return client.handlePermission(params, context.signal);
-    });
-    if (options.files) {
-      const files = options.files;
-      peer.onRequest('fs/read_text_file', async (p: v1.ReadTextFileRequest) => ({ content: await files.readTextFile(p) }));
-      peer.onRequest('fs/write_text_file', async (p: v1.WriteTextFileRequest) => {
-        await files.writeTextFile(p);
-        return {};
-      });
-    }
-    if (options.terminals) {
-      const t = options.terminals;
-      peer.onRequest('terminal/create', (p: v1.CreateTerminalRequest) => t.create(p));
-      peer.onRequest('terminal/output', (p: { sessionId: string; terminalId: string }) => t.output(p));
-      peer.onRequest('terminal/wait_for_exit', (p: { sessionId: string; terminalId: string }) => t.waitForExit(p));
-      peer.onRequest('terminal/kill', async (p: { sessionId: string; terminalId: string }) => {
-        await t.kill(p);
-        return {};
-      });
-      peer.onRequest('terminal/release', async (p: { sessionId: string; terminalId: string }) => {
-        await t.release(p);
-        return {};
-      });
-    }
-    registerExtensions(peer, options.extensions);
-    if (options.onElicitationComplete) {
-      const done = options.onElicitationComplete;
-      peer.onNotification<{ elicitationId?: unknown; sessionId?: unknown }>('elicitation/complete', (p) => {
-        if (typeof p?.elicitationId !== 'string') return;
-        done({ elicitationId: p.elicitationId, ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}) });
-      });
-    }
-    if (options.elicitation) {
-      const handler = options.elicitation;
-      peer.onRequest<Record<string, unknown>>('elicitation/create', async (p, context) => {
-        const request: ElicitationRequest = {
-          mode: String(p?.mode ?? ''),
-          message: String(p?.message ?? ''),
-          raw: p,
-          ...(typeof p?.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
-          ...(typeof p?.toolCallId === 'string' ? { toolCallId: p.toolCallId } : {}),
-          ...(p?.requestedSchema !== undefined ? { requestedSchema: p.requestedSchema } : {}),
-          ...(typeof p?.url === 'string' ? { url: p.url } : {}),
-          ...(typeof p?.elicitationId === 'string' ? { elicitationId: p.elicitationId } : {}),
-        };
-        if (!(options.elicitationModes ?? ['form', 'url']).includes(request.mode as 'form')) return { action: 'decline' };
-        try {
-          // The running turn's onQuestion, if it has one; else the client's (also between turns, or
-          // for a question that names no session); else `elicitation`.
-          const perTurn = request.sessionId ? client?.questionHandlerFor(request.sessionId) : undefined;
-          const answer = await (perTurn ?? handlers?.onQuestion ?? handler)(request, context.signal);
-          if (answer?.action === 'accept') {
-            // A form answer must fit the form; one that does not is not sent.
-            if (request.mode === 'form' && validateElicitation(request.requestedSchema, answer.content).length) return { action: 'decline' };
-            return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
-          }
-          if (answer?.action === 'cancel') return { action: 'cancel' };
-        } catch {
-          // Fail closed.
-        }
-        return { action: 'decline' };
-      });
-    }
-    // Always answers mcp/message: unknown servers get -33001.
-    const mcp = new McpProvider(peer);
-    peer.start();
 
     const wanted = options.protocol ?? 'auto';
+    let client: AcpClient | undefined;
+    let mcpProvider: McpProvider | undefined;
+
+    const layers: ClientLayer<any>[] = [];
+
+    // 1. negotiate: validates initialize response and publishes NEGOTIATED_AGENT (C7).
+    layers.push({
+      name: 'negotiate',
+      provides: [NEGOTIATED_AGENT],
+      async outbound(call, ctx, _state, next) {
+        if (call.kind !== 'request' || call.method !== 'initialize') return next();
+        const init = (await next()) as Record<string, unknown>;
+        const negotiatedVersion = Number(init?.protocolVersion);
+        if (negotiatedVersion !== 1 && negotiatedVersion !== 2) {
+          await ctx.peer.close();
+          throw new Error(`Agent answered with protocol version ${String(init?.protocolVersion)}; this client speaks 1 and 2`);
+        }
+        if (wanted !== 'auto' && negotiatedVersion !== wanted) {
+          await ctx.peer.close();
+          throw new Error(`Asked for protocol v${wanted}, agent chose v${negotiatedVersion}`);
+        }
+        const protocol = negotiatedVersion as ProtocolVersion;
+        const info = (init.info ?? init.agentInfo ?? {}) as AgentInfo;
+        const capabilities = (init.capabilities ?? init.agentCapabilities ?? {}) as Record<string, unknown>;
+        const negotiated: NegotiatedAgent = {
+          protocol,
+          info: { name: info.name, title: info.title, version: info.version },
+          capabilities,
+          supports: agentSupport(protocol, capabilities),
+          authMethods: authMethodsFrom(init),
+          raw: init,
+        };
+        ctx.set(NEGOTIATED_AGENT, negotiated);
+        return init;
+      },
+    });
+
+    // 2. sessions: routes session/update and session/request_permission; tears down turns and telemetry on close.
+    layers.push({
+      name: 'sessions',
+      notifications: {
+        'session/update': (call) => {
+          client?.routeUpdate(call.params as { sessionId?: string; update?: unknown });
+        },
+      },
+      requests: {
+        'session/request_permission': (call, ctx) => {
+          if (!client) throw RpcError.internal('Not initialized');
+          return client.handlePermission((call.params ?? {}) as Record<string, unknown>, ctx.signal);
+        },
+      },
+      closed(info) {
+        if (client) {
+          const error = new LocalError(
+            'closed',
+            info.reason === 'remote-ended' ? 'The agent closed the connection' : 'The connection to the agent closed',
+            { cause: info.error }
+          );
+          for (const session of client.sessions.values()) session.connectionClosed(error);
+        }
+        if (options.telemetry) options.telemetry.close();
+      },
+    });
+
+    // 3. files (v1 fs/*)
+    if (options.files) {
+      const files = options.files;
+      layers.push({
+        name: 'files',
+        requests: {
+          'fs/read_text_file': async (call) => ({ content: await files.readTextFile(call.params as v1.ReadTextFileRequest) }),
+          'fs/write_text_file': async (call) => {
+            await files.writeTextFile(call.params as v1.WriteTextFileRequest);
+            return {};
+          },
+        },
+      });
+    }
+
+    // 4. terminals (v1 terminal/*)
+    if (options.terminals) {
+      const t = options.terminals;
+      layers.push({
+        name: 'terminals',
+        requests: {
+          'terminal/create': (call) => t.create(call.params as v1.CreateTerminalRequest),
+          'terminal/output': (call) => t.output(call.params as { sessionId: string; terminalId: string }),
+          'terminal/wait_for_exit': (call) => t.waitForExit(call.params as { sessionId: string; terminalId: string }),
+          'terminal/kill': async (call) => {
+            await t.kill(call.params as { sessionId: string; terminalId: string });
+            return {};
+          },
+          'terminal/release': async (call) => {
+            await t.release(call.params as { sessionId: string; terminalId: string });
+            return {};
+          },
+        },
+      });
+    }
+
+    // 5. elicitation (elicitation/create and elicitation/complete)
+    if (options.elicitation || options.onElicitationComplete) {
+      const elicitationLayer: ClientLayer = { name: 'elicitation' };
+      if (options.onElicitationComplete) {
+        const done = options.onElicitationComplete;
+        elicitationLayer.notifications = {
+          'elicitation/complete': (call) => {
+            const p = call.params as { elicitationId?: unknown; sessionId?: unknown } | undefined;
+            if (typeof p?.elicitationId !== 'string') return;
+            done({ elicitationId: p.elicitationId, ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}) });
+          },
+        };
+      }
+      if (options.elicitation) {
+        const handler = options.elicitation;
+        elicitationLayer.requests = {
+          'elicitation/create': async (call, ctx) => {
+            const p = (call.params ?? {}) as Record<string, unknown>;
+            const request: ElicitationRequest = {
+              mode: String(p?.mode ?? ''),
+              message: String(p?.message ?? ''),
+              raw: p,
+              ...(typeof p?.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+              ...(typeof p?.toolCallId === 'string' ? { toolCallId: p.toolCallId } : {}),
+              ...(p?.requestedSchema !== undefined ? { requestedSchema: p.requestedSchema } : {}),
+              ...(typeof p?.url === 'string' ? { url: p.url } : {}),
+              ...(typeof p?.elicitationId === 'string' ? { elicitationId: p.elicitationId } : {}),
+            };
+            if (!(options.elicitationModes ?? ['form', 'url']).includes(request.mode as 'form')) return { action: 'decline' };
+            try {
+              const perTurn = request.sessionId ? client?.questionHandlerFor(request.sessionId) : undefined;
+              const answer = await (perTurn ?? handlers?.onQuestion ?? handler)(request, ctx.signal);
+              if (answer?.action === 'accept') {
+                if (request.mode === 'form' && validateElicitation(request.requestedSchema, answer.content).length) return { action: 'decline' };
+                return { action: 'accept', ...(answer.content ? { content: answer.content } : {}) };
+              }
+              if (answer?.action === 'cancel') return { action: 'cancel' };
+            } catch {
+              // Fail closed.
+            }
+            return { action: 'decline' };
+          },
+        };
+      }
+      layers.push(elicitationLayer);
+    }
+
+    // 6. mcp: always answers mcp/message (unknown servers get -33001).
+    layers.push({
+      name: 'mcp',
+      create(ctx) {
+        const provider = new McpProvider(ctx.agent, { register: false });
+        mcpProvider = provider;
+        return provider;
+      },
+      requests: {
+        'mcp/message': (call, ctx, state: McpProvider) => state.handle(call.params, ctx.signal),
+      },
+    });
+
+    // 7. extensions: typed vendor extensions from options.extensions.
+    if (options.extensions?.length) {
+      const extRequests: NonNullable<ClientLayer['requests']> = {};
+      const extNotifications: NonNullable<ClientLayer['notifications']> = {};
+      for (const h of options.extensions) {
+        if (h.kind === 'request') {
+          extRequests[h.method] = (call, ctx) =>
+            h.handler(call.params, { method: call.method, id: call.id, signal: ctx.signal, peer: ctx.peer });
+        } else {
+          extNotifications[h.method] = (call, ctx) =>
+            h.handler(call.params, { method: call.method, signal: ctx.signal, peer: ctx.peer });
+        }
+      }
+      layers.push({ name: 'extensions', requests: extRequests, notifications: extNotifications });
+    }
+
+    // 8. Custom / vendor layers (can require NEGOTIATED_AGENT, add _meta outbound, wrap inbound, and register vendor methods).
+    if (options.layers?.length) {
+      layers.push(...options.layers);
+    }
+
+    const endpoint = clientEndpoint(channel, {
+      name: options.name ?? 'acp-client',
+      layers,
+      peer: {
+        ...withTelemetry(options.tap, options.telemetry),
+        onDiagnostic: options.onDiagnostic,
+      },
+    });
+
     const name = options.name ?? 'deft-subspace';
     const version = options.version ?? '0.0.0';
     const modes = options.elicitationModes ?? ['form', 'url'];
@@ -373,24 +481,16 @@ export class AcpClient {
             clientInfo: { name, version },
             clientCapabilities: v1Capabilities,
           };
-    const init = (await peer.request('initialize', params, {
+    await endpoint.agent.request('initialize', params, {
       timeoutMs: options.timeouts?.initializeMs ?? 60_000,
-    })) as Record<string, unknown>;
-    const negotiated = Number(init?.protocolVersion);
-    if (negotiated !== 1 && negotiated !== 2) {
-      await peer.close();
-      throw new Error(`Agent answered with protocol version ${String(init?.protocolVersion)}; this client speaks 1 and 2`);
-    }
-    if (wanted !== 'auto' && negotiated !== wanted) {
-      await peer.close();
-      throw new Error(`Asked for protocol v${wanted}, agent chose v${negotiated}`);
-    }
-    client = new AcpClient(peer, negotiated as ProtocolVersion, init, options, mcp);
+    });
+    const negotiated = endpoint.context.get(NEGOTIATED_AGENT);
+    client = new AcpClient(endpoint, negotiated, options, mcpProvider!);
     return client;
   }
 
   async newSession(request: { cwd: string; mcpServers?: SessionMcpServers; additionalDirectories?: string[] }): Promise<Session> {
-    const result = (await this.peer.request(
+    const result = (await this.endpoint.agent.request(
       'session/new',
       { cwd: request.cwd, mcpServers: this.mcpServers(request.mcpServers), ...(request.additionalDirectories ? { additionalDirectories: request.additionalDirectories } : {}) },
       { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 }
@@ -418,7 +518,7 @@ export class AcpClient {
     const replayed: TurnEvent[] = [];
     const stop = session.onIdleUpdate((event) => replayed.push(event));
     try {
-      const result = await this.peer.request(
+      const result = await this.endpoint.agent.request(
         this.protocol === 1 ? 'session/load' : 'session/resume',
         this.locator(request, this.protocol === 2 ? { replayFrom: { type: 'start' } } : {}),
         { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 }
@@ -439,7 +539,7 @@ export class AcpClient {
     const session = this.register(request.sessionId);
     try {
       session.absorb(
-        await this.peer.request('session/resume', this.locator(request), { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 })
+        await this.endpoint.agent.request('session/resume', this.locator(request), { timeoutMs: this.options.timeouts?.sessionMs ?? 60_000 })
       );
       return session;
     } catch (error) {
@@ -454,7 +554,7 @@ export class AcpClient {
     nextCursor?: string;
   }> {
     if (!this.supports.listSessions) throw new CapabilityError('session/list', 'agent');
-    const result = (await this.peer.request('session/list', request)) as { sessions?: unknown; nextCursor?: unknown };
+    const result = (await this.endpoint.agent.request('session/list', request)) as { sessions?: unknown; nextCursor?: unknown };
     const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
     return {
       sessions: sessions as Array<{ sessionId: string; cwd: string; title?: string; updatedAt?: string }>,
@@ -471,7 +571,7 @@ export class AcpClient {
     if (!this.authMethods.some((m) => m.id === methodId)) {
       throw new Error(`The agent offers no login method "${methodId}" (offered: ${this.authMethods.map((m) => m.id).join(', ') || 'none'})`);
     }
-    await this.peer.request(authMethodNames(this.protocol).login, { methodId }, {
+    await this.endpoint.agent.request(authMethodNames(this.protocol).login, { methodId }, {
       timeoutMs: options.timeoutMs ?? this.options.timeouts?.authMs ?? 300_000,
       signal: options.signal,
     });
@@ -480,7 +580,7 @@ export class AcpClient {
   /** Log out (v1 `logout`, if the agent offers it; v2 `auth/logout`). */
   async logout(options: { timeoutMs?: number } = {}): Promise<void> {
     if (!canLogout(this.protocol, this.capabilities, [...this.authMethods])) throw new CapabilityError('logout', 'agent');
-    await this.peer.request(authMethodNames(this.protocol).logout, {}, { timeoutMs: options.timeoutMs ?? 30_000 });
+    await this.endpoint.agent.request(authMethodNames(this.protocol).logout, {}, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
   /** Whether `logout()` can be called. */
@@ -496,7 +596,7 @@ export class AcpClient {
     if (!this.supports.deleteSession) throw new CapabilityError('session/delete', 'agent');
     const open = this.sessions.get(sessionId);
     if (open) await open.shutDown();
-    await this.peer.request('session/delete', { sessionId }, { timeoutMs: options.timeoutMs ?? 30_000 });
+    await this.endpoint.agent.request('session/delete', { sessionId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
   /**
@@ -597,12 +697,12 @@ export class AcpClient {
 
   /** Call one of the agent's vendor extension requests. */
   call<Params, Result>(extension: ExtensionRequest<Params, Result>, params: Params, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Result> {
-    return callExtension(this.peer, extension, params, options);
+    return callExtension(this.endpoint.agent, extension, params, options);
   }
 
   /** Send one of the agent's vendor extension notifications. */
   notify<Params>(extension: ExtensionNotification<Params>, params: Params): Promise<void> {
-    return this.peer.notify(extension.method, params);
+    return this.endpoint.agent.notify(extension.method, params);
   }
 
   /** @internal */
@@ -802,7 +902,7 @@ export class Session {
   async cancelToolCall(toolCallId: string, options: { timeoutMs?: number } = {}): Promise<void> {
     const call = this.current?.projection.toolCalls.get(toolCallId) ?? this.idleProjection.toolCalls.get(toolCallId);
     if (this.client.protocol !== 2 || !call?.cancellable) throw new CapabilityError(`cancelling tool call ${toolCallId}`, 'agent');
-    await this.client.peer.request('tool_call/cancel', { sessionId: this.id, toolCallId }, { timeoutMs: options.timeoutMs ?? 30_000 });
+    await this.client.endpoint.agent.request('tool_call/cancel', { sessionId: this.id, toolCallId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
   /**
@@ -814,7 +914,7 @@ export class Session {
     if (this.client.protocol !== 2 || !this.terminals.get(terminalId)?.cancellable) {
       throw new CapabilityError(`cancelling terminal ${terminalId}`, 'agent');
     }
-    await this.client.peer.request('terminal/cancel', { sessionId: this.id, terminalId }, { timeoutMs: options.timeoutMs ?? 30_000 });
+    await this.client.endpoint.agent.request('terminal/cancel', { sessionId: this.id, terminalId }, { timeoutMs: options.timeoutMs ?? 30_000 });
   }
 
   /** Whether a tool call is background work: listed, or showing a listed terminal. */
@@ -842,7 +942,7 @@ export class Session {
     await this.shutDown();
     try {
       if (this.client.supports.closeSession) {
-        await this.client.peer.request('session/close', { sessionId: this.id }, { timeoutMs: 10_000 });
+        await this.client.endpoint.agent.request('session/close', { sessionId: this.id }, { timeoutMs: 10_000 });
       }
     } catch {
       // Not supported, or the agent is gone: the session is closed here regardless.
@@ -892,7 +992,7 @@ export class Session {
       throw new Error(`The agent offers no mode "${modeId}" (available: ${modes.available.map((m) => m.id).join(', ') || 'none'})`);
     }
     if (modes.via === 'modes') {
-      await this.client.peer.request('session/set_mode', { sessionId: this.id, modeId }, options);
+      await this.client.endpoint.agent.request('session/set_mode', { sessionId: this.id, modeId }, options);
       this.currentModes = { ...modes, current: modeId };
       return;
     }
@@ -900,7 +1000,7 @@ export class Session {
       this.client.protocol === 2
         ? { sessionId: this.id, configId: modes.configId, type: 'id', value: modeId }
         : { sessionId: this.id, configId: modes.configId, value: modeId };
-    const result = (await this.client.peer.request('session/set_config_option', params, options)) as Record<string, unknown> | null;
+    const result = (await this.client.endpoint.agent.request('session/set_config_option', params, options)) as Record<string, unknown> | null;
     this.currentModes = (result && modesFromConfig(result.configOptions)) ?? { ...modes, current: modeId };
     this.currentConfig = configOptionsFrom(result?.configOptions) ?? this.withValue(modes.configId!, modeId);
   }
@@ -936,7 +1036,7 @@ export class Session {
     }
     const built = configParams(this.client.protocol, this.id, option, value);
     if ('problem' in built) throw new Error(built.problem);
-    const result = (await this.client.peer.request('session/set_config_option', built.params, options)) as Record<string, unknown> | null;
+    const result = (await this.client.endpoint.agent.request('session/set_config_option', built.params, options)) as Record<string, unknown> | null;
     this.currentConfig = configOptionsFrom(result?.configOptions) ?? this.withValue(id, value);
     this.currentModes = modesFromConfig(result?.configOptions) ?? this.currentModes;
     if (this.currentModes?.via === 'config' && this.currentModes.configId === id && typeof value === 'string') {
@@ -1091,7 +1191,7 @@ export class Session {
     }
     this.restartIdle(active);
 
-    this.client.peer.request('session/prompt', { sessionId: this.id, prompt: blocks }, { signal: active.request.signal }).then(
+    this.client.endpoint.agent.request('session/prompt', { sessionId: this.id, prompt: blocks }, { signal: active.request.signal }).then(
       (result) => this.promptAnswered(active, result),
       (error) => this.promptFailed(active, error)
     );
@@ -1129,7 +1229,7 @@ export class Session {
     this.enter({ ...state, phase: 'cancelling', deadline });
     // Open permission questions are answered `cancelled`, as the spec requires.
     active.questions.abort();
-    await this.client.peer.notify('session/cancel', { sessionId: this.id }).catch(() => {});
+    await this.client.endpoint.agent.notify('session/cancel', { sessionId: this.id }).catch(() => {});
   }
 
   /** The agent did not confirm a cancel in time: end the turn here. */

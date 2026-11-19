@@ -146,12 +146,14 @@ function validOutcome(value: unknown): value is McpOutcome {
 export class McpProvider {
   private readonly servers = new Map<string, Served>();
   private readonly used = new Set<string>();
-  private readonly peer: RpcPeer;
+  private readonly peer: Pick<RpcPeer, 'notify'>;
   private counter = 0;
 
-  constructor(peer: RpcPeer) {
+  constructor(peer: Pick<RpcPeer, 'notify'> & Partial<Pick<RpcPeer, 'onRequest'>>, options: { register?: boolean } = {}) {
     this.peer = peer;
-    peer.onRequest('mcp/message', (params, context) => this.handle(params, context.signal));
+    if (options.register !== false && peer.onRequest) {
+      peer.onRequest('mcp/message', (params, context) => this.handle(params, context.signal));
+    }
   }
 
   serve(options: ServeMcpOptions): McpRegistration {
@@ -175,7 +177,8 @@ export class McpProvider {
     };
   }
 
-  private async handle(raw: unknown, callerSignal: AbortSignal): Promise<McpOutcome> {
+  /** @internal Handle an inbound `mcp/message` request. */
+  async handle(raw: unknown, callerSignal: AbortSignal): Promise<McpOutcome> {
     const envelope = isRecord(raw) ? raw : {};
     const { serverId, requestId, method } = envelope;
     if (typeof serverId !== 'string' || typeof requestId !== 'string' || typeof method !== 'string') {

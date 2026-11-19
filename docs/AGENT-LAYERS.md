@@ -1,7 +1,8 @@
 # Design note: a raw agent endpoint, with `serveAgent` as layers on it
 
-Status: proposal, second draft (2026-11-08), revised after two reviews.
-Branch `experiment/agent-layers`. Nothing here is built yet.
+Status: implemented for both agent (`agentEndpoint` / `serveAgent`) and client
+(`clientEndpoint` / `AcpClient`) sides (updated 2026-11-19). Wire hooks and `normalize`
+remain future work.
 
 ## Why
 
@@ -276,12 +277,36 @@ wildcard only sees methods with no handler. The adapter **replaces** those
 handlers on the peer with pass-through ones, and adds `'*'` for the rest. A polished `clientEndpoint` with layers, with `AcpClient` as
 its preset, comes later.
 
-**As built (step 3):** the proxy's downstream half is a plain `RpcPeer` with
-`'*'` handlers and `$/cancel_request` on, not an `AcpClient`, so there are
-no fixed handlers to replace: the agent's requests go up through
-`endpoint.client.request(method, params, { signal })` and its notifications
-through `endpoint.client.notify()`. The `AcpClient` adapter is only needed
-for a proxy that also wants `AcpClient`'s conveniences downstream.
+**As built (client side, 2026-11-19):** `clientEndpoint(channel, options)` and
+`ClientLayer` are implemented in `packages/acp/src/client-endpoint.ts`, mirroring
+`agentEndpoint` and `AgentLayer` under the same contract (items 1–4 and 6):
+
+- **Mirror API.** `clientEndpoint` exposes `{ peer, agent, context }`, where `agent`
+  (`EndpointAgent`) sends requests and serialized notifications through the stack's
+  `outbound` hooks, and inbound agent calls flow through `inbound` hooks into exclusive
+  `requests` / `notifications` maps (checked at stack build time). State is created per
+  endpoint (`create`), shared via `provides` / `requires` (`StateKey`), and cleaned up
+  via `closed`.
+- **`AcpClient` as a preset stack.** `AcpClient.connect(channel, options)` builds its
+  connection on `clientEndpoint` with the preset layers `negotiate`, `sessions`,
+  `files`, `terminals`, `elicitation`, `mcp`, and `extensions`, followed by any caller
+  `options.layers`. All outbound client requests and notifications (`initialize`,
+  `session/new`, `session/load`, `session/resume`, `session/prompt`, `session/cancel`,
+  `session/close`, mode/config/auth/delete/list calls, and `mcp/message` notifications)
+  pass through `endpoint.agent`, so a layer's `outbound` hook can inspect or augment
+  `_meta` on `initialize` (client capabilities), `session/new`, `session/load`,
+  `session/resume`, and `session/prompt`.
+- **Negotiated agent state.** The `negotiate` layer provides `NEGOTIATED_AGENT`
+  (`StateKey<NegotiatedAgent>`), populated once `initialize` returns with `protocol`,
+  `info`, full `capabilities` (including `_meta`), `supports`, `authMethods`, and `raw`.
+  Later layers declare `requires: [NEGOTIATED_AGENT]` to read it.
+- **Vendor extension spellings.** `bothSpellings(handlers)` expands a map of bare
+  vendor method names (such as `x.ai/...` or `deft.co/...`) so each is registered once
+  under both `name` and `_name`, while still participating in exclusive handler checks.
+- **Close order.** On connection close, `sessions` fails running and queued turns with
+  `LocalError('closed')` and closes any `telemetry` tap before custom layers' `closed`
+  hooks run. `packages/acp/test/client-endpoint.test.ts` pins C1–C8 and the two-way
+  proxy through `clientEndpoint`.
 
 ## Plan
 
@@ -328,4 +353,4 @@ Status (2026-11-08): steps 1 to 4 are built.
 6. **Focused tests**: ordering, the five kinds of cancel, failed setup,
    isolation between endpoints, and the performance comparison.
 7. Docs ("Writing an agent" gains "Layers" and "Proxies") and `EXPERIMENT.md`.
-8. Later: `clientEndpoint`.
+8. Done: `clientEndpoint` and `ClientLayer`, with `AcpClient` rebuilt as a preset stack.

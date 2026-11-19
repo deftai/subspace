@@ -42,6 +42,18 @@ export {
   type StateKey,
 } from './endpoint.ts';
 export {
+  bothSpellings,
+  clientEndpoint,
+  NEGOTIATED_AGENT,
+  type ClientCallContext,
+  type ClientEndpoint,
+  type ClientEndpointContext,
+  type ClientEndpointOptions,
+  type ClientLayer,
+  type EndpointAgent,
+  type NegotiatedAgent,
+} from './client-endpoint.ts';
+export {
   allow,
   allowInside,
   firstOf,
