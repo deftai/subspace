@@ -268,3 +268,189 @@ docs already on the wall.
 
 **Not crossed.** Console source. Recorder fixes stay in Console.
 
+
+---
+
+## 2026-11-19: Answers to Phase 4 transcript questions
+
+**From** the Specifier (pi session `01a1f1e9-d10b-722a-a78d-12e04b2ea2f7`), in writing, under
+CR-D. You were right to stop (brief §10). Do not implement against the broken transcripts.
+A corrected bundle is placed with this answer as
+`answers/phase4-transcripts-corrected.bundle` (tip **`19fc6fe`**, still based on
+`cde5f18`). Until that bundle is merged, do not treat the 18 files at `33bdb3c` as final.
+
+### 1. Out-of-order wire (fallback delete / cancel) — Specifier bug
+
+**Yes: those fallback request/reply pairs belong on the `deleteSession` /
+`cancelSubagent` step where they occur, after the prefixed attempt, not on `start`.**
+
+The recorder split the bidirectional wire across steps badly when one driver method sent
+two client requests (prefixed, then unprefixed). That is a Specifier defect. Corrected
+transcripts will place:
+
+- `_x.ai/session/delete` (or cancel) and its −32601 reply, then
+- `x.ai/session/delete` (or cancel) and its result,
+
+all on the corresponding driver step, in that order, with nothing of either pair on
+`start`.
+
+### 2. Ask / wire shapes — which document wins
+
+**Split by layer of the stack:**
+
+| Layer | Authoritative source |
+|---|---|
+| **Wire** (what the client sends and answers on JSON-RPC) | `docs/agent-vendor-protocols.md`, and the **corrected** transcripts once delivered. Vendor-protocols §1: when transcripts exist they pin exact shapes. |
+| **Workbench ask request and answer** (what `workbench.ask` sees) | `docs/agent-driver-design.md` §4. The xAI layer **translates** workbench answers into wire shapes. |
+| **Mapping rows** | `docs/agent-events-mapping.md` for which ask kind and which event; if a row disagrees with design §4 on field names, **design §4 wins** for the workbench, vendor-protocols for the wire. |
+
+Concrete resolutions for `vendor-xai-requests`:
+
+- **`choices` (M29).** Workbench request: `{ toolCallId, planning: boolean, questions }`
+  per design §4.3 (`planning` true when Grok's `mode` is `"plan"`; do not put `mode` on
+  the workbench request). Workbench answer: `{ outcome: "accepted", answers: Record<string, string[]>, annotations? }`
+  or the planning variants, or cancelled. **Wire** result: vendor-protocols §3.2 —
+  `{ outcome: "accepted", answers, annotations? }` (answers keyed by question text), not
+  Console's oracle test shape `outcome: "answered"` with an array. The first recording
+  passed through a Console UI test answer; that is not the Grok wire contract.
+- **`plan_approval` (M30).** Workbench request: `{ toolCallId, plan: string | null }`
+  (`planContent` on the wire becomes `plan` on the workbench). Workbench answer:
+  `{ decision: "approve" | "keep_planning" | "abandon" }`. **Wire** result:
+  `{ outcome: "approved" | "cancelled" | "abandoned" }` per vendor-protocols §3.3 and
+  mapping M30. A cancelled ask → wire `cancelled` (keep planning).
+- **`question` for `x.ai/mcp/elicit` (M27).** Workbench `source`: `"an MCP server"` when
+  `serverName` is absent (mapping M27), not `"an MCP server (MCP server)"`. Wire reply
+  uses `outcome` (`accept` / `decline` / `cancel`), not ACP's `action` key.
+
+Corrected transcripts will match the above in both `expected` / `workbench.asks` and
+`wire`.
+
+### 3. `workbench` scripting and `expected` completeness
+
+**`expected` is matched 1-to-1, in order, against `workbench.records`.** Your reading of
+`verifyWorkbenchRecords` is right. A transcript that only lists asks/events will fail as
+soon as the layer (or harness) records a service call or turn boundary.
+
+Corrected transcripts will:
+
+- Set **`workbench.project.env`** when the scenario depends on it (Antigravity sign-in from
+  env: `GEMINI_API_KEY`).
+- Set **`workbench.services`** for every service the layer must call under that transcript
+  (`presentation.systemPrompt`, `tools.list` / `tools.call`, `project.rememberEnv`, …),
+  with FIFO `{ ok }` / `{ error }` replies. Layers MUST NOT read application setting keys
+  to decide behaviour (design §8.1); Antigravity's system-prompt append uses
+  `presentation.systemPrompt` (and the agent's capability meta), not
+  `agent.display_guidance`.
+- List the corresponding **`service` (and `ask` / `event`) rows in `expected`**, in the
+  order `FakeWorkbench` will record them for a correct implementation.
+- Include **`turn_started` / `turn_ended` only when the run under test records them**
+  (a full `AgentDriver` turn). For `checkClientLayer` harnesses that never call
+  `turnStarted` / `turnEnded`, those rows stay absent — do not invent them.
+
+Until the corrected files land, you may sketch layers against design §6 and vendor-protocols
+alone, but do not mark Phase 4 step 2 complete on the first 18 files.
+
+### 4. `options.session` on `session/new` transcripts
+
+**Yes: omit `options.session` (or at least omit `sessionId`) when the transcript opens a
+new session with `session/new`.** Design §5: `options.session` means reopen a saved
+session. Use `workbench.project.path` for cwd, and `expectSessionId: "sess-1"` when the
+session id after start must be checked. Corrected transcripts will follow that.
+
+### What you should do now
+
+1. Import the corrected bundle (workspace may already be at `33bdb3c`):
+
+```sh
+test -f /tmp/phase4-transcripts-corrected.bundle \
+  || test -f /tmp/phase4-transcripts.bundle  # operator may use either name
+BUNDLE=/tmp/phase4-transcripts-corrected.bundle
+test -f "$BUNDLE" || BUNDLE=/tmp/phase4-transcripts.bundle
+git fetch "$BUNDLE" feat/agent-drivers-phase-4-transcripts
+git merge --ff-only FETCH_HEAD
+git rev-parse HEAD   # expect 19fc6fe…
+```
+
+2. Continue Phase 4 step 2 against **`19fc6fe`**. Do not claim passage on `33bdb3c`.
+3. Do not edit transcript JSON yourself.
+4. **Known residual on Q3:** `workbench.services` scripting and env are present where the
+   layer must read them; not every transcript yet lists a full 1-to-1 `service` row for
+   every internal tool/call the Deft layer may make while answering `call_tool`. Implement
+   from design §6.1 and vendor-protocols; if `verifyWorkbenchRecords` fails only because
+   `expected` is missing service rows your correct layer emits (or has extras the
+   transcript omitted), stop and list the actual `workbench.records` in this log — the
+   Specifier will extend `expected`, not you editing the file.
+5. If anything else still cannot be satisfied, stop and ask again.
+
+### Specifier follow-up (for the log)
+
+Export under review: `export-20261119T073520Z`. No Phase 4 step 2 code was reviewed (you
+correctly stopped). Proxy log: model API only, plus refused github.com from build checks.
+
+---
+
+## 2026-11-19: Implementer — Phase 4 step 2 built, stopping on Q3 residual (missing `service` rows in `expected` and `tools` script in `vendor-deft-requests`)
+
+**Role.** This session is the **Implementer**: pi session
+`01a1f25b-a53e-71df-adde-5f4debc3da09`.
+
+**Clean-room statement.** Throughout this work I had no access to restricted material.
+All code in `packages/acp-vendors` is MIT-licensed, original work written solely from the
+Phase 0 documents, the Specifier's written answers above, and the Subspace repository,
+with no new external dependencies.
+
+**Status.** Built `@deft-subspace/acp-vendors` (`deftLayer`, `xaiLayer`,
+`antigravityLayer`, `vendorServicesLayer`, `VENDOR_SERVICES`) on branch
+`feat/agent-drivers-phase-4-vendors` on top of `19fc6fe`. Typecheck (10/10 projects),
+build, frozen lockfile (`pnpm install --frozen-lockfile`), and unit tests (4/4) all pass.
+
+**Transcript test results (18 `vendor-*.transcript.json` files at `19fc6fe`).**
+17 of 18 transcripts pass **100% on the wire** (zero `ReplayDivergence`s, zero step
+failures) and match **every `ask` and `event` row identically**. Per Specifier
+instruction #4, I am stopping without editing any transcript file to report the exact
+missing `service` rows and `workbench.services.tools` script:
+
+1. **Missing `initialize` service rows in `expected` across all 18 transcripts.**
+   Because `deftLayer` advertises `clientCapabilities._meta["deft.co"]` to every agent on
+   `initialize` (X4, design §6.1), `FakeWorkbench` records these two `service` rows first
+   on every transcript:
+   ```json
+   { "kind": "service", "workbench": "main", "service": "presentation", "method": "capabilities" },
+   { "kind": "service", "workbench": "main", "service": "tools", "method": "list" }
+   ```
+   Currently none of the 18 transcripts include these two leading rows in `expected` (in
+   `vendor-antigravity-system-prompt.transcript.json`, `expected` starts at
+   `presentation.systemPrompt` instead of after `presentation.capabilities` and
+   `tools.list`).
+
+2. **Missing `project.rememberEnv` service row in `vendor-antigravity-sign-in-typed.transcript.json`.**
+   Per design §6.3 step 3, after `authenticate` succeeds with a typed API key,
+   `antigravityLayer` calls `workbench.project.rememberEnv("GEMINI_API_KEY", "typed-key")`.
+   `FakeWorkbench` records:
+   ```json
+   { "kind": "service", "workbench": "main", "service": "project", "method": "rememberEnv", "args": { "name": "GEMINI_API_KEY", "value": "typed-key" } }
+   ```
+   at the end of `workbench.records` (after the `sign_in` and `question` asks).
+
+3. **Missing `workbench.services.tools` (`list` and `call`) and `service: tools.call` rows in `vendor-deft-requests.transcript.json`.**
+   `vendor-deft-requests.transcript.json` has no `workbench.services.tools` script (only
+   `project.settings["agent.display_tools"]: true`), so `workbench.tools.list()` returns
+   the default `[]`, causing `deft.co/call_tool` for `show_image`, `show_diagram`, and
+   `show_page` to reply `-32602 Unknown tool` (wire message 17). To satisfy the 3 tool
+   calls (`id: 716`, `717`, `718`) and the invalid-arguments check (`id: 719`),
+   `vendor-deft-requests.transcript.json` needs:
+   - `workbench.services.tools.list`: `[{ "ok": [ { "name": "show_image", "description": "...", "inputSchema": { "type": "object" } }, { "name": "show_diagram", "description": "...", "inputSchema": { "type": "object" } }, { "name": "show_page", "description": "...", "inputSchema": { "type": "object" } } ] }]`
+   - `workbench.services.tools.call`:
+     ```json
+     [
+       { "ok": { "ok": false, "message": "No path given." } },
+       { "ok": { "ok": false, "message": "No such file: /tmp-oracle/project/missing.png" } },
+       { "ok": { "ok": false, "message": "No Mermaid source given." } }
+     ]
+     ```
+   - And the 3 corresponding `service: tools.call` rows in `expected` after the 2 `key` asks.
+
+Once those `expected` service rows and `vendor-deft-requests`'s `workbench.services.tools`
+script are added, all 18 vendor transcripts should pass immediately with zero code changes
+to `@deft-subspace/acp-vendors`.
+

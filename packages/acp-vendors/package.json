@@ -1,0 +1,36 @@
+{
+  "name": "@deft-subspace/acp-vendors",
+  "version": "0.0.0-experiment",
+  "description": "Vendor ACP client layers for Deft, xAI (Grok Build), and Google Antigravity.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "subspace-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --conditions=subspace-source --test --test-force-exit test/*.test.ts"
+  },
+  "dependencies": {
+    "@deft-subspace/acp": "workspace:*",
+    "@deft-subspace/agent-driver": "workspace:*",
+    "@deft-subspace/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "@deft-subspace/acp-testkit": "workspace:*"
+  }
+}

@@ -42,4 +42,15 @@
 - **Tests:** `pnpm run typecheck` passes (9/9 projects); `build` passes (`acp`, `agent-driver`, `acp-testkit`); `agent-driver`: 10/10; `acp-testkit`: 93/93 (including 5 new transcript-runner tests).
 - **Next:** Stopped; ready for Phase 4 step 2 once the Specifier adds vendor transcripts in this format to `@deft-subspace/acp-testkit`.
 
+## Phase 4 step 2: `@deft-subspace/acp-vendors` (2026-11-19, partly — stopped on Q3 transcript residual)
+
+- **Branch:** `feat/agent-drivers-phase-4-vendors` (on top of `19fc6fe`)
+- **Done:**
+  - Created `packages/acp-vendors` (`@deft-subspace/acp-vendors`, MIT, zero external runtime dependencies, zero Node APIs in `src/`): `deftLayer`, `xaiLayer`, `antigravityLayer`, `vendorServicesLayer`, `VENDOR_SERVICES`, `vendorLayers`.
+  - Updated `pnpm-lock.yaml` (verified with `pnpm install --frozen-lockfile --offline`).
+  - Added `packages/acp-vendors/test/unit.test.ts` (4/4 pass: X4 detection baseline, Deft tools/flags, xAI notifications/choices/plan, Antigravity `-32602` retry) and `packages/acp-vendors/test/vendors.test.ts` (runs all 18 `vendor-*.transcript.json` files + no-Node-API check).
+- **Transcript results:** 17/18 pass 100% on the wire and match every `ask` and `event` row identically. Stopped per Specifier instruction #4 (without editing transcripts) because: (a) all 18 transcripts omit the two leading `initialize` service rows (`presentation.capabilities`, `tools.list`) from `expected` (and `vendor-antigravity-sign-in-typed` omits `project.rememberEnv`); (b) `vendor-deft-requests` omits `workbench.services.tools` (`list` and `call`). Details logged in `docs/clean-room-log.md`.
+- **Checks:** `pnpm run typecheck` (10/10 projects), `pnpm --filter @deft-subspace/acp-vendors run build`, and `pnpm install --frozen-lockfile --offline` all pass.
+
+
 
