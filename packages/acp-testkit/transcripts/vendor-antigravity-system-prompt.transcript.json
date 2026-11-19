@@ -9,11 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
@@ -22,6 +17,32 @@
       "settings": {
         "agent.display_tools": false,
         "agent.display_guidance": true
+      }
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": null
+          }
+        ],
+        "call": [
+          {
+            "error": "tools turned off"
+          }
+        ]
+      },
+      "presentation": {
+        "systemPrompt": [
+          {
+            "ok": "Show diagrams when helpful."
+          }
+        ],
+        "capabilities": [
+          {
+            "ok": {}
+          }
+        ]
       }
     }
   },
@@ -149,6 +170,13 @@
       "action": "stop"
     }
   ],
-  "expected": [],
+  "expected": [
+    {
+      "kind": "service",
+      "service": "presentation",
+      "method": "systemPrompt",
+      "result": "Show diagrams when helpful."
+    }
+  ],
   "expectSessionId": "sess-1"
 }

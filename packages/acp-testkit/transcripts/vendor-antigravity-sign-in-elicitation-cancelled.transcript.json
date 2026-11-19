@@ -9,10 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false
     }
   },
   "workbench": {
@@ -30,9 +26,23 @@
       ],
       "question": [
         {
-          "outcome": "cancelled"
+          "action": "cancel"
         }
       ]
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": null
+          }
+        ],
+        "call": [
+          {
+            "error": "tools turned off"
+          }
+        ]
+      }
     }
   },
   "steps": [
@@ -201,7 +211,7 @@
         "source": "Sign in to Antigravity"
       },
       "answer": {
-        "outcome": "cancelled"
+        "action": "cancel"
       }
     }
   ]

@@ -9,11 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
@@ -494,30 +489,6 @@
             }
           },
           "t": 3
-        },
-        {
-          "dir": "client",
-          "msg": {
-            "jsonrpc": "2.0",
-            "method": "x.ai/subagent/cancel",
-            "params": {
-              "subagentId": "g2"
-            },
-            "id": 6
-          },
-          "t": 12
-        },
-        {
-          "dir": "agent",
-          "msg": {
-            "jsonrpc": "2.0",
-            "id": 6,
-            "result": {
-              "subagentId": "g2",
-              "cancelled": false
-            }
-          },
-          "t": 13
         }
       ]
     },
@@ -646,6 +617,30 @@
             }
           },
           "t": 11
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "x.ai/subagent/cancel",
+            "params": {
+              "subagentId": "g2"
+            },
+            "id": 6
+          },
+          "t": 12
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "result": {
+              "subagentId": "g2",
+              "cancelled": false
+            }
+          },
+          "t": 13
         }
       ]
     },

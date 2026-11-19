@@ -9,10 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false
     }
   },
   "workbench": {
@@ -36,6 +32,20 @@
           "action": "decline"
         }
       ]
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": null
+          }
+        ],
+        "call": [
+          {
+            "error": "tools turned off"
+          }
+        ]
+      }
     }
   },
   "steps": [

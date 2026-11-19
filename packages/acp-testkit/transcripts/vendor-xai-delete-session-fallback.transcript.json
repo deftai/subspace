@@ -9,11 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
@@ -491,30 +486,6 @@
             }
           },
           "t": 3
-        },
-        {
-          "dir": "client",
-          "msg": {
-            "jsonrpc": "2.0",
-            "method": "x.ai/session/delete",
-            "params": {
-              "sessionId": "s1"
-            },
-            "id": 4
-          },
-          "t": 6
-        },
-        {
-          "dir": "agent",
-          "msg": {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "result": {
-              "success": false,
-              "error": "locked"
-            }
-          },
-          "t": 7
         }
       ]
     },
@@ -546,6 +517,30 @@
             }
           },
           "t": 5
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "x.ai/session/delete",
+            "params": {
+              "sessionId": "s1"
+            },
+            "id": 4
+          },
+          "t": 6
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {
+              "success": false,
+              "error": "locked"
+            }
+          },
+          "t": 7
         }
       ]
     },

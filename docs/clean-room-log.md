@@ -251,3 +251,20 @@ docs already on the wall.
 
 **Next.** Implementer Phase 4 step 2 (vendor layers). Specifier continues Phase 3
 (Console restructuring) in parallel.
+
+---
+
+## 2026-11-19 — Specifier: corrected Phase 4 transcripts
+
+**Role.** Specifier. Follow-up to Implementer questions on export `export-20261119T073520Z`.
+
+**What changed (still pure JSON only).** Re-recorded / corrected the 18 vendor transcripts:
+1. Wire fallback pairs for delete/cancel stay on the driver step (not on `start`).
+2. Workbench ask shapes match design §4; wire shapes match vendor-protocols (e.g. choices
+   `accepted` + map answers; plan_approval workbench `decision` / wire `outcome`).
+3. `workbench.project.env` and `workbench.services` where layers need them; M27 source
+   `"an MCP server"`; Antigravity system-prompt `presentation.systemPrompt` service row.
+4. `options.session` omitted on `session/new` transcripts; `expectSessionId` kept.
+
+**Not crossed.** Console source. Recorder fixes stay in Console.
+

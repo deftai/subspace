@@ -9,11 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
@@ -23,15 +18,12 @@
     "asks": {
       "choices": [
         {
-          "outcome": "answered",
-          "answers": [
-            {
-              "question": "Pick",
-              "selected": [
-                "A"
-              ]
-            }
-          ]
+          "outcome": "accepted",
+          "answers": {
+            "Pick": [
+              "A"
+            ]
+          }
         },
         {
           "outcome": "cancelled"
@@ -39,10 +31,10 @@
       ],
       "plan_approval": [
         {
-          "outcome": "approved"
+          "decision": "approve"
         },
         {
-          "outcome": "cancelled"
+          "decision": "keep_planning"
         }
       ],
       "question": [
@@ -588,15 +580,12 @@
           "msg": {
             "jsonrpc": "2.0",
             "result": {
-              "outcome": "answered",
-              "answers": [
-                {
-                  "question": "Pick",
-                  "selected": [
-                    "A"
-                  ]
-                }
-              ]
+              "outcome": "accepted",
+              "answers": {
+                "Pick": [
+                  "A"
+                ]
+              }
             },
             "id": 701
           },
@@ -870,6 +859,7 @@
       "askKind": "choices",
       "request": {
         "toolCallId": "tc1",
+        "planning": false,
         "questions": [
           {
             "question": "Pick",
@@ -882,19 +872,15 @@
             ],
             "multiSelect": false
           }
-        ],
-        "mode": "default"
+        ]
       },
       "answer": {
-        "outcome": "answered",
-        "answers": [
-          {
-            "question": "Pick",
-            "selected": [
-              "A"
-            ]
-          }
-        ]
+        "outcome": "accepted",
+        "answers": {
+          "Pick": [
+            "A"
+          ]
+        }
       }
     },
     {
@@ -903,6 +889,7 @@
       "askKind": "choices",
       "request": {
         "toolCallId": "tc1",
+        "planning": true,
         "questions": [
           {
             "question": "Pick",
@@ -915,8 +902,7 @@
             ],
             "multiSelect": false
           }
-        ],
-        "mode": "plan"
+        ]
       },
       "answer": {
         "outcome": "cancelled"
@@ -927,10 +913,10 @@
       "askKind": "plan_approval",
       "request": {
         "toolCallId": "tc2",
-        "planContent": "# Plan"
+        "plan": "# Plan"
       },
       "answer": {
-        "outcome": "approved"
+        "decision": "approve"
       }
     },
     {
@@ -940,7 +926,7 @@
         "toolCallId": ""
       },
       "answer": {
-        "outcome": "cancelled"
+        "decision": "keep_planning"
       }
     },
     {
@@ -971,7 +957,7 @@
         "mode": "url",
         "url": "https://x.test",
         "elicitationId": "e1",
-        "source": "an MCP server (MCP server)"
+        "source": "an MCP server"
       },
       "answer": {
         "action": "decline"

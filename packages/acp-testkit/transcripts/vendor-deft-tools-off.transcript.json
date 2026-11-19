@@ -9,11 +9,6 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
@@ -21,6 +16,20 @@
       "path": "/tmp-oracle/project",
       "settings": {
         "agent.display_tools": false
+      }
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": null
+          }
+        ],
+        "call": [
+          {
+            "error": "tools turned off"
+          }
+        ]
       }
     }
   },

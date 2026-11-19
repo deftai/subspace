@@ -9,16 +9,14 @@
     "client": {
       "name": "deft-console",
       "version": "0.0.0-transcript"
-    },
-    "session": {
-      "cwd": "/tmp-oracle/project",
-      "reconnect": false,
-      "sessionId": "sess-1"
     }
   },
   "workbench": {
     "project": {
       "path": "/tmp-oracle/project",
+      "env": {
+        "GEMINI_API_KEY": "key-1"
+      },
       "settings": {
         "agent.display_tools": false
       }
@@ -29,6 +27,20 @@
           "methodId": "gemini-api-key"
         }
       ]
+    },
+    "services": {
+      "tools": {
+        "list": [
+          {
+            "ok": null
+          }
+        ],
+        "call": [
+          {
+            "error": "tools turned off"
+          }
+        ]
+      }
     }
   },
   "steps": [
