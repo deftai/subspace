@@ -1,0 +1,264 @@
+{
+  "version": 1,
+  "name": "antigravity: sign-in with typed API key",
+  "options": {
+    "agent": {
+      "name": "Antigravity",
+      "identity": "antigravity.google"
+    },
+    "client": {
+      "name": "deft-console",
+      "version": "0.0.0-transcript"
+    },
+    "session": {
+      "cwd": "/tmp-oracle/project",
+      "reconnect": false,
+      "sessionId": "sess-1"
+    }
+  },
+  "workbench": {
+    "project": {
+      "path": "/tmp-oracle/project",
+      "settings": {
+        "agent.display_tools": false
+      }
+    },
+    "asks": {
+      "sign_in": [
+        {
+          "methodId": "gemini-api-key"
+        }
+      ],
+      "question": [
+        {
+          "action": "accept",
+          "content": {
+            "apiKey": " typed-key "
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "action": "start",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {
+                "fs": {
+                  "readTextFile": true,
+                  "writeTextFile": true
+                },
+                "terminal": true,
+                "session": {
+                  "configOptions": {
+                    "boolean": {}
+                  }
+                },
+                "elicitation": {
+                  "form": {},
+                  "url": {}
+                },
+                "auth": {
+                  "terminal": true
+                },
+                "_meta": {
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true,
+                  "deft.co": {
+                    "waitForKey": {},
+                    "display": {
+                      "mermaid": {}
+                    }
+                  }
+                },
+                "subagents": {}
+              },
+              "clientInfo": {
+                "name": "Deft-Console",
+                "title": "Deft Console",
+                "version": "9.9.9"
+              }
+            },
+            "id": 1
+          },
+          "t": 0,
+          "match": {
+            "params": {
+              "clientCapabilities": {
+                "_meta": {
+                  "deft.co": {
+                    "waitForKey": {}
+                  },
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "loadSession": false,
+                "promptCapabilities": {
+                  "audio": false,
+                  "embeddedContext": false,
+                  "image": false
+                }
+              },
+              "authMethods": [
+                {
+                  "id": "gemini-api-key",
+                  "name": "Gemini key",
+                  "description": "Enter a key",
+                  "type": "agent"
+                }
+              ]
+            }
+          },
+          "t": 1
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/new",
+            "params": {
+              "cwd": "/tmp-oracle/project",
+              "mcpServers": []
+            },
+            "id": 2
+          },
+          "t": 2
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+              "code": -32000,
+              "message": "Not signed in"
+            }
+          },
+          "t": 3
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "authenticate",
+            "params": {
+              "methodId": "gemini-api-key",
+              "_meta": {
+                "apiKey": "typed-key"
+              }
+            },
+            "id": 3
+          },
+          "t": 4
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {}
+          },
+          "t": 5
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/new",
+            "params": {
+              "cwd": "/tmp-oracle/project",
+              "mcpServers": []
+            },
+            "id": 4
+          },
+          "t": 6
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {
+              "sessionId": "sess-1"
+            }
+          },
+          "t": 7
+        }
+      ]
+    },
+    {
+      "action": "stop"
+    }
+  ],
+  "expected": [
+    {
+      "kind": "ask",
+      "askKind": "sign_in",
+      "request": {
+        "methods": [
+          {
+            "id": "gemini-api-key",
+            "name": "Gemini key",
+            "description": "Enter a key",
+            "type": "agent"
+          }
+        ],
+        "message": "Not signed in"
+      },
+      "answer": {
+        "methodId": "gemini-api-key"
+      }
+    },
+    {
+      "kind": "ask",
+      "askKind": "question",
+      "request": {
+        "mode": "form",
+        "message": "Enter a key",
+        "requestedSchema": {
+          "type": "object",
+          "title": "Gemini key",
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "title": "GEMINI_API_KEY",
+              "format": "password"
+            }
+          },
+          "required": [
+            "apiKey"
+          ]
+        },
+        "source": "Sign in to Antigravity"
+      },
+      "answer": {
+        "action": "accept",
+        "content": {
+          "apiKey": " typed-key "
+        }
+      }
+    }
+  ],
+  "expectSessionId": "sess-1"
+}

@@ -219,3 +219,35 @@ per-step/top-level `wire` and data-only `FakeWorkbench` service scripting; ACP r
 - Home directory (`/root`): `.bashrc`, `.cache`, `.gitconfig`, `.local`, `.npm`, `.pi`, `.profile`, `.pnpm-store`
 - Parent directory (`/workspace`): `subspace`
 
+
+---
+
+## 2026-11-19 — Specifier: Phase 4 step 1 vendor transcripts
+
+**Role.** Specifier. Branch `feat/agent-drivers-phase-4-transcripts` (from
+`implementer/phase-2-fixes` at `cde5f18`).
+
+**What crossed the wall.** Eighteen pure-JSON driver transcripts under
+`packages/acp-testkit/transcripts/vendor-*.transcript.json`. Each is data recorded from a
+live run of Deft Console's ACP client against the oracle's scripted agents (Console branch
+`feat/agent-drivers-transcript-recorder`). The wire half is the JSON-RPC exchange; the
+`expected` half is the protocol-neutral vocabulary of `docs/agent-events-mapping.md`. No
+Console or Toad source is in these files. No vendor extension source is in these files.
+
+**Coverage.**
+- Deft: `wait_for_key` / `call_tool` both spellings; tools off; stop_terminal; key ask
+  cancelled with the turn.
+- xAI: ask_user_question, exit_plan_mode, mcp elicit/complete, models/update,
+  session_notification; subagent cancel both spellings; session delete prefixed and
+  fallback.
+- Antigravity: system-prompt meta; sign-in typed / env / declined / elicitation cancelled.
+- Baseline: minimal handshake with no vendor methods.
+- Permission asks cancelled by turn cancel and by cancelled answer.
+- ACP elicitation/create (form and url).
+
+**Not crossed.** Console source, the recorder itself, and the oracle fixtures stay in the
+Console repository. The Implementer receives only these JSON transcripts plus the Phase 0
+docs already on the wall.
+
+**Next.** Implementer Phase 4 step 2 (vendor layers). Specifier continues Phase 3
+(Console restructuring) in parallel.

@@ -1,0 +1,849 @@
+{
+  "version": 1,
+  "name": "deft: wait_for_key and call_tool (both spellings)",
+  "options": {
+    "agent": {
+      "name": "Fake Agent",
+      "identity": "fake.example.test"
+    },
+    "client": {
+      "name": "deft-console",
+      "version": "0.0.0-transcript"
+    },
+    "session": {
+      "cwd": "/tmp-oracle/project",
+      "reconnect": false,
+      "sessionId": "sess-1"
+    }
+  },
+  "workbench": {
+    "project": {
+      "path": "/tmp-oracle/project",
+      "settings": {
+        "agent.display_tools": true
+      }
+    },
+    "asks": {
+      "key": [
+        {
+          "key": "n"
+        },
+        {
+          "outcome": "cancelled"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "action": "start",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {
+                "fs": {
+                  "readTextFile": true,
+                  "writeTextFile": true
+                },
+                "terminal": true,
+                "session": {
+                  "configOptions": {
+                    "boolean": {}
+                  }
+                },
+                "elicitation": {
+                  "form": {},
+                  "url": {}
+                },
+                "auth": {
+                  "terminal": true
+                },
+                "_meta": {
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true,
+                  "deft.co": {
+                    "waitForKey": {},
+                    "display": {
+                      "mermaid": {}
+                    },
+                    "tools": [
+                      {
+                        "name": "show_diagram",
+                        "title": "Show a diagram",
+                        "description": "Draw a diagram for the user in their terminal (Deft Console renders Mermaid). Call this whenever your answer explains how something flows or fits together: a request or session lifecycle, control or data flow, a call sequence, a state machine, architecture, dependencies, a timeline. Call it once per such explanation, in addition to your text (the text should still stand on its own). Supports flowchart, sequence, state, class, ER, gantt, pie, mindmap and more. Use the title for the takeaway. Make each diagram explain: one idea per diagram, with a one-sentence caption that states the takeaway (\"Cache hits skip Postgres\"), not the topic. Draw the mechanism, not just the names: the path a request or the data actually takes. Label every arrow with a verb (\"writes\", \"polls every 30s\", \"returns 404\"). Keep it small (about a dozen nodes, short labels); several small diagrams beat one big one. Break a longer label over lines with <br/> (A[\"Check cache<br/>TTL 30s\"]) rather than making it wide, and quote labels that hold punctuation. Don't rely on colour alone: themes differ, so use shapes and labels. If Console can't draw the source you get an error back, so you can fix it.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "mermaid": {
+                              "type": "string",
+                              "description": "Mermaid source, without a code fence."
+                            },
+                            "title": {
+                              "type": "string",
+                              "description": "One sentence stating the takeaway, shown above it."
+                            },
+                            "beside": {
+                              "type": "boolean",
+                              "description": "Show it in a pane beside the conversation instead of inline, where it stays in view and gets more room. For something the user will keep referring to while you work. Shown inline if there's no room."
+                            }
+                          },
+                          "required": [
+                            "mermaid"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": true,
+                          "openWorldHint": false,
+                          "title": "Show a diagram"
+                        }
+                      },
+                      {
+                        "name": "show_image",
+                        "title": "Show an image",
+                        "description": "Show the user an image file (PNG, JPEG, GIF or WebP) inline in their terminal (Deft Console). Use it for charts and plots you made (write them to a temporary directory unless asked to save them in the project), screenshots, rendered UI, or any picture that explains something better than words. A chart makes one point: its caption states it, axes are labelled with units, bars are sorted. The path may be absolute or relative to the project directory.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string",
+                              "description": "Path of the image file."
+                            },
+                            "caption": {
+                              "type": "string",
+                              "description": "Optional short caption shown under it."
+                            },
+                            "beside": {
+                              "type": "boolean",
+                              "description": "Show it in a pane beside the conversation instead of inline, where it stays in view and gets more room. For something the user will keep referring to while you work. Shown inline if there's no room."
+                            }
+                          },
+                          "required": [
+                            "path"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": true,
+                          "openWorldHint": false,
+                          "title": "Show an image"
+                        }
+                      },
+                      {
+                        "name": "show_page",
+                        "title": "Show a web page",
+                        "description": "Open a web page in a live browser view in the user's terminal (Deft Console): a real headless browser they can scroll and click. Use it to show the user something running, e.g. the app you're working on (http://localhost:3000), an HTML page or report you wrote (a file path), or documentation you're referring to. Local files and localhost open at once; for other sites the user is asked first, and you're told if they decline.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "description": "A URL, localhost:PORT, or a file path."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "Optional: why you're showing it (shown when asking)."
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "openWorldHint": true,
+                          "title": "Show a web page"
+                        }
+                      },
+                      {
+                        "name": "open_terminal",
+                        "title": "Open a terminal",
+                        "description": "Open a terminal in a pane beside the conversation (Deft Console), where the user can watch and use it too, optionally running a command. Use it for what they'd want to see or join in with: a dev server, a watcher, a long build, an interactive program. For a quick command whose output only you need, use your own shell instead. The user is asked first, and you're told if they decline. Returns the pane's id, for the other terminal tools. The shell stays open after the command ends.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "command": {
+                              "type": "string",
+                              "description": "Optional: what to run in it. The user sees this when asked."
+                            },
+                            "title": {
+                              "type": "string",
+                              "description": "Optional: a short title for the pane."
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "Optional: why you're opening it (shown when asking)."
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "openWorldHint": true,
+                          "title": "Open a terminal"
+                        }
+                      },
+                      {
+                        "name": "read_terminal",
+                        "title": "Read a terminal",
+                        "description": "What a terminal you opened with open_terminal shows, as text, newest last.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "pane": {
+                              "type": "string",
+                              "description": "The id open_terminal gave you."
+                            },
+                            "lines": {
+                              "type": "integer",
+                              "description": "Optional: how many of the last lines (default 200)."
+                            }
+                          },
+                          "required": [
+                            "pane"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": true,
+                          "openWorldHint": false,
+                          "title": "Read a terminal"
+                        }
+                      },
+                      {
+                        "name": "type_in_terminal",
+                        "title": "Type in a terminal",
+                        "description": "Type text into a terminal you opened with open_terminal, as the user would. Says whether it was delivered, queued or refused.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "pane": {
+                              "type": "string",
+                              "description": "The id open_terminal gave you."
+                            },
+                            "text": {
+                              "type": "string",
+                              "description": "What to type."
+                            },
+                            "enter": {
+                              "type": "boolean",
+                              "description": "Press Enter after it (default true)."
+                            }
+                          },
+                          "required": [
+                            "pane",
+                            "text"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "openWorldHint": true,
+                          "title": "Type in a terminal"
+                        }
+                      },
+                      {
+                        "name": "close_terminal",
+                        "title": "Close a terminal",
+                        "description": "Close a terminal you opened with open_terminal, ending what's running in it.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "pane": {
+                              "type": "string",
+                              "description": "The id open_terminal gave you."
+                            }
+                          },
+                          "required": [
+                            "pane"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "destructiveHint": true,
+                          "openWorldHint": false,
+                          "title": "Close a terminal"
+                        }
+                      },
+                      {
+                        "name": "open_worker_session",
+                        "title": "Open a worker session",
+                        "description": "Open one or more worker sessions in Deft Console, each in its own directory (for example a git worktree), with optional per-session environment variables and a first prompt, running alongside this conversation. When opening multiple workers, pass them together in workers=[...] so the user is asked once for the cohort. Console notifies this session automatically when each worker's turn ends or fails (with its session id and end state), so do not poll read_worker_session in a loop. A worker session cannot open further worker sessions.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string",
+                              "description": "Directory for a single worker session (absolute, or relative to this project)."
+                            },
+                            "prompt": {
+                              "type": "string",
+                              "description": "First prompt sent to a single worker session once its agent is ready."
+                            },
+                            "agent": {
+                              "type": "string",
+                              "description": "Optional agent identity (defaults to this session's agent)."
+                            },
+                            "env": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "description": "Optional environment variables set only for this worker session's agent."
+                            },
+                            "title": {
+                              "type": "string",
+                              "description": "Optional short title shown in the sessions list."
+                            },
+                            "workers": {
+                              "type": "array",
+                              "description": "Open a cohort of worker sessions with a single user approval. Each item specifies path and prompt, plus optional agent, env and title.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "description": "Directory for this worker session."
+                                  },
+                                  "prompt": {
+                                    "type": "string",
+                                    "description": "First prompt for this worker session."
+                                  },
+                                  "agent": {
+                                    "type": "string",
+                                    "description": "Optional agent identity."
+                                  },
+                                  "env": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    },
+                                    "description": "Optional environment variables for this worker session only."
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "description": "Optional short title."
+                                  }
+                                },
+                                "required": [
+                                  "path",
+                                  "prompt"
+                                ]
+                              }
+                            },
+                            "reason": {
+                              "type": "string",
+                              "description": "Optional: why you're opening the worker session(s) (shown when asking)."
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "openWorldHint": true,
+                          "title": "Open a worker session"
+                        }
+                      },
+                      {
+                        "name": "read_worker_session",
+                        "title": "Read a worker session",
+                        "description": "Read the current state (working, idle, done, blocked, error, or closed) and recent transcript of a worker session you opened with open_worker_session.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "session": {
+                              "type": "string",
+                              "description": "The session id open_worker_session gave you."
+                            },
+                            "lines": {
+                              "type": "integer",
+                              "description": "Optional: how many of the last lines (default 200)."
+                            }
+                          },
+                          "required": [
+                            "session"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": true,
+                          "openWorldHint": false,
+                          "title": "Read a worker session"
+                        }
+                      },
+                      {
+                        "name": "send_to_worker_session",
+                        "title": "Send to a worker session",
+                        "description": "Send a follow-up prompt to steer a worker session you opened with open_worker_session. Reports whether it was delivered, queued or refused.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "session": {
+                              "type": "string",
+                              "description": "The session id open_worker_session gave you."
+                            },
+                            "prompt": {
+                              "type": "string",
+                              "description": "Follow-up prompt to send to the worker session."
+                            }
+                          },
+                          "required": [
+                            "session",
+                            "prompt"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "openWorldHint": true,
+                          "title": "Send to a worker session"
+                        }
+                      },
+                      {
+                        "name": "close_worker_session",
+                        "title": "Close a worker session",
+                        "description": "Close a worker session you opened with open_worker_session, stopping its agent.",
+                        "inputSchema": {
+                          "type": "object",
+                          "properties": {
+                            "session": {
+                              "type": "string",
+                              "description": "The session id open_worker_session gave you."
+                            }
+                          },
+                          "required": [
+                            "session"
+                          ]
+                        },
+                        "annotations": {
+                          "readOnlyHint": false,
+                          "destructiveHint": true,
+                          "openWorldHint": false,
+                          "title": "Close a worker session"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "subagents": {}
+              },
+              "clientInfo": {
+                "name": "Deft-Console",
+                "title": "Deft Console",
+                "version": "9.9.9"
+              }
+            },
+            "id": 1
+          },
+          "t": 0,
+          "match": {
+            "params": {
+              "clientCapabilities": {
+                "_meta": {
+                  "deft.co": {
+                    "waitForKey": {}
+                  },
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "loadSession": false,
+                "promptCapabilities": {
+                  "audio": false,
+                  "embeddedContext": false,
+                  "image": false
+                }
+              },
+              "authMethods": []
+            }
+          },
+          "t": 1
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/new",
+            "params": {
+              "cwd": "/tmp-oracle/project",
+              "mcpServers": [
+                {
+                  "name": "console",
+                  "command": "PYTHON",
+                  "args": [
+                    "-m",
+                    "deft_console.display_mcp"
+                  ],
+                  "env": [
+                    {
+                      "name": "CONSOLE_DISPLAY_SOCKET",
+                      "value": "/sock"
+                    }
+                  ]
+                }
+              ]
+            },
+            "id": 2
+          },
+          "t": 2
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+              "sessionId": "sess-1"
+            }
+          },
+          "t": 3
+        }
+      ]
+    },
+    {
+      "action": "sendPrompt",
+      "prompt": "hello",
+      "expectResult": "end_turn",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/prompt",
+            "params": {
+              "prompt": [
+                {
+                  "type": "text",
+                  "text": "hello"
+                }
+              ],
+              "sessionId": "sess-1"
+            },
+            "id": 3
+          },
+          "t": 4
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 711,
+            "method": "_deft.co/wait_for_key",
+            "params": {
+              "sessionId": "sess-1",
+              "message": "Press",
+              "keys": [
+                {
+                  "key": "n",
+                  "label": "Next"
+                },
+                {
+                  "key": "q"
+                },
+                {
+                  "key": "nn"
+                },
+                {
+                  "key": " "
+                },
+                5
+              ]
+            }
+          },
+          "t": 5
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "result": {
+              "outcome": "pressed",
+              "key": "n"
+            },
+            "id": 711
+          },
+          "t": 6
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 712,
+            "method": "deft.co/wait_for_key",
+            "params": {
+              "sessionId": "sess-1",
+              "keys": []
+            }
+          },
+          "t": 7
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 712,
+            "error": {
+              "code": -32603,
+              "message": "wait_for_key needs at least one single-character key"
+            }
+          },
+          "t": 8
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 713,
+            "method": "deft.co/wait_for_key",
+            "params": {
+              "sessionId": "sess-1",
+              "keys": [
+                {
+                  "key": "y"
+                }
+              ],
+              "message": "Again"
+            }
+          },
+          "t": 9
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "result": {
+              "outcome": "cancelled"
+            },
+            "id": 713
+          },
+          "t": 10
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 714,
+            "method": "_deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "nothing_like_it",
+              "arguments": {}
+            }
+          },
+          "t": 11
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 714,
+            "error": {
+              "code": -32602,
+              "message": "Unknown tool: nothing_like_it"
+            }
+          },
+          "t": 12
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 715,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "other",
+              "name": "show_image"
+            }
+          },
+          "t": 13
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 715,
+            "error": {
+              "code": -32602,
+              "message": "Console's tools work in session 'sess-1' only"
+            }
+          },
+          "t": 14
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 716,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "show_image",
+              "arguments": {
+                "path": ""
+              }
+            }
+          },
+          "t": 15
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "result": {
+              "ok": false,
+              "message": "No path given."
+            },
+            "id": 716
+          },
+          "t": 16
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 717,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "show_image",
+              "arguments": {
+                "path": "missing.png",
+                "caption": " c "
+              }
+            }
+          },
+          "t": 17
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "result": {
+              "ok": false,
+              "message": "No such file: /tmp-oracle/project/missing.png"
+            },
+            "id": 717
+          },
+          "t": 18
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 718,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "show_diagram",
+              "arguments": {
+                "mermaid": ""
+              }
+            }
+          },
+          "t": 19
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "result": {
+              "ok": false,
+              "message": "No Mermaid source given."
+            },
+            "id": 718
+          },
+          "t": 20
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 719,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "show_page",
+              "arguments": 5
+            }
+          },
+          "t": 21
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 719,
+            "error": {
+              "code": -32602,
+              "message": "Parameter is not the expected type (dict | None); int did not match any element in the union:\n  dict: is not a dict\n  NoneType: is not an instance of NoneType"
+            }
+          },
+          "t": 22
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+              "stopReason": "end_turn"
+            }
+          },
+          "t": 23
+        }
+      ]
+    },
+    {
+      "action": "stop"
+    }
+  ],
+  "expected": [
+    {
+      "kind": "ask",
+      "askKind": "key",
+      "request": {
+        "message": "Press",
+        "keys": [
+          {
+            "key": "n",
+            "label": "Next"
+          },
+          {
+            "key": "q",
+            "label": "q"
+          }
+        ]
+      },
+      "answer": {
+        "key": "n"
+      }
+    },
+    {
+      "kind": "ask",
+      "askKind": "key",
+      "request": {
+        "message": "Again",
+        "keys": [
+          {
+            "key": "y",
+            "label": "y"
+          }
+        ]
+      },
+      "answer": {
+        "outcome": "cancelled"
+      }
+    }
+  ],
+  "expectSessionId": "sess-1"
+}

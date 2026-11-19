@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "name": "antigravity: system prompt meta on session/new",
+  "options": {
+    "agent": {
+      "name": "Fake Agent",
+      "identity": "fake.example.test"
+    },
+    "client": {
+      "name": "deft-console",
+      "version": "0.0.0-transcript"
+    },
+    "session": {
+      "cwd": "/tmp-oracle/project",
+      "reconnect": false,
+      "sessionId": "sess-1"
+    }
+  },
+  "workbench": {
+    "project": {
+      "path": "/tmp-oracle/project",
+      "settings": {
+        "agent.display_tools": false,
+        "agent.display_guidance": true
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "start",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {
+                "fs": {
+                  "readTextFile": true,
+                  "writeTextFile": true
+                },
+                "terminal": true,
+                "session": {
+                  "configOptions": {
+                    "boolean": {}
+                  }
+                },
+                "elicitation": {
+                  "form": {},
+                  "url": {}
+                },
+                "auth": {
+                  "terminal": true
+                },
+                "_meta": {
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true,
+                  "deft.co": {
+                    "waitForKey": {},
+                    "display": {
+                      "mermaid": {}
+                    }
+                  }
+                },
+                "subagents": {}
+              },
+              "clientInfo": {
+                "name": "Deft-Console",
+                "title": "Deft Console",
+                "version": "9.9.9"
+              }
+            },
+            "id": 1
+          },
+          "t": 0,
+          "match": {
+            "params": {
+              "clientCapabilities": {
+                "_meta": {
+                  "deft.co": {
+                    "waitForKey": {}
+                  },
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "_meta": {
+                  "antigravity": {
+                    "systemPrompt": {
+                      "append": true
+                    }
+                  }
+                }
+              },
+              "authMethods": []
+            }
+          },
+          "t": 1
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/new",
+            "params": {
+              "cwd": "/tmp-oracle/project",
+              "mcpServers": [],
+              "_meta": {
+                "antigravity": {
+                  "systemPrompt": {
+                    "append": "The user is reading this conversation in Deft Console, a terminal app that renders Markdown and can show:\n- Mermaid diagrams: a ```mermaid fenced code block is drawn as a diagram (flowchart, sequence, state, class, ER, gantt, pie, mindmap and more). When you explain how parts of a system connect, a flow of control or data, a sequence of calls, a state machine or a set of relationships, include a small Mermaid diagram next to the explanation. Make each diagram explain: one idea per diagram, with a one-sentence caption that states the takeaway (\"Cache hits skip Postgres\"), not the topic. Draw the mechanism, not just the names: the path a request or the data actually takes. Label every arrow with a verb (\"writes\", \"polls every 30s\", \"returns 404\"). Keep it small (about a dozen nodes, short labels); several small diagrams beat one big one. Break a longer label over lines with <br/> (A[\"Check cache<br/>TTL 30s\"]) rather than making it wide, and quote labels that hold punctuation. Don't rely on colour alone: themes differ, so use shapes and labels.\nUse these when they make an answer clearer, not for their own sake, and keep the text readable on its own: diagrams and images add to it, they don't replace it."
+                  }
+                }
+              }
+            },
+            "id": 2
+          },
+          "t": 2
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+              "sessionId": "sess-1"
+            }
+          },
+          "t": 3
+        }
+      ]
+    },
+    {
+      "action": "stop"
+    }
+  ],
+  "expected": [],
+  "expectSessionId": "sess-1"
+}

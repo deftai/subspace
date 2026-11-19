@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "name": "deft: call_tool refused when tools are off",
+  "options": {
+    "agent": {
+      "name": "Fake Agent",
+      "identity": "fake.example.test"
+    },
+    "client": {
+      "name": "deft-console",
+      "version": "0.0.0-transcript"
+    },
+    "session": {
+      "cwd": "/tmp-oracle/project",
+      "reconnect": false,
+      "sessionId": "sess-1"
+    }
+  },
+  "workbench": {
+    "project": {
+      "path": "/tmp-oracle/project",
+      "settings": {
+        "agent.display_tools": false
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "start",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {
+                "fs": {
+                  "readTextFile": true,
+                  "writeTextFile": true
+                },
+                "terminal": true,
+                "session": {
+                  "configOptions": {
+                    "boolean": {}
+                  }
+                },
+                "elicitation": {
+                  "form": {},
+                  "url": {}
+                },
+                "auth": {
+                  "terminal": true
+                },
+                "_meta": {
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true,
+                  "deft.co": {
+                    "waitForKey": {},
+                    "display": {
+                      "mermaid": {}
+                    }
+                  }
+                },
+                "subagents": {}
+              },
+              "clientInfo": {
+                "name": "Deft-Console",
+                "title": "Deft Console",
+                "version": "9.9.9"
+              }
+            },
+            "id": 1
+          },
+          "t": 0,
+          "match": {
+            "params": {
+              "clientCapabilities": {
+                "_meta": {
+                  "deft.co": {
+                    "waitForKey": {}
+                  },
+                  "terminal_output": true,
+                  "terminal_output_delta": true,
+                  "promptSuggestions": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "loadSession": false,
+                "promptCapabilities": {
+                  "audio": false,
+                  "embeddedContext": false,
+                  "image": false
+                }
+              },
+              "authMethods": []
+            }
+          },
+          "t": 1
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/new",
+            "params": {
+              "cwd": "/tmp-oracle/project",
+              "mcpServers": []
+            },
+            "id": 2
+          },
+          "t": 2
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+              "sessionId": "sess-1"
+            }
+          },
+          "t": 3
+        }
+      ]
+    },
+    {
+      "action": "sendPrompt",
+      "prompt": "hello",
+      "expectResult": "end_turn",
+      "wire": [
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "method": "session/prompt",
+            "params": {
+              "prompt": [
+                {
+                  "type": "text",
+                  "text": "hello"
+                }
+              ],
+              "sessionId": "sess-1"
+            },
+            "id": 3
+          },
+          "t": 4
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 721,
+            "method": "deft.co/call_tool",
+            "params": {
+              "sessionId": "sess-1",
+              "name": "show_image",
+              "arguments": {
+                "path": "x"
+              }
+            }
+          },
+          "t": 5
+        },
+        {
+          "dir": "client",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 721,
+            "error": {
+              "code": -32603,
+              "message": "Console's tools are turned off (setting agent.display_tools)"
+            }
+          },
+          "t": 6
+        },
+        {
+          "dir": "agent",
+          "msg": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+              "stopReason": "end_turn"
+            }
+          },
+          "t": 7
+        }
+      ]
+    },
+    {
+      "action": "stop"
+    }
+  ],
+  "expected": [],
+  "expectSessionId": "sess-1"
+}
